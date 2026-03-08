@@ -16,7 +16,7 @@ from providers.openai_utils import (
     generate_openai_messages_response,
     generate_openai_messages_response_with_tools,
 )
-from bot.response_policy import build_personality_system_message
+from bot.response_policy import apply_personality_overrides, build_personality_system_message
 from services.memory_utils import build_message_window
 from services.url_utils import extract_main_text, fetch_url_content, reduce_text_length
 
@@ -59,6 +59,7 @@ async def handle_claude_chat_intent(
     )
 
     if response:
+        response = apply_personality_overrides(message.author.id, intent="claude_chat", text=response)
         await send_or_edit_with_truncation(
             response,
             target_msg=status_msg,
@@ -175,6 +176,7 @@ async def handle_gemini_chat_intent(
                     files_to_send.append(discord.File(io.BytesIO(data), filename=f"artifact_{i}{ext}"))
 
             if text_resp:
+                text_resp = apply_personality_overrides(message.author.id, intent="gemini_chat", text=text_resp)
                 if is_test_mode:
                     if len(text_resp) > 1900:
                         try:
@@ -235,6 +237,7 @@ async def handle_summarize_url_intent(
         if personality_msg:
             msgs.insert(0, {"role": "system", "content": personality_msg})
         summary = await generate_openai_messages_response(msgs)
+        summary = apply_personality_overrides(message.author.id, intent="summarize_url", text=summary)
         return f"**{title or 'Summary'}**\n{summary}"
 
     status_msg, summary = await live_status_with_progress(

@@ -1,6 +1,7 @@
 import logging
 
 from bot.chat_context import build_chat_context
+from bot.response_policy import apply_personality_overrides
 from providers.gemini_utils import GeminiModerationError, generate_gemini_text
 from providers.openai_client import OPENAI_CHAT_MODEL
 from providers.openai_utils import OpenAIModerationError, TOOLS_DEF, generate_openai_messages_response_with_tools
@@ -84,6 +85,7 @@ async def handle_chat_intent(
             )
 
             if response and response.strip():
+                response = apply_personality_overrides(user_id, intent="chat", text=response)
                 await send_or_edit_with_truncation(
                     response,
                     target_msg=status_msg,
