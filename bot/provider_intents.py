@@ -10,7 +10,12 @@ import discord
 
 from providers.claude_utils import generate_claude_response
 from providers.gemini_utils import GeminiModerationError, generate_gemini_text
-from providers.openai_utils import OpenAIModerationError, TOOLS_DEF, generate_openai_messages_response_with_tools
+from providers.openai_utils import (
+    OpenAIModerationError,
+    TOOLS_DEF,
+    generate_openai_messages_response,
+    generate_openai_messages_response_with_tools,
+)
 from bot.response_policy import build_personality_system_message
 from services.memory_utils import build_message_window
 from services.url_utils import extract_main_text, fetch_url_content, reduce_text_length
@@ -229,7 +234,7 @@ async def handle_summarize_url_intent(
         ]
         if personality_msg:
             msgs.insert(0, {"role": "system", "content": personality_msg})
-        summary = await generate_openai_messages_response_with_tools(msgs, tools=[])
+        summary = await generate_openai_messages_response(msgs)
         return f"**{title or 'Summary'}**\n{summary}"
 
     status_msg, summary = await live_status_with_progress(
