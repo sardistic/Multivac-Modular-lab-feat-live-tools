@@ -11,6 +11,7 @@ import discord
 from providers.claude_utils import generate_claude_response
 from providers.gemini_utils import GeminiModerationError, generate_gemini_text
 from providers.openai_utils import OpenAIModerationError, TOOLS_DEF, generate_openai_messages_response_with_tools
+from bot.response_policy import build_personality_system_message
 from services.memory_utils import build_message_window
 from services.url_utils import extract_main_text, fetch_url_content, reduce_text_length
 
@@ -26,6 +27,7 @@ async def handle_claude_chat_intent(
     send_or_edit_with_truncation,
 ):
     clean_prompt = re.sub(r"^(claude|hey claude)\s*", "", prompt, flags=re.IGNORECASE).strip()
+    personality_msg = build_personality_system_message(message.author.id, intent="claude_chat")
     context_msgs = build_message_window(
         guild_id=message.guild.id if message.guild else "DM",
         channel_id=message.channel.id,
@@ -37,6 +39,8 @@ async def handle_claude_chat_intent(
         if not (m.get("role") == "user" and "gemini imagine" in m.get("content", "").lower())
     ]
     claude_messages = [{"role": "system", "content": "You are Claude, a helpful AI assistant."}]
+    if personality_msg:
+        claude_messages.append({"role": "system", "content": personality_msg})
     claude_messages.extend(context_msgs)
     claude_messages.append({"role": "user", "content": clean_prompt})
 
@@ -70,6 +74,7 @@ async def handle_gemini_chat_intent(
     moderation_view_factory,
 ):
     clean_prompt = re.sub(r"^gemini\s*", "", prompt, flags=re.IGNORECASE).strip()
+    personality_msg = build_personality_system_message(message.author.id, intent="gemini_chat")
     is_test_mode = False
     if clean_prompt.lower() == "test" or clean_prompt.lower().startswith("test "):
         is_test_mode = True
@@ -85,6 +90,8 @@ async def handle_gemini_chat_intent(
         m for m in context_msgs
         if not (m.get("role") == "user" and "gemini imagine" in m.get("content", "").lower())
     ]
+    if personality_msg:
+        context_msgs.insert(0, {"role": "system", "content": personality_msg})
 
     enable_code_execution = False
     if clean_prompt.lower().startswith("code "):
@@ -215,10 +222,13 @@ async def handle_summarize_url_intent(
         html = fetch_url_content(url)
         title, text = extract_main_text(html)
         condensed = reduce_text_length(text, max_chars=3000)
+        personality_msg = build_personality_system_message(message.author.id, intent="summarize_url")
         msgs = [
             {"role": "system", "content": "Summarize crisply (bullets ok) and extract key facts/figures."},
             {"role": "user", "content": f"Title: {title or ''}\n\n{condensed}"},
         ]
+        if personality_msg:
+            msgs.insert(0, {"role": "system", "content": personality_msg})
         summary = await generate_openai_messages_response_with_tools(msgs, tools=[])
         return f"**{title or 'Summary'}**\n{summary}"
 
