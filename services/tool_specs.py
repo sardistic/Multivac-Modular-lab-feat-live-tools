@@ -204,7 +204,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "update_behavioral_instruction",
-            "description": "Update your long-term behavioral instructions for the current user. Use this when the user asks you to change how you speak, behave, or interact with them permanently (e.g. 'always speak in uwu', 'be sassy', 'call me Captain').",
+            "description": "Update your long-term behavioral instructions for the current user. Use this when the user asks you to change how you speak, behave, or interact with them from now on or permanently (e.g. 'always speak in uwu', 'be sassy', 'call me Captain', 'reset your personality', 'from now on talk like you are gargling rocks'). New instructions replace conflicting old ones.",
             "parameters": {
                 "type": "object",
                 "properties": {

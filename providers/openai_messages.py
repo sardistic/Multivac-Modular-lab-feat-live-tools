@@ -349,13 +349,16 @@ async def generate_openai_messages_response_with_tools(
         if USE_RESPONSES:
             tool_instruction = {
                 "role": "system",
-                "content": (
+            "content": (
                 "You have access to tools. When the user asks about your code, commits, files, "
                 "weather, stocks, or other data you can fetch, USE the appropriate tool to get "
                 "real information. Do not say you 'would use' a tool - actually call it."
                 "If the user asks about past conversation/history/timeframes (e.g., 'what did I say last month', "
                 "'2 weeks ago', 'yesterday'), call `search_memory` before answering."
                 "For recall questions, prefer semantic/temporal intent over literal keyword matching."
+                "If the user asks to change how you should speak or behave from now on, call "
+                "`update_behavioral_instruction` before answering. Treat new long-term behavior "
+                "requests as replacing conflicting old ones."
             ),
         }
             messages_with_instruction = [tool_instruction] + messages
