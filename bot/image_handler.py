@@ -9,6 +9,7 @@ import re
 import discord
 
 from bot.chat_context import build_chat_context
+from bot.response_policy import apply_personality_overrides
 from providers.gemini_utils import generate_gemini_image
 from providers.openai_client import OPENAI_CHAT_MODEL
 from providers.openai_utils import generate_openai_messages_response_with_tools, get_openai_client
@@ -247,6 +248,7 @@ async def handle_describe_image_intent(
         text_resp, artifacts = response, []
 
     if text_resp and text_resp.strip():
+        text_resp = apply_personality_overrides(message.author.id, intent="describe_image", text=text_resp)
         await send_or_edit_with_truncation(
             text_resp,
             target_msg=status_msg,
