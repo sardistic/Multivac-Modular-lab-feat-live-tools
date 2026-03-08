@@ -17,6 +17,14 @@ def build_chat_context(message, user_id, raw_prompt, ref_msg=None, is_reply_to_b
         "role": "system",
         "content": "If the user explicitly says 'search', 'look up', or 'news', prefer using the web_search tool with their query.",
     })
+    msgs.append({
+        "role": "system",
+        "content": (
+            "If the user asks you to change how you should speak or behave from now on, "
+            "persist that preference by calling the `update_behavioral_instruction` tool before replying. "
+            "Treat new long-term behavior requests as replacing conflicting old ones."
+        ),
+    })
 
     timeline_block = build_timeline_prompt_block(
         guild_id=message.guild.id if message.guild else "DM",
