@@ -98,6 +98,15 @@ def _extract_base64_artifacts(text: str) -> Tuple[str, List[Tuple[bytes, str]]]:
     return cleaned, artifacts
 
 
+def _summarize_execution_output(outputs: List[str], limit: int = 240) -> str:
+    if not outputs:
+        return ""
+    text = (outputs[-1] or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
 def search_elasticsearch_resource(query_string: str, index: str = "discord_chat_memory", max_results: int = 10) -> str:
     try:
         resp = search_raw({"query_string": {"query": query_string}}, index=index, size=max_results)
@@ -378,6 +387,8 @@ def generate_gemini_text(
             logger.warning("Visual code request executed without artifact; retrying with stricter render instructions.")
             attempt = _run_attempt(
                 "RETRY: The previous execution did not return an inline image. Re-run using matplotlib only, "
+                "use a minimal script with matplotlib.pyplot and basic matplotlib.patches primitives only, "
+                "avoid external files, avoid PIL, avoid seaborn, avoid numpy unless absolutely necessary, "
                 "draw the requested figure, call plt.axis('equal') if geometry matters, call plt.show(), "
                 "and make the image itself the primary output. Also emit a fallback PNG payload in exactly this format: "
                 "BEGIN_ARTIFACT_BASE64 newline "
@@ -391,9 +402,16 @@ def generate_gemini_text(
         generated_artifacts = attempt["generated_artifacts"]
         code_result_outputs = attempt["code_result_outputs"]
         saw_executable_code = attempt["saw_executable_code"]
+        execution_summary = _summarize_execution_output(code_result_outputs)
 
         if artifact_required and saw_executable_code and not generated_artifacts:
-            logger.warning("Gemini visual code request still returned no artifact after retry. Parts=%s", attempt["part_events"])
+            logger.warning(
+                "Gemini visual code request still returned no artifact after retry. Parts=%s execution_output=%r",
+                attempt["part_events"],
+                execution_summary,
+            )
+            if execution_summary:
+                return f"Gemini code execution failed before producing an image: {execution_summary}", []
             return "Code executed, but no image artifact was returned.", []
 
         if generated_artifacts and enable_code_execution:
@@ -411,6 +429,8 @@ def generate_gemini_text(
 
         if code_result_outputs:
             if artifact_required and saw_executable_code:
+                if execution_summary:
+                    return f"Gemini code execution failed before producing an image: {execution_summary}", []
                 return "Code executed, but no image artifact was returned.", []
             full_text = code_result_outputs[-1]
             _check_soft_refusal(full_text)
