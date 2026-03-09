@@ -107,6 +107,11 @@ def _summarize_execution_output(outputs: List[str], limit: int = 240) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _looks_like_shell_command_failure(summary: str) -> bool:
+    low = (summary or "").lower()
+    return "a command can only contain words and redirects" in low
+
+
 def search_elasticsearch_resource(query_string: str, index: str = "discord_chat_memory", max_results: int = 10) -> str:
     try:
         resp = search_raw({"query_string": {"query": query_string}}, index=index, size=max_results)
@@ -186,7 +191,9 @@ def generate_gemini_text(
         if enable_code_execution:
             execution_instruction = (
                 "\n(MANDATORY: You MUST use the code_execution tool to solve this request. "
-                "Do not write code in markdown. Execute it."
+                "Do not write code in markdown. Execute it. "
+                "Write only raw Python source code. Do NOT emit shell commands, bash, sh, zsh, "
+                "python -c wrappers, pip commands, subprocess calls, os.system calls, notebook magics, or fenced code."
             )
             if artifact_required:
                 execution_instruction += (
@@ -388,6 +395,7 @@ def generate_gemini_text(
             attempt = _run_attempt(
                 "RETRY: The previous execution did not return an inline image. Re-run using matplotlib only, "
                 "use a minimal script with matplotlib.pyplot and basic matplotlib.patches primitives only, "
+                "write only raw Python statements starting with imports, and do not emit any shell or command-line syntax, "
                 "avoid external files, avoid PIL, avoid seaborn, avoid numpy unless absolutely necessary, "
                 "draw the requested figure, call plt.axis('equal') if geometry matters, call plt.show(), "
                 "and make the image itself the primary output. Also emit a fallback PNG payload in exactly this format: "
@@ -403,6 +411,29 @@ def generate_gemini_text(
         code_result_outputs = attempt["code_result_outputs"]
         saw_executable_code = attempt["saw_executable_code"]
         execution_summary = _summarize_execution_output(code_result_outputs)
+
+        if (
+            artifact_required
+            and saw_executable_code
+            and not generated_artifacts
+            and _looks_like_shell_command_failure(execution_summary)
+        ):
+            logger.warning("Gemini visual code retry still looks shell-shaped; retrying with pure-Python scaffold instructions.")
+            attempt = _run_attempt(
+                "RETRY 2: The previous code was parsed like a shell command. Output only valid raw Python source code. "
+                "Start directly with Python imports. Do not emit any shell command, prompt marker, backticks, or prose before the code. "
+                "Use matplotlib only. Prefer a minimal scaffold like: "
+                "import matplotlib.pyplot as plt; from matplotlib.patches import Circle; "
+                "fig, ax = plt.subplots(); "
+                "# add requested shapes/lines here; "
+                "ax.set_aspect('equal', adjustable='box'); ax.axis('off'); plt.show(). "
+                "Also emit the fallback BEGIN_ARTIFACT_BASE64 / END_ARTIFACT_BASE64 PNG payload if inline image return still fails."
+            )
+            final_text = attempt["final_text"]
+            generated_artifacts = attempt["generated_artifacts"]
+            code_result_outputs = attempt["code_result_outputs"]
+            saw_executable_code = attempt["saw_executable_code"]
+            execution_summary = _summarize_execution_output(code_result_outputs)
 
         if artifact_required and saw_executable_code and not generated_artifacts:
             logger.warning(
