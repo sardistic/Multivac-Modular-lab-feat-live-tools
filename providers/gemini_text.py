@@ -60,6 +60,10 @@ _ARTIFACT_BLOCK_RE = re.compile(
     r"END_ARTIFACT_BASE64",
     re.DOTALL,
 )
+_PYTHON_FENCE_RE = re.compile(r"```(?:python)?\s*(?P<code>.*?)```", re.DOTALL | re.IGNORECASE)
+_CODEY_LINE_RE = re.compile(
+    r"^\s*(?:#|import\s+|from\s+|[A-Za-z_][A-Za-z0-9_]*\s*=|plt\.|ax\.|fig\b|for\b|while\b|if\b|elif\b|else:|def\b|class\b|return\b)"
+)
 
 
 def _check_soft_refusal(text: str):
@@ -110,6 +114,25 @@ def _summarize_execution_output(outputs: List[str], limit: int = 240) -> str:
 def _looks_like_shell_command_failure(summary: str) -> bool:
     low = (summary or "").lower()
     return "a command can only contain words and redirects" in low
+
+
+def _extract_python_source(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+
+    fenced = _PYTHON_FENCE_RE.search(text)
+    if fenced:
+        code = (fenced.group("code") or "").strip()
+        return code or None
+
+    lines = [line.rstrip() for line in text.strip().splitlines() if line.strip()]
+    if len(lines) < 3:
+        return None
+
+    codey = sum(1 for line in lines if _CODEY_LINE_RE.match(line))
+    if codey >= max(3, len(lines) // 2):
+        return "\n".join(lines).strip()
+    return None
 
 
 def search_elasticsearch_resource(query_string: str, index: str = "discord_chat_memory", max_results: int = 10) -> str:
@@ -390,6 +413,20 @@ def generate_gemini_text(
             }
 
         attempt = _run_attempt()
+        if artifact_required and not attempt["saw_executable_code"] and not attempt["generated_artifacts"]:
+            python_source = _extract_python_source(attempt["final_text"])
+            if python_source:
+                logger.warning("Gemini visual code request returned raw Python text; retrying by forcing execution of returned source.")
+                attempt = _run_attempt(
+                    "RETRY: You returned Python source as plain text instead of using code_execution. "
+                    "Use code_execution now to execute the exact Python source below. "
+                    "Do not restate it, do not explain it, and do not emit markdown fences. "
+                    "Return the resulting inline image artifact. "
+                    "If inline image return still fails, emit the fallback BEGIN_ARTIFACT_BASE64 / END_ARTIFACT_BASE64 PNG payload.\n"
+                    "PYTHON_SOURCE_START\n"
+                    f"{python_source}\n"
+                    "PYTHON_SOURCE_END"
+                )
         if artifact_required and attempt["saw_executable_code"] and not attempt["generated_artifacts"]:
             logger.warning("Visual code request executed without artifact; retrying with stricter render instructions.")
             attempt = _run_attempt(
