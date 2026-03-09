@@ -132,16 +132,16 @@ def generate_gemini_text(
                 except Exception as e:
                     logger.warning("RAG search failed: %s", e)
 
-        contents = []
+        base_contents = []
         final_prompt_text = (rag_context + prompt) if rag_context else prompt
         if context:
             for msg in context:
                 role = "user" if msg.get("role") == "user" else "model"
-                contents.append(types.Content(role=role, parts=[types.Part(text=msg.get("content"))]))
+                base_contents.append(types.Content(role=role, parts=[types.Part(text=msg.get("content"))]))
 
-        current_parts = [types.Part(text=final_prompt_text)]
+        base_user_parts = [types.Part(text=final_prompt_text)]
         if extra_parts:
-            current_parts.extend(extra_parts)
+            base_user_parts.extend(extra_parts)
         if enable_code_execution:
             execution_instruction = (
                 "\n(MANDATORY: You MUST use the code_execution tool to solve this request. "
@@ -149,12 +149,12 @@ def generate_gemini_text(
             )
             if artifact_required:
                 execution_instruction += (
-                    " This request requires a visual/file result. Generate and return a PNG artifact "
-                    "(prefer matplotlib) instead of only printing text, coordinates, or explanation."
+                    " This request requires a visual result. Use matplotlib, render the requested figure, "
+                    "and ensure the final result is returned as an inline image artifact. Call plt.show() "
+                    "after creating the figure. Do not only print text, coordinates, or explanation."
                 )
             execution_instruction += ")"
-            current_parts.append(types.Part(text=execution_instruction))
-        contents.append(types.Content(role="user", parts=current_parts))
+            base_user_parts.append(types.Part(text=execution_instruction))
 
         es_tool_spec = types.FunctionDeclaration(
             name="search_elasticsearch_resource",
@@ -238,55 +238,92 @@ def generate_gemini_text(
             ],
         )
 
-        final_text = []
-        generated_artifacts = []
-        code_result_outputs = []
-        saw_executable_code = False
-        current_lang = "python"
-        response_stream = client.models.generate_content_stream(model=model, contents=contents, config=config)
+        def _build_attempt_contents(extra_instruction: Optional[str] = None):
+            attempt_parts = list(base_user_parts)
+            if extra_instruction:
+                attempt_parts.append(types.Part(text=extra_instruction))
+            attempt_contents = list(base_contents)
+            attempt_contents.append(types.Content(role="user", parts=attempt_parts))
+            return attempt_contents
 
-        for chunk in response_stream:
-            if chunk.candidates:
-                cand = chunk.candidates[0]
-                if cand.finish_reason in ["SAFETY", "kFinishReasonSafety"]:
-                    raise GeminiModerationError(
-                        f"Response blocked by safety filters (reason={cand.finish_reason}).",
-                        getattr(cand, "safety_ratings", []),
-                    )
+        def _run_attempt(extra_instruction: Optional[str] = None):
+            final_text = []
+            generated_artifacts = []
+            code_result_outputs = []
+            saw_executable_code = False
+            current_lang = "python"
+            response_stream = client.models.generate_content_stream(
+                model=model,
+                contents=_build_attempt_contents(extra_instruction),
+                config=config,
+            )
 
-            if not chunk.candidates:
-                continue
-            for part in chunk.candidates[0].content.parts:
-                if part.text:
-                    final_text.append(part.text)
-                if part.inline_data:
-                    generated_artifacts.append((part.inline_data.data, part.inline_data.mime_type))
-                if part.executable_code:
-                    saw_executable_code = True
-                    code_chunk = part.executable_code.code
-                    if part.executable_code.language:
-                        current_lang = part.executable_code.language.lower()
-                    if status_tracker is not None:
-                        snippet = "\n".join((code_chunk or "").splitlines()[-6:]) or "..."
-                        status_tracker["text"] = f"Writing Code...\n```{current_lang}\n{snippet}\n```"
-                if part.function_call:
-                    if part.function_call.name == "answer_general_knowledge":
-                        args = part.function_call.args
-                        if args and "answer" in args:
-                            final_text.append(args["answer"])
-                    else:
-                        try:
-                            arg_str = str(part.function_call.args)
-                        except Exception:
-                            arg_str = "{...}"
-                        final_text.append(f"🛠️ `[Tool Call: {part.function_call.name}({arg_str})]`")
-                if part.code_execution_result:
-                    outcome = part.code_execution_result.outcome
-                    output = part.code_execution_result.output.strip()
-                    if output:
-                        code_result_outputs.append(output)
-                    if status_tracker is not None:
-                        status_tracker["text"] = f"Executed: {outcome}\nResult: {output[:50]}..."
+            for chunk in response_stream:
+                if chunk.candidates:
+                    cand = chunk.candidates[0]
+                    if cand.finish_reason in ["SAFETY", "kFinishReasonSafety"]:
+                        raise GeminiModerationError(
+                            f"Response blocked by safety filters (reason={cand.finish_reason}).",
+                            getattr(cand, "safety_ratings", []),
+                        )
+
+                if not chunk.candidates:
+                    continue
+                for part in chunk.candidates[0].content.parts:
+                    if part.text:
+                        final_text.append(part.text)
+                    if part.inline_data:
+                        generated_artifacts.append((part.inline_data.data, part.inline_data.mime_type))
+                    if part.executable_code:
+                        saw_executable_code = True
+                        code_chunk = part.executable_code.code
+                        if part.executable_code.language:
+                            current_lang = part.executable_code.language.lower()
+                        if status_tracker is not None:
+                            snippet = "\n".join((code_chunk or "").splitlines()[-6:]) or "..."
+                            status_tracker["text"] = f"Writing Code...\n```{current_lang}\n{snippet}\n```"
+                    if part.function_call:
+                        if part.function_call.name == "answer_general_knowledge":
+                            args = part.function_call.args
+                            if args and "answer" in args:
+                                final_text.append(args["answer"])
+                        else:
+                            try:
+                                arg_str = str(part.function_call.args)
+                            except Exception:
+                                arg_str = "{...}"
+                            final_text.append(f"🛠️ `[Tool Call: {part.function_call.name}({arg_str})]`")
+                    if part.code_execution_result:
+                        outcome = part.code_execution_result.outcome
+                        output = part.code_execution_result.output.strip()
+                        if output:
+                            code_result_outputs.append(output)
+                        if status_tracker is not None:
+                            status_tracker["text"] = f"Executed: {outcome}\nResult: {output[:50]}..."
+
+            return {
+                "final_text": "".join(final_text).strip() if final_text else None,
+                "generated_artifacts": generated_artifacts,
+                "code_result_outputs": code_result_outputs,
+                "saw_executable_code": saw_executable_code,
+            }
+
+        attempt = _run_attempt()
+        if artifact_required and attempt["saw_executable_code"] and not attempt["generated_artifacts"]:
+            logger.warning("Visual code request executed without artifact; retrying with stricter render instructions.")
+            attempt = _run_attempt(
+                "RETRY: The previous execution did not return an inline image. Re-run using matplotlib only, "
+                "draw the requested figure, call plt.axis('equal') if geometry matters, call plt.show(), "
+                "and make the image itself the primary output."
+            )
+
+        final_text = attempt["final_text"]
+        generated_artifacts = attempt["generated_artifacts"]
+        code_result_outputs = attempt["code_result_outputs"]
+        saw_executable_code = attempt["saw_executable_code"]
+
+        if artifact_required and saw_executable_code and not generated_artifacts:
+            return "Code executed, but no image artifact was returned.", []
 
         if generated_artifacts and enable_code_execution:
             summary_text = "Generated artifact attached."
