@@ -31,6 +31,27 @@ REFUSAL_PATTERNS = [
 ]
 
 
+_VISUAL_CODE_TERMS = (
+    "plot",
+    "graph",
+    "chart",
+    "draw",
+    "diagram",
+    "visualize",
+    "visualise",
+    "render",
+    "image",
+    "png",
+    "svg",
+    "figure",
+    "circle",
+    "circles",
+    "concentric",
+    "geometry",
+    "matplotlib",
+)
+
+
 def _check_soft_refusal(text: str):
     if not text or len(text) > 300:
         return
@@ -38,6 +59,11 @@ def _check_soft_refusal(text: str):
         if re.search(pat, text, re.IGNORECASE):
             logger.warning("Detected soft refusal in text: %s", text)
             raise GeminiModerationError(f"Model refused: {text}", safety_ratings=[])
+
+
+def _looks_like_visual_code_request(prompt: str) -> bool:
+    low = (prompt or "").lower()
+    return any(term in low for term in _VISUAL_CODE_TERMS)
 
 
 def search_elasticsearch_resource(query_string: str, index: str = "discord_chat_memory", max_results: int = 10) -> str:
@@ -63,6 +89,7 @@ def generate_gemini_text(
 
     try:
         model = model_name
+        artifact_required = enable_code_execution and _looks_like_visual_code_request(prompt)
         logger.info(
             "Generating text with model: %s (extra_parts=%s, code=%s)",
             model,
@@ -116,7 +143,17 @@ def generate_gemini_text(
         if extra_parts:
             current_parts.extend(extra_parts)
         if enable_code_execution:
-            current_parts.append(types.Part(text="\n(MANDATORY: You MUST use the code_execution tool to solve this request. Do not write code in markdown. Execute it.)"))
+            execution_instruction = (
+                "\n(MANDATORY: You MUST use the code_execution tool to solve this request. "
+                "Do not write code in markdown. Execute it."
+            )
+            if artifact_required:
+                execution_instruction += (
+                    " This request requires a visual/file result. Generate and return a PNG artifact "
+                    "(prefer matplotlib) instead of only printing text, coordinates, or explanation."
+                )
+            execution_instruction += ")"
+            current_parts.append(types.Part(text=execution_instruction))
         contents.append(types.Content(role="user", parts=current_parts))
 
         es_tool_spec = types.FunctionDeclaration(
@@ -182,6 +219,11 @@ def generate_gemini_text(
                 "3. For audio, use 'scipy.io.wavfile' and 'numpy'. "
                 "4. For plotting, use 'matplotlib' or 'seaborn'."
             )
+            if artifact_required:
+                sys_instructions.append(
+                    "For this request, a visual artifact is required. Generate and return an actual PNG file artifact. "
+                    "Do not stop at prose, code blocks, or printed numeric output."
+                )
         if any(getattr(t, "google_search", None) for t in tools_list):
             sys_instructions.append("You can search the live web using 'google_search'.")
 
@@ -198,7 +240,8 @@ def generate_gemini_text(
 
         final_text = []
         generated_artifacts = []
-        accumulated_code_block = ""
+        code_result_outputs = []
+        saw_executable_code = False
         current_lang = "python"
         response_stream = client.models.generate_content_stream(model=model, contents=contents, config=config)
 
@@ -215,19 +258,16 @@ def generate_gemini_text(
                 continue
             for part in chunk.candidates[0].content.parts:
                 if part.text:
-                    if accumulated_code_block:
-                        final_text.append(f"\n> 🐍 **Thinking (Code Execution)**\n> ```{current_lang}\n{accumulated_code_block}\n> ```\n")
-                        accumulated_code_block = ""
                     final_text.append(part.text)
                 if part.inline_data:
                     generated_artifacts.append((part.inline_data.data, part.inline_data.mime_type))
                 if part.executable_code:
+                    saw_executable_code = True
                     code_chunk = part.executable_code.code
                     if part.executable_code.language:
                         current_lang = part.executable_code.language.lower()
-                    accumulated_code_block += code_chunk
                     if status_tracker is not None:
-                        snippet = "\n".join(accumulated_code_block.splitlines()[-6:]) or "..."
+                        snippet = "\n".join((code_chunk or "").splitlines()[-6:]) or "..."
                         status_tracker["text"] = f"Writing Code...\n```{current_lang}\n{snippet}\n```"
                 if part.function_call:
                     if part.function_call.name == "answer_general_knowledge":
@@ -241,23 +281,26 @@ def generate_gemini_text(
                             arg_str = "{...}"
                         final_text.append(f"🛠️ `[Tool Call: {part.function_call.name}({arg_str})]`")
                 if part.code_execution_result:
-                    if accumulated_code_block:
-                        final_text.append(f"\n> 🐍 **Thinking (Code Execution)**\n> ```{current_lang}\n{accumulated_code_block}\n> ```\n")
-                        accumulated_code_block = ""
                     outcome = part.code_execution_result.outcome
                     output = part.code_execution_result.output.strip()
-                    icon = "✅" if outcome == "OUTCOME_OK" else "❌"
-                    final_text.append(f"> {icon} **Result**\n> ```text\n{output}\n> ```\n")
+                    if output:
+                        code_result_outputs.append(output)
                     if status_tracker is not None:
                         status_tracker["text"] = f"Executed: {outcome}\nResult: {output[:50]}..."
 
-        if accumulated_code_block:
-            final_text.append(f"\n> 🐍 **Thinking (Code Execution)**\n> ```{current_lang}\n{accumulated_code_block}\n> ```\n")
-
         if final_text or generated_artifacts:
-            full_text = "".join(final_text) if final_text else None
+            full_text = "".join(final_text).strip() if final_text else None
+            if not full_text and not generated_artifacts and code_result_outputs:
+                full_text = code_result_outputs[-1]
             _check_soft_refusal(full_text)
             return full_text, generated_artifacts
+
+        if code_result_outputs:
+            if artifact_required and saw_executable_code:
+                return "Code executed, but no image artifact was returned.", []
+            full_text = code_result_outputs[-1]
+            _check_soft_refusal(full_text)
+            return full_text, []
 
         logger.warning("Gemini text generation returned no text in stream.")
     except Exception as e:
@@ -267,4 +310,3 @@ def generate_gemini_text(
         return None, []
 
     return None, []
-
