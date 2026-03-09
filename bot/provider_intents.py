@@ -80,24 +80,10 @@ async def handle_gemini_chat_intent(
     moderation_view_factory,
 ):
     clean_prompt = re.sub(r"^gemini\s*", "", prompt, flags=re.IGNORECASE).strip()
-    personality_msg = build_personality_system_message(message.author.id, intent="gemini_chat")
     is_test_mode = False
     if clean_prompt.lower() == "test" or clean_prompt.lower().startswith("test "):
         is_test_mode = True
         clean_prompt = re.sub(r"^test\s*", "", clean_prompt, flags=re.IGNORECASE).strip()
-
-    context_msgs = build_message_window(
-        guild_id=message.guild.id if message.guild else "DM",
-        channel_id=message.channel.id,
-        user_id=message.author.id,
-        limit_msgs=20,
-    )
-    context_msgs = [
-        m for m in context_msgs
-        if not (m.get("role") == "user" and "gemini imagine" in m.get("content", "").lower())
-    ]
-    if personality_msg:
-        context_msgs.insert(0, {"role": "system", "content": personality_msg})
 
     enable_code_execution = False
     if clean_prompt.lower().startswith("code "):
@@ -105,6 +91,22 @@ async def handle_gemini_chat_intent(
         clean_prompt = clean_prompt[5:].strip()
     elif is_test_mode:
         enable_code_execution = True
+
+    context_msgs = []
+    if not enable_code_execution:
+        personality_msg = build_personality_system_message(message.author.id, intent="gemini_chat")
+        context_msgs = build_message_window(
+            guild_id=message.guild.id if message.guild else "DM",
+            channel_id=message.channel.id,
+            user_id=message.author.id,
+            limit_msgs=20,
+        )
+        context_msgs = [
+            m for m in context_msgs
+            if not (m.get("role") == "user" and "gemini imagine" in m.get("content", "").lower())
+        ]
+        if personality_msg:
+            context_msgs.insert(0, {"role": "system", "content": personality_msg})
 
     status_tracker = {"text": ""}
 
