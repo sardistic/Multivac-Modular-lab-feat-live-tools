@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -51,6 +52,15 @@ _VISUAL_CODE_TERMS = (
     "matplotlib",
 )
 
+_ARTIFACT_BLOCK_RE = re.compile(
+    r"BEGIN_ARTIFACT_BASE64\s*"
+    r"filename:\s*(?P<filename>[^\n]+)\s*"
+    r"mime:\s*(?P<mime>[^\n]+)\s*"
+    r"data:\s*(?P<data>.*?)\s*"
+    r"END_ARTIFACT_BASE64",
+    re.DOTALL,
+)
+
 
 def _check_soft_refusal(text: str):
     if not text or len(text) > 300:
@@ -64,6 +74,28 @@ def _check_soft_refusal(text: str):
 def _looks_like_visual_code_request(prompt: str) -> bool:
     low = (prompt or "").lower()
     return any(term in low for term in _VISUAL_CODE_TERMS)
+
+
+def _extract_base64_artifacts(text: str) -> Tuple[str, List[Tuple[bytes, str]]]:
+    if not text:
+        return text, []
+
+    artifacts: List[Tuple[bytes, str]] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        mime = (match.group("mime") or "application/octet-stream").strip()
+        payload = re.sub(r"\s+", "", match.group("data") or "")
+        try:
+            decoded = base64.b64decode(payload, validate=True)
+        except Exception as e:
+            logger.warning("Failed to decode Gemini base64 artifact block: %s", e)
+            return ""
+        artifacts.append((decoded, mime))
+        return ""
+
+    cleaned = _ARTIFACT_BLOCK_RE.sub(_replace, text)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, artifacts
 
 
 def search_elasticsearch_resource(query_string: str, index: str = "discord_chat_memory", max_results: int = 10) -> str:
@@ -252,6 +284,7 @@ def generate_gemini_text(
             code_result_outputs = []
             saw_executable_code = False
             current_lang = "python"
+            part_events: List[str] = []
             response_stream = client.models.generate_content_stream(
                 model=model,
                 contents=_build_attempt_contents(extra_instruction),
@@ -271,23 +304,28 @@ def generate_gemini_text(
                     continue
                 for part in chunk.candidates[0].content.parts:
                     if part.text:
+                        part_events.append(f"text:{len(part.text)}")
                         final_text.append(part.text)
                     if part.inline_data:
+                        part_events.append(f"inline_data:{part.inline_data.mime_type}:{len(part.inline_data.data or b'')}")
                         generated_artifacts.append((part.inline_data.data, part.inline_data.mime_type))
                     if part.executable_code:
                         saw_executable_code = True
                         code_chunk = part.executable_code.code
                         if part.executable_code.language:
                             current_lang = part.executable_code.language.lower()
+                        part_events.append(f"executable_code:{current_lang}:{len(code_chunk or '')}")
                         if status_tracker is not None:
                             snippet = "\n".join((code_chunk or "").splitlines()[-6:]) or "..."
                             status_tracker["text"] = f"Writing Code...\n```{current_lang}\n{snippet}\n```"
                     if part.function_call:
                         if part.function_call.name == "answer_general_knowledge":
+                            part_events.append("function_call:answer_general_knowledge")
                             args = part.function_call.args
                             if args and "answer" in args:
                                 final_text.append(args["answer"])
                         else:
+                            part_events.append(f"function_call:{part.function_call.name}")
                             try:
                                 arg_str = str(part.function_call.args)
                             except Exception:
@@ -296,16 +334,43 @@ def generate_gemini_text(
                     if part.code_execution_result:
                         outcome = part.code_execution_result.outcome
                         output = part.code_execution_result.output.strip()
+                        part_events.append(f"code_execution_result:{outcome}:{len(output)}")
                         if output:
                             code_result_outputs.append(output)
                         if status_tracker is not None:
                             status_tracker["text"] = f"Executed: {outcome}\nResult: {output[:50]}..."
 
+            cleaned_text = "".join(final_text).strip() if final_text else None
+            recovered_artifacts: List[Tuple[bytes, str]] = []
+            if cleaned_text:
+                cleaned_text, extracted = _extract_base64_artifacts(cleaned_text)
+                recovered_artifacts.extend(extracted)
+
+            cleaned_outputs = []
+            for output in code_result_outputs:
+                cleaned_output, extracted = _extract_base64_artifacts(output)
+                recovered_artifacts.extend(extracted)
+                if cleaned_output:
+                    cleaned_outputs.append(cleaned_output)
+
+            if recovered_artifacts:
+                part_events.append(f"recovered_artifacts:{len(recovered_artifacts)}")
+                generated_artifacts.extend(recovered_artifacts)
+
+            logger.info(
+                "Gemini code attempt summary: artifact_required=%s saw_code=%s artifacts=%d parts=%s",
+                artifact_required,
+                saw_executable_code,
+                len(generated_artifacts),
+                part_events,
+            )
+
             return {
-                "final_text": "".join(final_text).strip() if final_text else None,
+                "final_text": cleaned_text,
                 "generated_artifacts": generated_artifacts,
-                "code_result_outputs": code_result_outputs,
+                "code_result_outputs": cleaned_outputs,
                 "saw_executable_code": saw_executable_code,
+                "part_events": part_events,
             }
 
         attempt = _run_attempt()
@@ -314,7 +379,12 @@ def generate_gemini_text(
             attempt = _run_attempt(
                 "RETRY: The previous execution did not return an inline image. Re-run using matplotlib only, "
                 "draw the requested figure, call plt.axis('equal') if geometry matters, call plt.show(), "
-                "and make the image itself the primary output."
+                "and make the image itself the primary output. Also emit a fallback PNG payload in exactly this format: "
+                "BEGIN_ARTIFACT_BASE64 newline "
+                "filename: render.png newline "
+                "mime: image/png newline "
+                "data: <single-line base64 PNG> newline "
+                "END_ARTIFACT_BASE64. Do not wrap the payload in markdown fences."
             )
 
         final_text = attempt["final_text"]
@@ -323,6 +393,7 @@ def generate_gemini_text(
         saw_executable_code = attempt["saw_executable_code"]
 
         if artifact_required and saw_executable_code and not generated_artifacts:
+            logger.warning("Gemini visual code request still returned no artifact after retry. Parts=%s", attempt["part_events"])
             return "Code executed, but no image artifact was returned.", []
 
         if generated_artifacts and enable_code_execution:
