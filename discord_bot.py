@@ -31,7 +31,7 @@ from discord.ext import commands
 
 # IMPORTANT: importing config mirrors GCE metadata → os.environ for all keys
 # Importing GOOGLE_* here ensures that side-effect runs even if this file
-# doesn't directly use the variables. (We also log a redacted presence check.)
+# doesn't directly use the variables. (We also log simple configured yes/no checks.)
 from config import DISCORD_TOKEN, GOOGLE_API_KEY, GOOGLE_CSE_ID
 
 # Memory / Elasticsearch helpers
@@ -96,19 +96,17 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("elastic_transport").setLevel(logging.WARNING)
 
-def _redact(s: Optional[str], keep: int = 6) -> str:
-    if not s:
-        return "(missing)"
-    if len(s) <= keep:
-        return "*" * (len(s) - 1) + s[-1:]
-    return ("*" * (len(s) - keep)) + s[-keep:]
 
-# Log key presence (redacted) once so we can see config->metadata->env worked
+def _configured(value: Optional[str]) -> str:
+    return "yes" if bool(value) else "no"
+
+
 logger.info(
-    "Google CSE keys: GOOGLE_API_KEY=%s, GOOGLE_CSE_ID=%s",
-    _redact(GOOGLE_API_KEY), _redact(GOOGLE_CSE_ID)
+    "Google CSE configured: GOOGLE_API_KEY=%s, GOOGLE_CSE_ID=%s",
+    _configured(GOOGLE_API_KEY),
+    _configured(GOOGLE_CSE_ID),
 )
-logger.info(f"Anthropic Key: ANTHROPIC_API_KEY={_redact(ANTHROPIC_API_KEY)}")
+logger.info("Anthropic configured: ANTHROPIC_API_KEY=%s", _configured(ANTHROPIC_API_KEY))
 
 # ---- Discord ----
 intents = discord.Intents.default()
