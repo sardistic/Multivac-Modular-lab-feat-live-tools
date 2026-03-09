@@ -288,6 +288,12 @@ def generate_gemini_text(
                     if status_tracker is not None:
                         status_tracker["text"] = f"Executed: {outcome}\nResult: {output[:50]}..."
 
+        if generated_artifacts and enable_code_execution:
+            summary_text = "Generated artifact attached."
+            if artifact_required:
+                summary_text = "Rendered image attached."
+            return summary_text, generated_artifacts
+
         if final_text or generated_artifacts:
             full_text = "".join(final_text).strip() if final_text else None
             if not full_text and not generated_artifacts and code_result_outputs:
