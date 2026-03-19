@@ -39,12 +39,28 @@ class ImageDescriptionFlowTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_needs_explanation_repair_for_trailing_fragment(self):
+        text = (
+            "1. What the image is\n"
+            "It's a screenshot of a post.\n\n"
+            "2. The key text or quote\n"
+            "The visible quote from the book page says"
+        )
+
+        self.assertTrue(
+            image_handler._needs_explanation_repair(
+                "explain this image and the quote in it what should i understand about it",
+                text,
+            )
+        )
+
     @patch("bot.image_handler.apply_personality_overrides", side_effect=lambda user_id, *, intent, text: text)
     @patch("bot.image_handler.generate_openai_messages_response", new_callable=AsyncMock)
     async def test_handle_describe_image_intent_retries_until_takeaway_exists(self, mock_generate, _mock_personality):
         mock_generate.side_effect = [
             "1. Image type and setting\nA screenshot.\n\n2. Visible text\nA Dune quote.\n\n3. Uncertain or partially legible text\nNone.\n\n4. Visual cues that matter\nNested quote card.",
             "1. What the image is\nIt's a screenshot.\n\n2. The key text or quote\nA Dune quote.",
+            "1. What the image is\nIt's a screenshot of a post quoting Dune.\n\n2. The key text or quote\nThe visible quote from the book page says",
             (
                 "1. What the image is\nIt's a screenshot of a post quoting Dune.\n\n"
                 "2. The key text or quote\nThe quote warns against handing human thinking over to machines.\n\n"
@@ -72,13 +88,15 @@ class ImageDescriptionFlowTests(unittest.IsolatedAsyncioTestCase):
             send_or_edit_with_truncation=send_mock,
         )
 
-        self.assertEqual(mock_generate.await_count, 3)
+        self.assertEqual(mock_generate.await_count, 4)
         self.assertEqual(mock_generate.await_args_list[0].kwargs["temperature"], 0.0)
         self.assertEqual(mock_generate.await_args_list[1].kwargs["temperature"], 0.2)
         self.assertEqual(mock_generate.await_args_list[2].kwargs["temperature"], 0.2)
+        self.assertEqual(mock_generate.await_args_list[3].kwargs["temperature"], 0.1)
         self.assertEqual(mock_generate.await_args_list[0].kwargs["max_tokens"], 1400)
         self.assertEqual(mock_generate.await_args_list[1].kwargs["max_tokens"], 1400)
         self.assertEqual(mock_generate.await_args_list[2].kwargs["max_tokens"], 1400)
+        self.assertEqual(mock_generate.await_args_list[3].kwargs["max_tokens"], 1800)
         explanation_user_content = mock_generate.await_args_list[1].args[0][-1]["content"]
         self.assertEqual(explanation_user_content[1]["type"], "image_url")
         sent_text = send_mock.await_args.args[0]

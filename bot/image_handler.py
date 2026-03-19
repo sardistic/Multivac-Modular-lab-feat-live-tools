@@ -28,6 +28,10 @@ _TAKEAWAY_SECTION_RE = re.compile(
     r"(?im)^\s*(?:3\.\s*)?(?:what it means\s*/\s*what you should understand|"
     r"what it means|what you should understand|meaning|takeaway)\b"
 )
+_SECTION_HEADER_RE = re.compile(r"(?im)^\s*(1|2|3)\.\s+")
+_INCOMPLETE_TRAILING_RE = re.compile(
+    r"(?i)(?:\b(?:says|quote|quoted|that|because|which|means|reads)\s*|[:\-])$"
+)
 
 
 def _wants_explanation(prompt: str) -> bool:
@@ -62,6 +66,23 @@ def _needs_explanation_retry(prompt: str, text: str) -> bool:
     if not _wants_explanation(prompt):
         return False
     return not _has_takeaway_section(text)
+
+
+def _needs_explanation_repair(prompt: str, text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return True
+    if _needs_explanation_retry(prompt, stripped):
+        return True
+
+    section_count = len(_SECTION_HEADER_RE.findall(stripped))
+    if _wants_explanation(prompt) and section_count < 3:
+        return True
+
+    last_line = stripped.splitlines()[-1].strip() if stripped.splitlines() else ""
+    if _INCOMPLETE_TRAILING_RE.search(last_line):
+        return True
+    return False
 
 
 def _build_image_extraction_messages(
@@ -150,6 +171,48 @@ def _build_image_explanation_messages(
         {
             "role": "user",
             "content": [{"type": "text", "text": explanation_prompt}]
+            + [{"type": "image_url", "image_url": {"url": u, "detail": DEFAULT_VISION_DETAIL}} for u in image_urls],
+        }
+    )
+    return msgs
+
+
+def _build_image_repair_messages(
+    *,
+    prompt: str,
+    extracted_notes: str,
+    partial_answer: str,
+    image_urls,
+    reply_context: str,
+):
+    msgs = [
+        {
+            "role": "system",
+            "content": (
+                "You are repairing an incomplete Discord answer about an image. "
+                "The prior draft stopped early or missed required sections. Rewrite the full answer cleanly."
+            ),
+        },
+    ]
+    if reply_context:
+        msgs.append({"role": "system", "content": reply_context})
+
+    repair_prompt = (
+        f"Original user request: {prompt.strip() or 'Describe this image.'}\n\n"
+        "OCR and visual notes:\n"
+        f"{extracted_notes.strip() or '(no extraction notes returned)'}\n\n"
+        "Incomplete prior draft:\n"
+        f"{partial_answer.strip() or '(no partial draft)'}\n\n"
+        "Rewrite the full answer from scratch with exactly these three numbered sections:\n"
+        "1. What the image is\n"
+        "2. The key text or quote\n"
+        "3. What it means / what you should understand\n"
+        "Do not stop after section 2. Do not leave the quote hanging with a trailing colon or fragment."
+    )
+    msgs.append(
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": repair_prompt}]
             + [{"type": "image_url", "image_url": {"url": u, "detail": DEFAULT_VISION_DETAIL}} for u in image_urls],
         }
     )
@@ -389,6 +452,22 @@ async def handle_describe_image_intent(
             )
             if retry_text and retry_text.strip():
                 final_text = retry_text
+
+        if _needs_explanation_repair(prompt, final_text):
+            repaired_text = await generate_openai_messages_response(
+                _build_image_repair_messages(
+                    prompt=prompt,
+                    extracted_notes=extracted_notes,
+                    partial_answer=final_text,
+                    image_urls=image_urls,
+                    reply_context=reply_context,
+                ),
+                model=OPENAI_CHAT_MODEL,
+                temperature=0.1,
+                max_tokens=1800,
+            )
+            if repaired_text and repaired_text.strip():
+                final_text = repaired_text
 
         return final_text
 
