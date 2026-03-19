@@ -13,11 +13,140 @@ from bot.response_policy import apply_personality_overrides
 from providers.gemini_utils import generate_gemini_image
 from providers.openai_client import OPENAI_CHAT_MODEL
 from providers.openai_images import DEFAULT_VISION_DETAIL
-from providers.openai_utils import generate_openai_messages_response_with_tools, get_openai_client
+from providers.openai_utils import generate_openai_messages_response, get_openai_client
 from providers.stability_utils import handle_image_generation
 from services.weather_utils import get_location_details, get_weather_data
 
 logger = logging.getLogger("discord_bot")
+
+_EXPLANATION_REQUEST_RE = re.compile(
+    r"\b(explain|meaning|mean|what should i understand|what am i supposed to understand|"
+    r"what is the point|what's the point|takeaway|why is this funny|why is this important)\b",
+    flags=re.IGNORECASE,
+)
+_TAKEAWAY_SECTION_RE = re.compile(
+    r"(?im)^\s*(?:3\.\s*)?(?:what it means\s*/\s*what you should understand|"
+    r"what it means|what you should understand|meaning|takeaway)\b"
+)
+
+
+def _wants_explanation(prompt: str) -> bool:
+    return bool(_EXPLANATION_REQUEST_RE.search(prompt or ""))
+
+
+def _has_takeaway_section(text: str) -> bool:
+    if not text:
+        return False
+    if _TAKEAWAY_SECTION_RE.search(text):
+        return True
+    low = text.lower()
+    return any(
+        phrase in low
+        for phrase in (
+            "what you should understand",
+            "what it means",
+            "the point is",
+            "the takeaway",
+            "this means",
+            "the post is saying",
+            "the quote is saying",
+            "the quote is warning",
+            "the joke is",
+        )
+    )
+
+
+def _needs_explanation_retry(prompt: str, text: str) -> bool:
+    if not (text or "").strip():
+        return True
+    if not _wants_explanation(prompt):
+        return False
+    return not _has_takeaway_section(text)
+
+
+def _build_image_extraction_messages(
+    *,
+    prompt: str,
+    image_urls,
+    reply_context: str,
+):
+    msgs = [
+        {
+            "role": "system",
+            "content": (
+                "You are extracting OCR and visual notes from an image for a later answer. "
+                "Read visible text carefully, including small quoted text in screenshots."
+            ),
+        },
+        {
+            "role": "system",
+            "content": (
+                "Do not answer the user's broader question yet. "
+                "Only extract what is visible and note uncertainty explicitly."
+            ),
+        },
+    ]
+    if reply_context:
+        msgs.append({"role": "system", "content": reply_context})
+    extraction_prompt = (
+        f"User request: {prompt.strip() or 'Describe this image.'}\n\n"
+        "Return exactly these four sections:\n"
+        "1. Image type and setting\n"
+        "2. Visible text\n"
+        "3. Uncertain or partially legible text\n"
+        "4. Visual cues that matter\n"
+        "Do not explain the meaning yet."
+    )
+    msgs.append(
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": extraction_prompt}]
+            + [{"type": "image_url", "image_url": {"url": u, "detail": DEFAULT_VISION_DETAIL}} for u in image_urls],
+        }
+    )
+    return msgs
+
+
+def _build_image_explanation_messages(
+    *,
+    prompt: str,
+    extracted_notes: str,
+    reply_context: str,
+    retry: bool = False,
+):
+    msgs = [
+        {
+            "role": "system",
+            "content": (
+                "You are answering a Discord user about an image using OCR and visual notes from a prior pass. "
+                "Answer the user's actual question, not just the transcription."
+            ),
+        },
+    ]
+    if reply_context:
+        msgs.append({"role": "system", "content": reply_context})
+
+    retry_line = ""
+    if retry:
+        retry_line = (
+            "\nYour previous answer skipped the meaning/takeaway. "
+            "Do not omit section 3 this time."
+        )
+
+    explanation_prompt = (
+        f"Original user request: {prompt.strip() or 'Describe this image.'}\n\n"
+        "OCR and visual notes:\n"
+        f"{extracted_notes.strip() or '(no extraction notes returned)'}\n\n"
+        "Return exactly these three numbered sections:\n"
+        "1. What the image is\n"
+        "2. The key text or quote\n"
+        "3. What it means / what you should understand\n"
+        "Section 3 is required. It must directly explain the meaning, joke, argument, or takeaway in plain language. "
+        "If the quoted text is partially unreadable, say that briefly and still explain the likely meaning based on what is visible."
+        f"{retry_line}"
+    )
+    msgs.append({"role": "user", "content": explanation_prompt})
+    return msgs
 
 
 async def handle_generate_image_intent(
@@ -202,16 +331,6 @@ async def handle_describe_image_intent(
     live_status_with_progress,
     send_or_edit_with_truncation,
 ):
-    describe_injection = (
-        "When asked to explain or describe an image, especially a screenshot or meme:\n"
-        "- Start with OCR first. Carefully read and transcribe all legible text before interpreting it.\n"
-        "- Pay special attention to nested quoted text, captions, usernames, timestamps, and small embedded text blocks.\n"
-        "- If any quoted or embedded text is only partly legible, give the best partial transcription and mark uncertain words with [...].\n"
-        "- Never leave a visible-text section blank or replace it with a dash when some text is readable.\n"
-        "- After transcription, explain the point, joke, irony, or argument in plain language.\n"
-        "- Ground the explanation in 2 to 3 specific visual or textual cues from the image.\n"
-        "- Keep the answer concise, but make it genuinely useful."
-    )
     if ref_msg and (ref_msg.content or "").strip():
         if is_reply_to_bot:
             reply_context = f"You are responding to your previous message:\n---\n{ref_msg.content.strip()}\n---"
@@ -221,33 +340,42 @@ async def handle_describe_image_intent(
         reply_context = ""
 
     async def _describe():
-        msgs = [
-            {
-                "role": "system",
-                "content": (
-                    "You analyze screenshots, memes, and photos for Discord. "
-                    "Prioritize accurate reading of visible text before summarizing or explaining the image."
-                ),
-            },
-            {"role": "system", "content": describe_injection},
-        ]
-        if reply_context:
-            msgs.append({"role": "system", "content": reply_context})
-        user_prompt = (
-            f"User request: {prompt.strip() or 'Describe this image.'}\n\n"
-            "Answer in this order:\n"
-            "1. What the image is.\n"
-            "2. The visible text, including any quoted passage or embedded post text.\n"
-            "3. What the user should understand from it.\n"
-            "If some small text is hard to read, say that explicitly and give the best partial transcription instead of omitting it."
+        extracted_notes = await generate_openai_messages_response(
+            _build_image_extraction_messages(
+                prompt=prompt,
+                image_urls=image_urls,
+                reply_context=reply_context,
+            ),
+            model=OPENAI_CHAT_MODEL,
         )
-        msgs.append({
-            "role": "user",
-            "content": [{"type": "text", "text": user_prompt}] + [
-                {"type": "image_url", "image_url": {"url": u, "detail": DEFAULT_VISION_DETAIL}} for u in image_urls
-            ],
-        })
-        return await generate_openai_messages_response_with_tools(msgs, tools=[])
+        if extracted_notes.startswith("⚠️ OpenAI error:"):
+            return extracted_notes
+
+        final_text = await generate_openai_messages_response(
+            _build_image_explanation_messages(
+                prompt=prompt,
+                extracted_notes=extracted_notes,
+                reply_context=reply_context,
+            ),
+            model=OPENAI_CHAT_MODEL,
+        )
+        if final_text.startswith("⚠️ OpenAI error:"):
+            return final_text
+
+        if _needs_explanation_retry(prompt, final_text):
+            retry_text = await generate_openai_messages_response(
+                _build_image_explanation_messages(
+                    prompt=prompt,
+                    extracted_notes=extracted_notes,
+                    reply_context=reply_context,
+                    retry=True,
+                ),
+                model=OPENAI_CHAT_MODEL,
+            )
+            if retry_text and retry_text.strip():
+                final_text = retry_text
+
+        return final_text
 
     status_msg, response = await live_status_with_progress(
         message,
