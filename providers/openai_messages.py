@@ -106,8 +106,15 @@ def _normalize_messages_for_responses(messages: List[Dict[str, Any]]) -> List[Di
                 if ptype in ("text", "input_text"):
                     out_parts.append({"type": "input_text", "text": p.get("text", "")})
                 elif ptype in ("image_url", "input_image"):
-                    url = p.get("image_url", {}).get("url") if isinstance(p.get("image_url"), dict) else p.get("image_url")
-                    out_parts.append({"type": "input_image", "image_url": url})
+                    image_value = p.get("image_url")
+                    if isinstance(image_value, dict):
+                        out = {"type": "input_image", "image_url": image_value.get("url")}
+                        detail = image_value.get("detail")
+                        if detail:
+                            out["detail"] = detail
+                        out_parts.append(out)
+                    else:
+                        out_parts.append({"type": "input_image", "image_url": image_value})
                 else:
                     out_parts.append({"type": "input_text", "text": p.get("text", str(p))})
             norm.append({"role": "user", "content": out_parts})

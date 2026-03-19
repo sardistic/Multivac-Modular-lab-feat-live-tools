@@ -6,6 +6,24 @@ from bot import image_handler
 
 
 class ImageDescriptionFlowTests(unittest.IsolatedAsyncioTestCase):
+    def test_build_image_explanation_messages_keeps_images_attached(self):
+        msgs = image_handler._build_image_explanation_messages(
+            prompt="explain this image",
+            extracted_notes="Visible text: quote",
+            image_urls=["data:image/png;base64,abc"],
+            reply_context="",
+        )
+
+        user_content = msgs[-1]["content"]
+        self.assertEqual(user_content[0]["type"], "text")
+        self.assertEqual(
+            user_content[1],
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,abc", "detail": "high"},
+            },
+        )
+
     def test_needs_explanation_retry_for_incomplete_outline(self):
         text = (
             "1. What the image is\n"
@@ -55,6 +73,11 @@ class ImageDescriptionFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(mock_generate.await_count, 3)
+        self.assertEqual(mock_generate.await_args_list[0].kwargs["temperature"], 0.0)
+        self.assertEqual(mock_generate.await_args_list[1].kwargs["temperature"], 0.2)
+        self.assertEqual(mock_generate.await_args_list[2].kwargs["temperature"], 0.2)
+        explanation_user_content = mock_generate.await_args_list[1].args[0][-1]["content"]
+        self.assertEqual(explanation_user_content[1]["type"], "image_url")
         sent_text = send_mock.await_args.args[0]
         self.assertIn("3. What it means / what you should understand", sent_text)
 
