@@ -2,6 +2,7 @@ import logging
 
 from bot.chat_context import build_chat_context
 from bot.response_policy import apply_personality_overrides
+from providers.openai_images import DEFAULT_VISION_DETAIL
 from providers.gemini_utils import GeminiModerationError, generate_gemini_text
 from providers.openai_client import OPENAI_CHAT_MODEL
 from providers.openai_utils import OpenAIModerationError, TOOLS_DEF, generate_openai_messages_response_with_tools
@@ -60,7 +61,7 @@ async def handle_chat_intent(
                 msgs[-1] = {
                     "role": "user",
                     "content": [{"type": "text", "text": raw_prompt}] + [
-                        {"type": "image_url", "image_url": {"url": u}} for u in image_urls
+                        {"type": "image_url", "image_url": {"url": u, "detail": DEFAULT_VISION_DETAIL}} for u in image_urls
                     ],
                 }
 

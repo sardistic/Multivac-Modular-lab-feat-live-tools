@@ -12,6 +12,7 @@ from bot.chat_context import build_chat_context
 from bot.response_policy import apply_personality_overrides
 from providers.gemini_utils import generate_gemini_image
 from providers.openai_client import OPENAI_CHAT_MODEL
+from providers.openai_images import DEFAULT_VISION_DETAIL
 from providers.openai_utils import generate_openai_messages_response_with_tools, get_openai_client
 from providers.stability_utils import handle_image_generation
 from services.weather_utils import get_location_details, get_weather_data
@@ -202,11 +203,14 @@ async def handle_describe_image_intent(
     send_or_edit_with_truncation,
 ):
     describe_injection = (
-        "When asked to describe an image:\n"
-        "- Identify the setting, subjects, and any visible text (transcribe briefly).\n"
-        "- If humor/irony/meme is implied, explain *why* it's funny or incongruous.\n"
-        "- Point to 2–3 specific visual cues that support your explanation.\n"
-        "- Keep it concise and concrete."
+        "When asked to explain or describe an image, especially a screenshot or meme:\n"
+        "- Start with OCR first. Carefully read and transcribe all legible text before interpreting it.\n"
+        "- Pay special attention to nested quoted text, captions, usernames, timestamps, and small embedded text blocks.\n"
+        "- If any quoted or embedded text is only partly legible, give the best partial transcription and mark uncertain words with [...].\n"
+        "- Never leave a visible-text section blank or replace it with a dash when some text is readable.\n"
+        "- After transcription, explain the point, joke, irony, or argument in plain language.\n"
+        "- Ground the explanation in 2 to 3 specific visual or textual cues from the image.\n"
+        "- Keep the answer concise, but make it genuinely useful."
     )
     if ref_msg and (ref_msg.content or "").strip():
         if is_reply_to_bot:
@@ -218,14 +222,30 @@ async def handle_describe_image_intent(
 
     async def _describe():
         msgs = [
-            {"role": "system", "content": "Describe these images concisely. If text exists, transcribe it."},
+            {
+                "role": "system",
+                "content": (
+                    "You analyze screenshots, memes, and photos for Discord. "
+                    "Prioritize accurate reading of visible text before summarizing or explaining the image."
+                ),
+            },
             {"role": "system", "content": describe_injection},
         ]
         if reply_context:
             msgs.append({"role": "system", "content": reply_context})
+        user_prompt = (
+            f"User request: {prompt.strip() or 'Describe this image.'}\n\n"
+            "Answer in this order:\n"
+            "1. What the image is.\n"
+            "2. The visible text, including any quoted passage or embedded post text.\n"
+            "3. What the user should understand from it.\n"
+            "If some small text is hard to read, say that explicitly and give the best partial transcription instead of omitting it."
+        )
         msgs.append({
             "role": "user",
-            "content": [{"type": "text", "text": prompt}] + [{"type": "image_url", "image_url": {"url": u}} for u in image_urls],
+            "content": [{"type": "text", "text": user_prompt}] + [
+                {"type": "image_url", "image_url": {"url": u, "detail": DEFAULT_VISION_DETAIL}} for u in image_urls
+            ],
         })
         return await generate_openai_messages_response_with_tools(msgs, tools=[])
 

@@ -7,6 +7,8 @@ from typing import List, Optional
 
 import aiohttp
 
+DEFAULT_VISION_DETAIL = "high"
+
 
 def _guess_mime_from_bytes(first_bytes: bytes) -> str:
     if first_bytes.startswith(b"\x89PNG"):
@@ -67,7 +69,7 @@ def build_user_content_chat(prompt: str, image_urls: Optional[List[str]] = None)
     if image_urls:
         parts = [{"type": "text", "text": prompt}]
         for u in image_urls:
-            parts.append({"type": "image_url", "image_url": {"url": u}})
+            parts.append({"type": "image_url", "image_url": {"url": u, "detail": DEFAULT_VISION_DETAIL}})
         return parts
     return prompt
 
@@ -76,6 +78,6 @@ def build_user_content_responses(prompt: str, image_urls: Optional[List[str]] = 
     if image_urls:
         parts = [{"type": "input_text", "text": prompt}]
         for u in image_urls:
-            parts.append({"type": "input_image", "image_url": {"url": u}})
+            parts.append({"type": "input_image", "image_url": {"url": u}, "detail": DEFAULT_VISION_DETAIL})
         return parts
     return prompt
