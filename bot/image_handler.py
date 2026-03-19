@@ -111,6 +111,7 @@ def _build_image_explanation_messages(
     *,
     prompt: str,
     extracted_notes: str,
+    image_urls,
     reply_context: str,
     retry: bool = False,
 ):
@@ -145,7 +146,13 @@ def _build_image_explanation_messages(
         "If the quoted text is partially unreadable, say that briefly and still explain the likely meaning based on what is visible."
         f"{retry_line}"
     )
-    msgs.append({"role": "user", "content": explanation_prompt})
+    msgs.append(
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": explanation_prompt}]
+            + [{"type": "image_url", "image_url": {"url": u, "detail": DEFAULT_VISION_DETAIL}} for u in image_urls],
+        }
+    )
     return msgs
 
 
@@ -347,6 +354,7 @@ async def handle_describe_image_intent(
                 reply_context=reply_context,
             ),
             model=OPENAI_CHAT_MODEL,
+            temperature=0.0,
         )
         if extracted_notes.startswith("⚠️ OpenAI error:"):
             return extracted_notes
@@ -355,9 +363,11 @@ async def handle_describe_image_intent(
             _build_image_explanation_messages(
                 prompt=prompt,
                 extracted_notes=extracted_notes,
+                image_urls=image_urls,
                 reply_context=reply_context,
             ),
             model=OPENAI_CHAT_MODEL,
+            temperature=0.2,
         )
         if final_text.startswith("⚠️ OpenAI error:"):
             return final_text
@@ -367,10 +377,12 @@ async def handle_describe_image_intent(
                 _build_image_explanation_messages(
                     prompt=prompt,
                     extracted_notes=extracted_notes,
+                    image_urls=image_urls,
                     reply_context=reply_context,
                     retry=True,
                 ),
                 model=OPENAI_CHAT_MODEL,
+                temperature=0.2,
             )
             if retry_text and retry_text.strip():
                 final_text = retry_text
