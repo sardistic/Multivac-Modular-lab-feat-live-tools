@@ -102,6 +102,52 @@ class ImageDescriptionFlowTests(unittest.IsolatedAsyncioTestCase):
         sent_text = send_mock.await_args.args[0]
         self.assertIn("3. What it means / what you should understand", sent_text)
 
+    @patch("bot.image_handler.apply_personality_overrides", side_effect=lambda user_id, *, intent, text: text)
+    @patch("bot.image_handler.generate_openai_messages_response", new_callable=AsyncMock)
+    async def test_handle_describe_image_intent_falls_back_after_incomplete_repair(self, mock_generate, _mock_personality):
+        incomplete = (
+            "1. What the image is\n"
+            "It's a screenshot of a post quoting Dune.\n\n"
+            "2. The key text or quote\n"
+            "The photographed Dune passage reads"
+        )
+        mock_generate.side_effect = [
+            (
+                "1. Image type and setting\nA screenshot of an X post.\n\n"
+                "2. Visible text\nA Dune quote about turning thinking over to machines.\n\n"
+                "3. Uncertain or partially legible text\nA smaller quoted line is hard to read exactly.\n\n"
+                "4. Visual cues that matter\nThe screenshot highlights a book passage about machines and control."
+            ),
+            incomplete,
+            incomplete,
+            incomplete,
+        ]
+
+        status_msg = SimpleNamespace()
+
+        async def fake_live_status_with_progress(message, action_label, emoji, coro, duration_estimate, summarizer=None):
+            return status_msg, await coro
+
+        send_mock = AsyncMock()
+        message = SimpleNamespace(author=SimpleNamespace(id=123))
+
+        await image_handler.handle_describe_image_intent(
+            message=message,
+            prompt="explain this image and the quote in it what should i understand about it",
+            image_urls=["data:image/png;base64,abc"],
+            ref_msg=None,
+            is_reply_to_bot=False,
+            duration_estimate=8,
+            stream_ok=False,
+            live_status_with_progress=fake_live_status_with_progress,
+            send_or_edit_with_truncation=send_mock,
+        )
+
+        sent_text = send_mock.await_args.args[0]
+        self.assertIn("3. What it means / what you should understand", sent_text)
+        self.assertIn("warning about power and control", sent_text)
+        self.assertNotEqual(sent_text.rstrip().splitlines()[-1].strip(), "The photographed Dune passage reads")
+
 
 if __name__ == "__main__":
     unittest.main()

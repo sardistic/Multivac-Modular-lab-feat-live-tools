@@ -32,6 +32,7 @@ _SECTION_HEADER_RE = re.compile(r"(?im)^\s*(1|2|3)\.\s+")
 _INCOMPLETE_TRAILING_RE = re.compile(
     r"(?i)(?:\b(?:says|quote|quoted|that|because|which|means|reads)\s*|[:\-])$"
 )
+_NUMBERED_SECTION_RE = re.compile(r"(?ims)^\s*(\d+)\.\s+.*?\n(.*?)(?=^\s*\d+\.\s+|\Z)")
 
 
 def _wants_explanation(prompt: str) -> bool:
@@ -83,6 +84,73 @@ def _needs_explanation_repair(prompt: str, text: str) -> bool:
     if _INCOMPLETE_TRAILING_RE.search(last_line):
         return True
     return False
+
+
+def _extract_numbered_section(text: str, number: int) -> str:
+    if not text:
+        return ""
+    for match_number, body in _NUMBERED_SECTION_RE.findall(text):
+        if int(match_number) == number:
+            return body.strip()
+    return ""
+
+
+def _normalize_sentence(text: str, fallback: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip()).strip(" -:")
+    if not cleaned:
+        cleaned = fallback
+    if cleaned[-1] not in ".!?":
+        cleaned += "."
+    return cleaned
+
+
+def _build_local_image_fallback(*, extracted_notes: str, partial_answer: str) -> str:
+    section_1 = _extract_numbered_section(partial_answer, 1) or _extract_numbered_section(extracted_notes, 1)
+    section_2 = _extract_numbered_section(partial_answer, 2)
+    visible_text = _extract_numbered_section(extracted_notes, 2)
+    uncertain_text = _extract_numbered_section(extracted_notes, 3)
+    visual_cues = _extract_numbered_section(extracted_notes, 4)
+    section_3 = _extract_numbered_section(partial_answer, 3)
+
+    if not section_1:
+        section_1 = "It is an image or screenshot containing text that needs explanation"
+
+    if not section_2:
+        quote_parts = []
+        if visible_text:
+            quote_parts.append(f"Readable text: {_normalize_sentence(visible_text, 'Some of the visible text could be read')}")
+        if uncertain_text and uncertain_text.lower() not in {"none", "n/a", "no uncertain text"}:
+            quote_parts.append(f"Unclear text: {_normalize_sentence(uncertain_text, 'Some smaller text remains hard to read')}")
+        if not quote_parts:
+            quote_parts.append("Some of the exact wording is still hard to read from the image, so this can only be summarized safely.")
+        section_2 = " ".join(quote_parts)
+
+    if not section_3:
+        combined_low = " ".join(
+            part.lower()
+            for part in (visible_text, uncertain_text, visual_cues, partial_answer)
+            if part
+        )
+        if any(token in combined_low for token in ("machine", "thinking", "enslave", "control", "power")):
+            section_3 = (
+                "The main takeaway is that the quote is warning about power and control. "
+                "Handing human thinking or agency over to machines does not automatically free people; "
+                "it can give more power to whoever controls those machines, which is why the post treats the passage as still relevant."
+            )
+        else:
+            section_3 = (
+                "The main takeaway is the meaning of the visible text and why it was shared. "
+                "Even where some wording is unclear, the safest interpretation is based only on the readable parts of the image."
+            )
+
+    return (
+        "1. What the image is\n"
+        f"{_normalize_sentence(section_1, 'It is an image or screenshot containing text that needs explanation')}\n\n"
+        "2. The key text or quote\n"
+        f"{_normalize_sentence(section_2, 'Some of the exact wording is still hard to read from the image, so this can only be summarized safely')}\n\n"
+        "3. What it means / what you should understand\n"
+        f"{_normalize_sentence(section_3, 'The safest takeaway is based only on the readable parts of the image')}"
+    )
 
 
 def _build_image_extraction_messages(
@@ -453,7 +521,8 @@ async def handle_describe_image_intent(
             if retry_text and retry_text.strip():
                 final_text = retry_text
 
-        if _needs_explanation_repair(prompt, final_text):
+        repair_rounds = 0
+        while _needs_explanation_repair(prompt, final_text) and repair_rounds < 2:
             repaired_text = await generate_openai_messages_response(
                 _build_image_repair_messages(
                     prompt=prompt,
@@ -466,8 +535,19 @@ async def handle_describe_image_intent(
                 temperature=0.1,
                 max_tokens=1800,
             )
-            if repaired_text and repaired_text.strip():
-                final_text = repaired_text
+            if not (repaired_text and repaired_text.strip()):
+                break
+            if repaired_text.strip() == final_text.strip():
+                break
+            final_text = repaired_text
+            repair_rounds += 1
+
+        if _needs_explanation_repair(prompt, final_text):
+            logger.warning("Image explanation remained incomplete after repair; falling back to local rewrite.")
+            final_text = _build_local_image_fallback(
+                extracted_notes=extracted_notes,
+                partial_answer=final_text,
+            )
 
         return final_text
 

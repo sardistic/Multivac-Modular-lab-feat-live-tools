@@ -94,6 +94,38 @@ def _extract_responses_text(resp: Any) -> str:
         return ""
 
 
+def _responses_incomplete_reason(resp: Any) -> str:
+    try:
+        details = getattr(resp, "incomplete_details", None)
+        if details is None and isinstance(resp, dict):
+            details = resp.get("incomplete_details")
+        if not details:
+            return ""
+        if isinstance(details, dict):
+            return str(details.get("reason") or details.get("type") or "").lower()
+        return str(getattr(details, "reason", None) or getattr(details, "type", None) or "").lower()
+    except Exception:
+        return ""
+
+
+def _responses_needs_continuation(resp: Any) -> bool:
+    try:
+        status = getattr(resp, "status", None)
+        if status is None and isinstance(resp, dict):
+            status = resp.get("status")
+        if str(status or "").lower() == "incomplete":
+            return True
+    except Exception:
+        pass
+
+    return _responses_incomplete_reason(resp) in {
+        "length",
+        "max_output_tokens",
+        "max_tokens",
+        "output_too_long",
+    }
+
+
 def _merge_continuation(existing: str, continuation: str) -> str:
     if not existing:
         return continuation
@@ -226,6 +258,56 @@ async def _collect_chat_text_with_continuations(
     return combined
 
 
+async def _collect_responses_text_with_continuations(
+    *,
+    messages: List[Dict[str, Any]],
+    first_resp,
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    max_rounds: int = 2,
+) -> str:
+    text = (_extract_responses_text(first_resp) or "").strip()
+    _check_soft_refusal(text)
+    if not _responses_needs_continuation(first_resp):
+        return text
+
+    current_input = list(messages)
+    assistant_text = text
+    combined = text
+
+    for _ in range(max_rounds):
+        if assistant_text:
+            current_input.append(
+                {
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": assistant_text}],
+                }
+            )
+        current_input.append(
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": CONTINUE_PROMPT}],
+            }
+        )
+
+        resp = await get_openai_client().responses.create(
+            model=model,
+            input=current_input,
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+        assistant_text = (_extract_responses_text(resp) or "").strip()
+        _check_soft_refusal(assistant_text)
+        if assistant_text:
+            combined = _merge_continuation(combined, assistant_text)
+        if not _responses_needs_continuation(resp):
+            break
+
+    return combined
+
+
 async def _exec_tool(name: str, args: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> str:
     logging.debug("[openai.tools] Executing %s with args=%s", name, list(args.keys()))
     try:
@@ -349,7 +431,14 @@ async def generate_openai_response(
                 temperature=temperature,
                 max_output_tokens=max_tokens,
             )
-            return _extract_responses_text(resp) or "I’m not sure yet—could you clarify what you need?"
+            text = await _collect_responses_text_with_continuations(
+                messages=msgs,
+                first_resp=resp,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return text or "I’m not sure yet—could you clarify what you need?"
 
         msgs.append({"role": "user", "content": build_user_content_chat(prompt, img_norm)})
         resp = await _create_chat_completion_with_token_fallback(
@@ -388,7 +477,14 @@ async def generate_openai_messages_response(
                 max_output_tokens=max_tokens,
                 temperature=temperature,
             )
-            return _extract_responses_text(resp) or "I’m not sure yet—could you clarify what you need?"
+            text = await _collect_responses_text_with_continuations(
+                messages=norm,
+                first_resp=resp,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return text or "I’m not sure yet—could you clarify what you need?"
 
         resp = await _create_chat_completion_with_token_fallback(
             model=model,
