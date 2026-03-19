@@ -355,6 +355,7 @@ async def handle_describe_image_intent(
             ),
             model=OPENAI_CHAT_MODEL,
             temperature=0.0,
+            max_tokens=1400,
         )
         if extracted_notes.startswith("⚠️ OpenAI error:"):
             return extracted_notes
@@ -368,6 +369,7 @@ async def handle_describe_image_intent(
             ),
             model=OPENAI_CHAT_MODEL,
             temperature=0.2,
+            max_tokens=1400,
         )
         if final_text.startswith("⚠️ OpenAI error:"):
             return final_text
@@ -383,6 +385,7 @@ async def handle_describe_image_intent(
                 ),
                 model=OPENAI_CHAT_MODEL,
                 temperature=0.2,
+                max_tokens=1400,
             )
             if retry_text and retry_text.strip():
                 final_text = retry_text

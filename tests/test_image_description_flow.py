@@ -76,6 +76,9 @@ class ImageDescriptionFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_generate.await_args_list[0].kwargs["temperature"], 0.0)
         self.assertEqual(mock_generate.await_args_list[1].kwargs["temperature"], 0.2)
         self.assertEqual(mock_generate.await_args_list[2].kwargs["temperature"], 0.2)
+        self.assertEqual(mock_generate.await_args_list[0].kwargs["max_tokens"], 1400)
+        self.assertEqual(mock_generate.await_args_list[1].kwargs["max_tokens"], 1400)
+        self.assertEqual(mock_generate.await_args_list[2].kwargs["max_tokens"], 1400)
         explanation_user_content = mock_generate.await_args_list[1].args[0][-1]["content"]
         self.assertEqual(explanation_user_content[1]["type"], "image_url")
         sent_text = send_mock.await_args.args[0]

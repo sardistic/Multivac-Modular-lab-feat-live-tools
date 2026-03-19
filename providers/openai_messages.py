@@ -41,6 +41,10 @@ def _check_soft_refusal(text: str):
 
 
 TOOLS_DEF = TOOL_SPECS
+CONTINUE_PROMPT = (
+    "Continue exactly where you left off. "
+    "Do not restart, do not repeat earlier text, and complete the unfinished sentence first."
+)
 
 
 def _normalize_tools(tools: list | None) -> list:
@@ -88,6 +92,19 @@ def _extract_responses_text(resp: Any) -> str:
         return "\n".join(collected).strip()
     except Exception:
         return ""
+
+
+def _merge_continuation(existing: str, continuation: str) -> str:
+    if not existing:
+        return continuation
+    if not continuation:
+        return existing
+
+    max_overlap = min(len(existing), len(continuation), 200)
+    for size in range(max_overlap, 0, -1):
+        if existing[-size:] == continuation[:size]:
+            return existing + continuation[size:]
+    return existing + continuation
 
 
 def _normalize_messages_for_responses(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -159,6 +176,54 @@ async def _create_chat_completion_with_token_fallback(
                 max_tokens=max_tokens,
             )
         raise
+
+
+async def _collect_chat_text_with_continuations(
+    *,
+    messages: List[Dict[str, Any]],
+    first_resp,
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    max_rounds: int = 2,
+) -> str:
+    choice = first_resp.choices[0]
+    if choice.finish_reason == "content_filter":
+        raise OpenAIModerationError("Response blocked by OpenAI content filter.")
+
+    msg = choice.message
+    text = (msg.content or "").strip()
+    _check_soft_refusal(text)
+    if choice.finish_reason != "length":
+        return text
+
+    current_messages = list(messages)
+    assistant_text = text
+    combined = text
+
+    for _ in range(max_rounds):
+        if assistant_text:
+            current_messages.append({"role": "assistant", "content": assistant_text})
+        current_messages.append({"role": "user", "content": CONTINUE_PROMPT})
+
+        resp = await _create_chat_completion_with_token_fallback(
+            model=model,
+            messages=current_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        choice = resp.choices[0]
+        if choice.finish_reason == "content_filter":
+            raise OpenAIModerationError("Response blocked by OpenAI content filter.")
+
+        assistant_text = (choice.message.content or "").strip()
+        _check_soft_refusal(assistant_text)
+        if assistant_text:
+            combined = _merge_continuation(combined, assistant_text)
+        if choice.finish_reason != "length":
+            break
+
+    return combined
 
 
 async def _exec_tool(name: str, args: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> str:
@@ -293,12 +358,13 @@ async def generate_openai_response(
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        choice = resp.choices[0]
-        if choice.finish_reason == "content_filter":
-            raise OpenAIModerationError("Response blocked by OpenAI content filter.")
-        text = (choice.message.content or "").strip()
-        _check_soft_refusal(text)
-        return text
+        return await _collect_chat_text_with_continuations(
+            messages=msgs,
+            first_resp=resp,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
     except Exception as e:
         if isinstance(e, OpenAIModerationError):
             raise
@@ -330,12 +396,13 @@ async def generate_openai_messages_response(
             max_tokens=max_tokens,
             temperature=temperature,
         )
-        choice = resp.choices[0]
-        if choice.finish_reason == "content_filter":
-            raise OpenAIModerationError("Response blocked by OpenAI content filter.")
-        text = (choice.message.content or "").strip()
-        _check_soft_refusal(text)
-        return text
+        return await _collect_chat_text_with_continuations(
+            messages=messages,
+            first_resp=resp,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
     except Exception as e:
         if isinstance(e, OpenAIModerationError):
             raise
