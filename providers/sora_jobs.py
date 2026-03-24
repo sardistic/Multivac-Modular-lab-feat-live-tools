@@ -6,7 +6,7 @@ import logging
 from typing import Any, Dict, Optional
 
 import aiohttp
-from PIL import Image
+from PIL import Image, ImageOps
 
 from providers.sora_client import API_BASE, build_session, sora_headers
 
@@ -66,6 +66,43 @@ def select_reference_video_size(
     return selected
 
 
+def prepare_reference_image_for_size(
+    image_data: bytes,
+    size: str,
+    output_format: str = "PNG",
+) -> bytes:
+    if not image_data:
+        return image_data
+
+    target_width, target_height = _size_dims(size)
+    try:
+        with Image.open(BytesIO(image_data)) as image:
+            src = ImageOps.exif_transpose(image)
+            if src.mode not in ("RGB", "RGBA"):
+                src = src.convert("RGBA" if "A" in src.getbands() else "RGB")
+
+            # Preserve the full subject by fitting inside the target frame,
+            # then center it on a solid background sized for Sora.
+            fitted = ImageOps.contain(src, (target_width, target_height), method=Image.Resampling.LANCZOS)
+            if fitted.mode != "RGB":
+                fitted = fitted.convert("RGBA")
+                background = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 255))
+                offset = ((target_width - fitted.width) // 2, (target_height - fitted.height) // 2)
+                background.alpha_composite(fitted, dest=offset)
+                output = background.convert("RGB")
+            else:
+                output = Image.new("RGB", (target_width, target_height), (0, 0, 0))
+                offset = ((target_width - fitted.width) // 2, (target_height - fitted.height) // 2)
+                output.paste(fitted, offset)
+
+            buf = BytesIO()
+            output.save(buf, format=output_format)
+            return buf.getvalue()
+    except Exception as e:
+        logger.warning("Failed to normalize Sora reference image to %s: %s", size, e)
+        return image_data
+
+
 async def create_sora_job(
     prompt: str,
     model: str = "sora-2-pro",
@@ -83,6 +120,10 @@ async def create_sora_job(
             default_size=DEFAULT_VIDEO_SIZE,
             model=model,
         )
+    if image_data:
+        image_data = prepare_reference_image_for_size(image_data, resolved_size)
+        image_filename = "input.png"
+        image_content_type = "image/png"
 
     if image_data:
         data = aiohttp.FormData()

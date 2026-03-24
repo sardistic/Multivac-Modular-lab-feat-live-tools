@@ -125,6 +125,22 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(selected, "720x1280")
 
+    def test_prepare_reference_image_for_size_matches_exact_target_dimensions(self):
+        image_data = self._png_bytes(500, 757)
+
+        prepared = sora_jobs.prepare_reference_image_for_size(image_data, "720x1280")
+
+        with Image.open(BytesIO(prepared)) as img:
+            self.assertEqual(img.size, (720, 1280))
+
+    def test_prepare_reference_image_for_size_preserves_existing_matching_dimensions(self):
+        image_data = self._png_bytes(720, 1280)
+
+        prepared = sora_jobs.prepare_reference_image_for_size(image_data, "720x1280")
+
+        with Image.open(BytesIO(prepared)) as img:
+            self.assertEqual(img.size, (720, 1280))
+
 
 if __name__ == "__main__":
     unittest.main()
