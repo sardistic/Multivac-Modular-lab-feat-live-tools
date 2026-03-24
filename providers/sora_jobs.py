@@ -1,30 +1,75 @@
 from __future__ import annotations
 
+import math
+from io import BytesIO
 import logging
 from typing import Any, Dict, Optional
 
 import aiohttp
+from PIL import Image
 
 from providers.sora_client import API_BASE, build_session, sora_headers
 
 logger = logging.getLogger("sora_utils")
+DEFAULT_VIDEO_SIZE = "1280x720"
+SUPPORTED_VIDEO_SIZES = ("720x1280", "1280x720", "1024x1792", "1792x1024")
+
+
+def _size_dims(size: str) -> tuple[int, int]:
+    width_text, height_text = str(size).split("x", 1)
+    return int(width_text), int(height_text)
+
+
+def select_reference_video_size(image_data: bytes, default_size: str = DEFAULT_VIDEO_SIZE) -> str:
+    if not image_data:
+        return default_size
+
+    try:
+        with Image.open(BytesIO(image_data)) as image:
+            width, height = image.size
+    except Exception as e:
+        logger.warning("Failed to inspect Sora reference image size: %s", e)
+        return default_size
+
+    if width <= 0 or height <= 0 or width == height:
+        return default_size
+
+    image_ratio = width / height
+    if width > height:
+        candidates = [size for size in SUPPORTED_VIDEO_SIZES if _size_dims(size)[0] > _size_dims(size)[1]]
+    else:
+        candidates = [size for size in SUPPORTED_VIDEO_SIZES if _size_dims(size)[0] < _size_dims(size)[1]]
+
+    def _score(size: str) -> tuple[float, int]:
+        target_width, target_height = _size_dims(size)
+        target_ratio = target_width / target_height
+        # Log-space keeps portrait/landscape ratio comparisons symmetric.
+        return abs(math.log(image_ratio / target_ratio)), 0 if size == default_size else 1
+
+    selected = min(candidates or list(SUPPORTED_VIDEO_SIZES), key=_score)
+    logger.info("Auto-selected Sora size %s for reference image %sx%s", selected, width, height)
+    return selected
 
 
 async def create_sora_job(
     prompt: str,
     model: str = "sora-2-pro",
-    size: str = "1280x720",
+    size: Optional[str] = None,
     seconds: int = 8,
     image_data: bytes = None,
     image_filename: Optional[str] = None,
     image_content_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     url = f"{API_BASE}/videos"
+    resolved_size = size or DEFAULT_VIDEO_SIZE
+    if image_data and size in (None, "", "auto"):
+        resolved_size = select_reference_video_size(image_data, default_size=DEFAULT_VIDEO_SIZE)
+
     if image_data:
         data = aiohttp.FormData()
         data.add_field("model", model)
         data.add_field("prompt", prompt)
-        data.add_field("size", size)
+        data.add_field("size", resolved_size)
         data.add_field("seconds", str(seconds))
         data.add_field(
             "input_reference",
@@ -40,7 +85,7 @@ async def create_sora_job(
                     return {"ok": False, "error": f"API {resp.status}: {text}"}
                 return {"ok": True, "data": await resp.json()}
 
-    payload = {"model": model, "prompt": prompt, "size": size, "seconds": str(seconds)}
+    payload = {"model": model, "prompt": prompt, "size": resolved_size, "seconds": str(seconds)}
     async with build_session() as session:
         async with session.post(url, headers=sora_headers(json_content=True), json=payload) as resp:
             if resp.status not in (200, 201, 202):

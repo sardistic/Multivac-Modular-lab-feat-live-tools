@@ -1,12 +1,20 @@
 import unittest
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from bot import chat_handler, video_handler
+from PIL import Image
+from providers import sora_jobs
 from services import tool_handlers
 
 
 class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
+    def _png_bytes(self, width: int, height: int) -> bytes:
+        buf = BytesIO()
+        Image.new("RGB", (width, height), color="white").save(buf, format="PNG")
+        return buf.getvalue()
+
     async def test_resolve_video_reference_upload_uses_collected_image_inputs(self):
         message = SimpleNamespace(attachments=[])
 
@@ -88,6 +96,27 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_create_job.await_args.kwargs["image_data"], b"foo")
         self.assertEqual(mock_create_job.await_args.kwargs["image_filename"], "tool_input_1.png")
         self.assertEqual(mock_create_job.await_args.kwargs["image_content_type"], "image/png")
+
+    def test_select_reference_video_size_prefers_closest_landscape_ratio(self):
+        image_data = self._png_bytes(1500, 1000)
+
+        selected = sora_jobs.select_reference_video_size(image_data)
+
+        self.assertEqual(selected, "1792x1024")
+
+    def test_select_reference_video_size_prefers_closest_portrait_ratio(self):
+        image_data = self._png_bytes(1080, 1920)
+
+        selected = sora_jobs.select_reference_video_size(image_data)
+
+        self.assertEqual(selected, "720x1280")
+
+    def test_select_reference_video_size_keeps_default_for_square_images(self):
+        image_data = self._png_bytes(1024, 1024)
+
+        selected = sora_jobs.select_reference_video_size(image_data)
+
+        self.assertEqual(selected, sora_jobs.DEFAULT_VIDEO_SIZE)
 
 
 if __name__ == "__main__":
