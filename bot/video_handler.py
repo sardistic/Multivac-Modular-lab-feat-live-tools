@@ -191,7 +191,7 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
         return f, None
 
     status_msg, result = await live_status_with_progress(
-        confirm_msg,
+        message,
         action_label=f"Generating ({selected_model}, {selected_seconds}s)",
         emoji="🎥",
         coro=_generate_video_task(),
