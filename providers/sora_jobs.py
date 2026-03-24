@@ -10,7 +10,15 @@ from providers.sora_client import API_BASE, build_session, sora_headers
 logger = logging.getLogger("sora_utils")
 
 
-async def create_sora_job(prompt: str, model: str = "sora-2-pro", size: str = "1280x720", seconds: int = 8, image_data: bytes = None) -> Dict[str, Any]:
+async def create_sora_job(
+    prompt: str,
+    model: str = "sora-2-pro",
+    size: str = "1280x720",
+    seconds: int = 8,
+    image_data: bytes = None,
+    image_filename: Optional[str] = None,
+    image_content_type: Optional[str] = None,
+) -> Dict[str, Any]:
     url = f"{API_BASE}/videos"
     if image_data:
         data = aiohttp.FormData()
@@ -18,7 +26,12 @@ async def create_sora_job(prompt: str, model: str = "sora-2-pro", size: str = "1
         data.add_field("prompt", prompt)
         data.add_field("size", size)
         data.add_field("seconds", str(seconds))
-        data.add_field("input_reference", image_data, filename="input.jpg", content_type="image/jpeg")
+        data.add_field(
+            "input_reference",
+            image_data,
+            filename=image_filename or "input.png",
+            content_type=image_content_type or "image/png",
+        )
         async with build_session() as session:
             async with session.post(url, headers=sora_headers(), data=data) as resp:
                 if resp.status not in (200, 201, 202):

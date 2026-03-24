@@ -142,6 +142,7 @@ async def dispatch_intent(
             user_id=user_id,
             live_status_with_progress=live_status_with_progress,
             stream_ok=stream_ok,
+            image_urls=image_urls,
         )
         return True
 

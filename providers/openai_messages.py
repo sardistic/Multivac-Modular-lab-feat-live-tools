@@ -652,7 +652,7 @@ async def generate_openai_response_tools(
     return await generate_openai_messages_response_with_tools(
         messages,
         tools=TOOLS_DEF,
-        tool_context={"conversation_id": conversation_id, "user_id": str(user_id)},
+        tool_context={"conversation_id": conversation_id, "user_id": str(user_id), "image_urls": image_list or []},
         model=OPENAI_CHAT_MODEL,
         max_tokens=max_tokens,
         temperature=temperature,
