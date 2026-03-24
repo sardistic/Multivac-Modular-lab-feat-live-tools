@@ -137,7 +137,7 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
             job = await create_sora_job(
                 prompt,
                 model=selected_model,
-                size="1280x720",
+                size=None if image_data else "1280x720",
                 seconds=selected_seconds,
                 image_data=image_data,
                 image_filename=image_filename,
