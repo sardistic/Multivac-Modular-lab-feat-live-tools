@@ -97,6 +97,41 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_create_job.await_args.kwargs["image_filename"], "tool_input_1.png")
         self.assertEqual(mock_create_job.await_args.kwargs["image_content_type"], "image/png")
 
+    @patch("bot.video_handler.check_sora_limit", return_value=True)
+    async def test_handle_generate_video_intent_uses_original_message_for_status_handoff(self, _mock_limit):
+        class FakeView:
+            def __init__(self, author_id):
+                self.author_id = author_id
+                self.value = "sora-2|4"
+
+            async def wait(self):
+                return
+
+        confirm_msg = SimpleNamespace(edit=AsyncMock())
+        message = SimpleNamespace(
+            attachments=[],
+            reply=AsyncMock(return_value=confirm_msg),
+        )
+        captured = {}
+
+        async def fake_live_status_with_progress(base_message, **kwargs):
+            captured["base_message"] = base_message
+            kwargs["coro"].close()
+            status_msg = SimpleNamespace(edit=AsyncMock(), reply=AsyncMock())
+            return status_msg, (None, "stopped")
+
+        with patch("bot.video_handler.SoraConfirmationView", FakeView):
+            await video_handler.handle_generate_video_intent(
+                message=message,
+                prompt="generate a video of this",
+                user_id=123,
+                live_status_with_progress=fake_live_status_with_progress,
+                stream_ok=False,
+                image_urls=None,
+            )
+
+        self.assertIs(captured["base_message"], message)
+
     def test_select_reference_video_size_prefers_closest_landscape_ratio(self):
         image_data = self._png_bytes(1500, 1000)
 
