@@ -41,6 +41,7 @@ async def handle_chat_intent(
                 "guild_id": message.guild.id if message.guild else "DM",
                 "channel_id": message.channel.id,
                 "user_id": user_id,
+                "image_urls": image_urls or [],
             }
 
             if "gemini" in selected_model.lower():

@@ -229,7 +229,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "generate_sora_video",
-            "description": "Generate a video using OpenAI Sora. STRICT LIMIT: 2 videos per user per hour.",
+            "description": "Generate a video using OpenAI Sora. If the current message includes images, the first image is used as a reference automatically. STRICT LIMIT: 2 videos per user per hour.",
             "parameters": {
                 "type": "object",
                 "properties": {

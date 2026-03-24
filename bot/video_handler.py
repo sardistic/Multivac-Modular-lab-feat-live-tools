@@ -4,10 +4,32 @@ import logging
 
 import discord
 
+from providers.openai_images import image_input_to_upload
 from services.database_utils import check_sora_limit, get_last_sora_video_id, log_sora_usage
 from providers.sora_utils import create_sora_job, download_sora_content, get_sora_status, remix_sora_video
 
 logger = logging.getLogger("discord_bot")
+
+
+async def _resolve_video_reference_upload(message, image_urls=None):
+    if message.attachments:
+        for att in message.attachments:
+            if att.content_type and att.content_type.startswith("image/"):
+                try:
+                    image_data = await att.read()
+                    logger.info("Received image attachment for Sora: %s (%s bytes)", att.filename, len(image_data))
+                    return image_data, (att.filename or "input"), (att.content_type or "image/png")
+                except Exception as e:
+                    logger.error("Failed to download attachment: %s", e)
+
+    for idx, image_input in enumerate(image_urls or [], start=1):
+        upload = await image_input_to_upload(image_input, fallback_name=f"input_{idx}")
+        if upload:
+            image_data, filename, content_type = upload
+            logger.info("Resolved Sora reference image from collected inputs: %s (%s bytes)", filename, len(image_data))
+            return image_data, filename, content_type
+
+    return None
 
 
 class SoraConfigSelect(discord.ui.Select):
@@ -48,25 +70,21 @@ class SoraConfirmationView(discord.ui.View):
         self.stop()
 
 
-async def handle_generate_video_intent(message, prompt: str, user_id, live_status_with_progress, stream_ok: bool):
+async def handle_generate_video_intent(message, prompt: str, user_id, live_status_with_progress, stream_ok: bool, image_urls=None):
     if not check_sora_limit(str(user_id), limit=2, window_seconds=3600):
         await message.reply("⏳ You have reached the limit of 2 Sora videos per hour. Please try again later.")
         return
 
     image_data = None
+    image_filename = None
+    image_content_type = None
     is_remix = False
     base_fail_msg = "Generation failed."
 
-    if message.attachments:
-        for att in message.attachments:
-            if att.content_type and att.content_type.startswith("image/"):
-                try:
-                    image_data = await att.read()
-                    base_fail_msg = "Image-to-Video failed."
-                    logger.info(f"Received image attachment for Sora: {att.filename} ({len(image_data)} bytes)")
-                    break
-                except Exception as e:
-                    logger.error(f"Failed to download attachment: {e}")
+    reference_upload = await _resolve_video_reference_upload(message, image_urls=image_urls)
+    if reference_upload:
+        image_data, image_filename, image_content_type = reference_upload
+        base_fail_msg = "Image-to-Video failed."
 
     remix_target_id = None
     lower_prompt = prompt.lower()
@@ -122,6 +140,8 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
                 size="1280x720",
                 seconds=selected_seconds,
                 image_data=image_data,
+                image_filename=image_filename,
+                image_content_type=image_content_type,
             )
 
         if not job.get("ok"):

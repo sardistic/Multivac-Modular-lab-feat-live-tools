@@ -301,6 +301,7 @@ async def handle_update_behavioral_instruction(args: Dict[str, Any]) -> Dict[str
 
 
 async def handle_generate_sora_video(args: Dict[str, Any]) -> Dict[str, Any]:
+    from providers.openai_images import image_input_to_upload
     from providers.sora_utils import create_sora_job
     from services.database_utils import check_sora_limit, log_sora_usage
 
@@ -320,7 +321,21 @@ async def handle_generate_sora_video(args: Dict[str, Any]) -> Dict[str, Any]:
     if not prompt:
         return {"ok": False, "error": "missing_prompt"}
 
-    result = await create_sora_job(prompt)
+    image_data = None
+    image_filename = None
+    image_content_type = None
+    for idx, image_input in enumerate((ctx.get("image_urls") or args.get("image_urls") or []), start=1):
+        upload = await image_input_to_upload(image_input, fallback_name=f"tool_input_{idx}")
+        if upload:
+            image_data, image_filename, image_content_type = upload
+            break
+
+    result = await create_sora_job(
+        prompt,
+        image_data=image_data,
+        image_filename=image_filename,
+        image_content_type=image_content_type,
+    )
     if result.get("ok"):
         video_id = ((result.get("data") or {}).get("id"))
         log_sora_usage(user_id, video_id=video_id)
