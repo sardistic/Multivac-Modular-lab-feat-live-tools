@@ -13,6 +13,7 @@ from providers.sora_client import API_BASE, build_session, sora_headers
 logger = logging.getLogger("sora_utils")
 DEFAULT_VIDEO_SIZE = "1280x720"
 SUPPORTED_VIDEO_SIZES = ("720x1280", "1280x720", "1024x1792", "1792x1024")
+STANDARD_VIDEO_SIZES = ("720x1280", "1280x720")
 
 
 def _size_dims(size: str) -> tuple[int, int]:
@@ -20,7 +21,20 @@ def _size_dims(size: str) -> tuple[int, int]:
     return int(width_text), int(height_text)
 
 
-def select_reference_video_size(image_data: bytes, default_size: str = DEFAULT_VIDEO_SIZE) -> str:
+def supported_video_sizes_for_model(model: str) -> tuple[str, ...]:
+    model_name = (model or "").strip().lower()
+    if model_name.startswith("sora-2-pro"):
+        return SUPPORTED_VIDEO_SIZES
+    if model_name.startswith("sora-2"):
+        return STANDARD_VIDEO_SIZES
+    return STANDARD_VIDEO_SIZES
+
+
+def select_reference_video_size(
+    image_data: bytes,
+    default_size: str = DEFAULT_VIDEO_SIZE,
+    model: str = "sora-2-pro",
+) -> str:
     if not image_data:
         return default_size
 
@@ -34,11 +48,12 @@ def select_reference_video_size(image_data: bytes, default_size: str = DEFAULT_V
     if width <= 0 or height <= 0 or width == height:
         return default_size
 
+    supported_sizes = supported_video_sizes_for_model(model)
     image_ratio = width / height
     if width > height:
-        candidates = [size for size in SUPPORTED_VIDEO_SIZES if _size_dims(size)[0] > _size_dims(size)[1]]
+        candidates = [size for size in supported_sizes if _size_dims(size)[0] > _size_dims(size)[1]]
     else:
-        candidates = [size for size in SUPPORTED_VIDEO_SIZES if _size_dims(size)[0] < _size_dims(size)[1]]
+        candidates = [size for size in supported_sizes if _size_dims(size)[0] < _size_dims(size)[1]]
 
     def _score(size: str) -> tuple[float, int]:
         target_width, target_height = _size_dims(size)
@@ -46,8 +61,8 @@ def select_reference_video_size(image_data: bytes, default_size: str = DEFAULT_V
         # Log-space keeps portrait/landscape ratio comparisons symmetric.
         return abs(math.log(image_ratio / target_ratio)), 0 if size == default_size else 1
 
-    selected = min(candidates or list(SUPPORTED_VIDEO_SIZES), key=_score)
-    logger.info("Auto-selected Sora size %s for reference image %sx%s", selected, width, height)
+    selected = min(candidates or list(supported_sizes), key=_score)
+    logger.info("Auto-selected Sora size %s for model %s and reference image %sx%s", selected, model, width, height)
     return selected
 
 
@@ -63,7 +78,11 @@ async def create_sora_job(
     url = f"{API_BASE}/videos"
     resolved_size = size or DEFAULT_VIDEO_SIZE
     if image_data and size in (None, "", "auto"):
-        resolved_size = select_reference_video_size(image_data, default_size=DEFAULT_VIDEO_SIZE)
+        resolved_size = select_reference_video_size(
+            image_data,
+            default_size=DEFAULT_VIDEO_SIZE,
+            model=model,
+        )
 
     if image_data:
         data = aiohttp.FormData()

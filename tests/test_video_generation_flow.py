@@ -100,23 +100,30 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
     def test_select_reference_video_size_prefers_closest_landscape_ratio(self):
         image_data = self._png_bytes(1500, 1000)
 
-        selected = sora_jobs.select_reference_video_size(image_data)
+        selected = sora_jobs.select_reference_video_size(image_data, model="sora-2-pro")
 
         self.assertEqual(selected, "1792x1024")
 
     def test_select_reference_video_size_prefers_closest_portrait_ratio(self):
         image_data = self._png_bytes(1080, 1920)
 
-        selected = sora_jobs.select_reference_video_size(image_data)
+        selected = sora_jobs.select_reference_video_size(image_data, model="sora-2")
 
         self.assertEqual(selected, "720x1280")
 
     def test_select_reference_video_size_keeps_default_for_square_images(self):
         image_data = self._png_bytes(1024, 1024)
 
-        selected = sora_jobs.select_reference_video_size(image_data)
+        selected = sora_jobs.select_reference_video_size(image_data, model="sora-2")
 
         self.assertEqual(selected, sora_jobs.DEFAULT_VIDEO_SIZE)
+
+    def test_select_reference_video_size_limits_standard_model_to_standard_sizes(self):
+        image_data = self._png_bytes(500, 757)
+
+        selected = sora_jobs.select_reference_video_size(image_data, model="sora-2")
+
+        self.assertEqual(selected, "720x1280")
 
 
 if __name__ == "__main__":
