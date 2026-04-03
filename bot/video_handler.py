@@ -258,6 +258,14 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
     selected_model = selected_config["model"]
     selected_seconds = int(selected_config["seconds"])
     estimated_cost = float(selected_config["cost"])
+    logger.info(
+        "Video configuration selected: provider=%s label=%s model=%s seconds=%s has_reference=%s",
+        provider,
+        provider_label,
+        selected_model,
+        selected_seconds,
+        bool(image_data),
+    )
 
     if provider == "sora":
         if not check_sora_limit(str(user_id), limit=2, window_seconds=3600):

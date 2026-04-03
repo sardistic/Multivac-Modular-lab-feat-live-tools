@@ -146,9 +146,11 @@ async def generate_veo_video(
             mime_type=image_content_type or "image/png",
         )
 
+    aspect_ratio = _select_veo_aspect_ratio(image_data)
+
     config = types.GenerateVideosConfig(
         duration_seconds=int(seconds),
-        aspect_ratio=_select_veo_aspect_ratio(image_data),
+        aspect_ratio=aspect_ratio,
         resolution=DEFAULT_VEO_RESOLUTION,
     )
 
@@ -157,6 +159,15 @@ async def generate_veo_video(
     # Gemini API currently raises a client-side validation error.
     if generate_audio:
         logger.info("Ignoring generate_audio=True for Gemini Veo request; audio is handled natively by the model.")
+
+    logger.info(
+        "Submitting Veo job (model=%s, seconds=%s, resolution=%s, aspect_ratio=%s, has_reference=%s)",
+        model,
+        seconds,
+        DEFAULT_VEO_RESOLUTION,
+        aspect_ratio,
+        bool(image_data),
+    )
 
     try:
         operation = await asyncio.to_thread(
@@ -172,31 +183,48 @@ async def generate_veo_video(
 
     started_at = asyncio.get_running_loop().time()
     expected_runtime = estimate_veo_runtime(model, seconds)
+    operation_name = _safe_attr(operation, "name", "<unknown>")
+    logger.info(
+        "Veo job started: %s (model=%s, seconds=%s, expected_runtime=%ss)",
+        operation_name,
+        model,
+        seconds,
+        expected_runtime,
+    )
 
     while not bool(_safe_attr(operation, "done", False)):
         await asyncio.sleep(8)
+        elapsed = asyncio.get_running_loop().time() - started_at
         if progress_state is not None:
-            elapsed = asyncio.get_running_loop().time() - started_at
             progress_state["status"] = "Waiting on Veo"
             progress_state["progress"] = min(0.92, max(0.10, elapsed / expected_runtime))
         try:
             operation = await asyncio.to_thread(client.operations.get, operation)
+            logger.info(
+                "Veo poll: %s done=%s elapsed=%ss",
+                operation_name,
+                bool(_safe_attr(operation, "done", False)),
+                int(elapsed),
+            )
         except Exception as e:
             logger.warning("Veo poll failed: %s", e)
 
-        if asyncio.get_running_loop().time() - started_at > 900:
+        if elapsed > 900:
             return None, "Timeout waiting for Veo video generation."
 
     error = _safe_attr(operation, "error")
     if error:
+        logger.warning("Veo job failed: %s error=%s", operation_name, _extract_error_message(error))
         return None, _extract_error_message(error)
 
     generated_video = _extract_generated_video(operation)
     if not generated_video:
         return None, "Veo did not return a generated video."
 
+    logger.info("Veo job completed: %s", operation_name)
     video_file = _safe_attr(generated_video, "video", generated_video)
     try:
+        logger.info("Downloading Veo video: %s", operation_name)
         content = await asyncio.to_thread(client.files.download, file=video_file)
     except Exception as e:
         logger.exception("Veo video download failed: %s", e)
@@ -205,6 +233,7 @@ async def generate_veo_video(
     if progress_state is not None:
         progress_state["status"] = "Downloading video"
         progress_state["progress"] = 1.0
+    logger.info("Veo video downloaded: %s (%s bytes)", operation_name, len(content))
     return content, None
 
 
