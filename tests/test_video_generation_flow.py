@@ -125,6 +125,7 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_live_status_with_progress(base_message, **kwargs):
             captured["base_message"] = base_message
+            captured["existing_status_msg"] = kwargs.get("existing_status_msg")
             kwargs["coro"].close()
             status_msg = SimpleNamespace(edit=AsyncMock(), reply=AsyncMock())
             return status_msg, (None, "stopped")
@@ -140,6 +141,7 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIs(captured["base_message"], message)
+        self.assertIs(captured["existing_status_msg"], confirm_msg)
 
     @patch("bot.video_handler.generate_veo_video", new_callable=AsyncMock)
     @patch("bot.video_handler.log_veo_usage")
