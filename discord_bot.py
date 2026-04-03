@@ -226,9 +226,14 @@ async def send_or_edit_with_truncation(*args, **kwargs):
 async def live_status_with_progress(*args, **kwargs):
     base_message = args[0] if args else kwargs.get("message")
     if isinstance(base_message, discord.Message):
+        explicit_status_msg = kwargs.get("existing_status_msg")
         existing = _preflight_status_by_message_id.pop(base_message.id, None)
         if existing is not None:
-            kwargs.setdefault("existing_status_msg", existing)
+            if explicit_status_msg is not None:
+                with contextlib.suppress(Exception):
+                    await existing.delete()
+            else:
+                kwargs.setdefault("existing_status_msg", existing)
     kwargs.setdefault("stream_ok", STREAM_OK)
     if STREAM_OK:
         kwargs.setdefault("editor_factory", lambda status_msg: ThrottledEditor(status_msg, min_interval_s=1.5, max_len=1300))
