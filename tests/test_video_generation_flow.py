@@ -97,12 +97,21 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_create_job.await_args.kwargs["image_filename"], "tool_input_1.png")
         self.assertEqual(mock_create_job.await_args.kwargs["image_content_type"], "image/png")
 
+    def test_build_video_config_options_includes_veo_when_available(self):
+        options = video_handler.build_video_config_options(include_veo=True)
+        values = {option["value"] for option in options}
+
+        self.assertIn("sora|sora-2-pro|8", values)
+        self.assertIn("veo|veo-3.1-generate-preview|6", values)
+        self.assertIn("veo|veo-3.1-fast-generate-preview|8", values)
+
     @patch("bot.video_handler.check_sora_limit", return_value=True)
     async def test_handle_generate_video_intent_uses_original_message_for_status_handoff(self, _mock_limit):
         class FakeView:
-            def __init__(self, author_id):
+            def __init__(self, author_id, video_options):
                 self.author_id = author_id
-                self.value = "sora-2|4"
+                self.video_options = video_options
+                self.value = "sora|sora-2|4"
 
             async def wait(self):
                 return
@@ -120,7 +129,7 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
             status_msg = SimpleNamespace(edit=AsyncMock(), reply=AsyncMock())
             return status_msg, (None, "stopped")
 
-        with patch("bot.video_handler.SoraConfirmationView", FakeView):
+        with patch("bot.video_handler.VideoConfirmationView", FakeView):
             await video_handler.handle_generate_video_intent(
                 message=message,
                 prompt="generate a video of this",
@@ -131,6 +140,52 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIs(captured["base_message"], message)
+
+    @patch("bot.video_handler.generate_veo_video", new_callable=AsyncMock)
+    @patch("bot.video_handler.log_veo_usage")
+    @patch("bot.video_handler.check_veo_limit", return_value=True)
+    async def test_handle_generate_video_intent_routes_selected_veo_option(
+        self,
+        _mock_limit,
+        mock_log_usage,
+        mock_generate_veo,
+    ):
+        class FakeView:
+            def __init__(self, author_id, video_options):
+                self.author_id = author_id
+                self.video_options = video_options
+                self.value = "veo|veo-3.1-fast-generate-preview|6"
+
+            async def wait(self):
+                return
+
+        confirm_msg = SimpleNamespace(edit=AsyncMock())
+        status_msg = SimpleNamespace(edit=AsyncMock(), reply=AsyncMock())
+        message = SimpleNamespace(
+            attachments=[],
+            reply=AsyncMock(return_value=confirm_msg),
+        )
+        mock_generate_veo.return_value = (b"video-bytes", None)
+
+        async def fake_live_status_with_progress(base_message, **kwargs):
+            return status_msg, await kwargs["coro"]
+
+        with patch("bot.video_handler.veo_is_available", return_value=True):
+            with patch("bot.video_handler.VideoConfirmationView", FakeView):
+                await video_handler.handle_generate_video_intent(
+                    message=message,
+                    prompt="generate a cinematic canyon flythrough",
+                    user_id=123,
+                    live_status_with_progress=fake_live_status_with_progress,
+                    stream_ok=False,
+                    image_urls=None,
+                )
+
+        self.assertEqual(mock_generate_veo.await_args.kwargs["model"], "veo-3.1-fast-generate-preview")
+        self.assertEqual(mock_generate_veo.await_args.kwargs["seconds"], 6)
+        self.assertFalse(mock_generate_veo.await_args.kwargs["generate_audio"])
+        mock_log_usage.assert_called_once()
+        status_msg.reply.assert_awaited()
 
     def test_select_reference_video_size_prefers_closest_landscape_ratio(self):
         image_data = self._png_bytes(1500, 1000)

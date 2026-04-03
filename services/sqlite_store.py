@@ -143,12 +143,10 @@ class SQLiteStore:
         return bool(row and row[0] == 1)
 
     def log_sora_usage(self, user_id: str, video_id: str | None = None) -> None:
-        with self.logs_conn() as conn:
-            conn.execute(
-                "INSERT INTO sora_usage (user_id, video_id, timestamp) VALUES (?, ?, ?)",
-                (str(user_id), str(video_id) if video_id else None, datetime.utcnow().isoformat()),
-            )
-            conn.commit()
+        self._log_video_usage("sora_usage", user_id, video_id=video_id)
+
+    def log_veo_usage(self, user_id: str, video_id: str | None = None) -> None:
+        self._log_video_usage("veo_usage", user_id, video_id=video_id)
 
     def get_last_sora_video_id(self, user_id: str) -> str | None:
         with self.logs_conn() as conn:
@@ -165,13 +163,27 @@ class SQLiteStore:
         return row[0] if row else None
 
     def check_sora_limit(self, user_id: str, limit: int = 2, window_seconds: int = 3600) -> bool:
+        return self._check_usage_limit("sora_usage", user_id, limit=limit, window_seconds=window_seconds)
+
+    def check_veo_limit(self, user_id: str, limit: int = 2, window_seconds: int = 3600) -> bool:
+        return self._check_usage_limit("veo_usage", user_id, limit=limit, window_seconds=window_seconds)
+
+    def _log_video_usage(self, table_name: str, user_id: str, video_id: str | None = None) -> None:
+        with self.logs_conn() as conn:
+            conn.execute(
+                f"INSERT INTO {table_name} (user_id, video_id, timestamp) VALUES (?, ?, ?)",
+                (str(user_id), str(video_id) if video_id else None, datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+
+    def _check_usage_limit(self, table_name: str, user_id: str, limit: int = 2, window_seconds: int = 3600) -> bool:
         whitelist = {"54277066459193344", "54280542740287488"}
         if str(user_id) in whitelist:
             return True
 
         with self.logs_conn() as conn:
             rows = conn.execute(
-                "SELECT timestamp FROM sora_usage WHERE user_id = ?",
+                f"SELECT timestamp FROM {table_name} WHERE user_id = ?",
                 (str(user_id),),
             ).fetchall()
 
@@ -227,6 +239,13 @@ class SQLiteStore:
                     video_id TEXT,
                     timestamp TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS veo_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT,
+                    video_id TEXT,
+                    timestamp TEXT
+                );
                 """
             )
             conn.commit()
@@ -246,4 +265,3 @@ class SQLiteStore:
     @staticmethod
     def _connect(path: Path) -> sqlite3.Connection:
         return sqlite3.connect(path, check_same_thread=False)
-

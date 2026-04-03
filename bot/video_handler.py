@@ -5,10 +5,161 @@ import logging
 import discord
 
 from providers.openai_images import image_input_to_upload
-from services.database_utils import check_sora_limit, get_last_sora_video_id, log_sora_usage
 from providers.sora_utils import create_sora_job, download_sora_content, get_sora_status, remix_sora_video
+from providers.veo_utils import (
+    estimate_veo_runtime,
+    generate_veo_video,
+    get_veo_model_options,
+    veo_is_available,
+)
+from services.database_utils import (
+    check_sora_limit,
+    check_veo_limit,
+    get_last_sora_video_id,
+    log_sora_usage,
+    log_veo_usage,
+)
 
 logger = logging.getLogger("discord_bot")
+
+SORA_VIDEO_OPTIONS = [
+    {
+        "provider": "sora",
+        "provider_label": "Sora 2 Pro",
+        "model": "sora-2-pro",
+        "seconds": 4,
+        "cost": 1.20,
+        "emoji": "✨",
+        "description": "Sora 2 Pro, 4 seconds",
+        "default": False,
+    },
+    {
+        "provider": "sora",
+        "provider_label": "Sora 2 Pro",
+        "model": "sora-2-pro",
+        "seconds": 8,
+        "cost": 2.40,
+        "emoji": "✨",
+        "description": "Sora 2 Pro, 8 seconds",
+        "default": True,
+    },
+    {
+        "provider": "sora",
+        "provider_label": "Sora 2 Pro",
+        "model": "sora-2-pro",
+        "seconds": 12,
+        "cost": 3.60,
+        "emoji": "✨",
+        "description": "Sora 2 Pro, 12 seconds",
+        "default": False,
+    },
+    {
+        "provider": "sora",
+        "provider_label": "Sora 2",
+        "model": "sora-2",
+        "seconds": 4,
+        "cost": 0.40,
+        "emoji": "🎞️",
+        "description": "Sora 2, 4 seconds",
+        "default": False,
+    },
+    {
+        "provider": "sora",
+        "provider_label": "Sora 2",
+        "model": "sora-2",
+        "seconds": 8,
+        "cost": 0.80,
+        "emoji": "🎞️",
+        "description": "Sora 2, 8 seconds",
+        "default": False,
+    },
+    {
+        "provider": "sora",
+        "provider_label": "Sora 2",
+        "model": "sora-2",
+        "seconds": 12,
+        "cost": 1.20,
+        "emoji": "🎞️",
+        "description": "Sora 2, 12 seconds",
+        "default": False,
+    },
+]
+
+
+def build_video_config_options(include_veo: bool | None = None):
+    options = []
+    for option in SORA_VIDEO_OPTIONS:
+        options.append(
+            {
+                **option,
+                "value": f"sora|{option['model']}|{option['seconds']}",
+                "label": f"{option['provider_label']} - {option['seconds']}s (${option['cost']:.2f})",
+            }
+        )
+
+    if include_veo is None:
+        include_veo = veo_is_available()
+    if include_veo:
+        for option in get_veo_model_options():
+            options.append(
+                {
+                    **option,
+                    "value": f"veo|{option['model']}|{option['seconds']}",
+                    "label": f"{option['provider_label']} - {option['seconds']}s (${option['cost']:.2f})",
+                    "description": f"{option['provider_label']}, {option['seconds']} seconds",
+                    "default": False,
+                }
+            )
+    return options
+
+
+def get_video_config_by_value(value: str, include_veo: bool | None = None):
+    for option in build_video_config_options(include_veo=include_veo):
+        if option["value"] == value:
+            return option
+    return None
+
+
+def _video_progress_summary(provider_label: str, progress_data: dict) -> str:
+    pct = int(float(progress_data.get("progress", 0.0)) * 100)
+    status = str(progress_data.get("status") or "Processing")
+    return f"{provider_label}: {status} ({pct}%)"
+
+
+def _build_video_cost_message(prompt: str, include_veo: bool) -> str:
+    lines = [
+        "**Video Generation**",
+        f"Prompt: *{prompt[:100]}...*",
+        "",
+        "⚠️ **Select Configuration:**",
+        "Sora estimates:",
+        "• **Sora 2 Pro**: 4s $1.20 | 8s $2.40 | 12s $3.60",
+        "• **Sora 2**: 4s $0.40 | 8s $0.80 | 12s $1.20",
+    ]
+    if include_veo:
+        lines.extend(
+            [
+                "",
+                "Veo estimates (Google video-only pricing, audio disabled in this path):",
+                "• **Veo 3.1**: 4s $0.80 | 6s $1.20 | 8s $1.60",
+                "• **Veo 3.1 Fast**: 4s $0.40 | 6s $0.60 | 8s $0.80",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "Veo is currently unavailable because `GEMINI_API_KEY` is not configured for this runtime.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "💖 *Help cover API costs:* <https://ko-fi.com/sardistic/goal?g=32>",
+        ]
+    )
+    return "\n".join(lines)
 
 
 async def _resolve_video_reference_upload(message, image_urls=None):
@@ -17,7 +168,7 @@ async def _resolve_video_reference_upload(message, image_urls=None):
             if att.content_type and att.content_type.startswith("image/"):
                 try:
                     image_data = await att.read()
-                    logger.info("Received image attachment for Sora: %s (%s bytes)", att.filename, len(image_data))
+                    logger.info("Received image attachment for video generation: %s (%s bytes)", att.filename, len(image_data))
                     return image_data, (att.filename or "input"), (att.content_type or "image/png")
                 except Exception as e:
                     logger.error("Failed to download attachment: %s", e)
@@ -26,21 +177,23 @@ async def _resolve_video_reference_upload(message, image_urls=None):
         upload = await image_input_to_upload(image_input, fallback_name=f"input_{idx}")
         if upload:
             image_data, filename, content_type = upload
-            logger.info("Resolved Sora reference image from collected inputs: %s (%s bytes)", filename, len(image_data))
+            logger.info("Resolved video reference image from collected inputs: %s (%s bytes)", filename, len(image_data))
             return image_data, filename, content_type
 
     return None
 
 
-class SoraConfigSelect(discord.ui.Select):
-    def __init__(self):
+class VideoConfigSelect(discord.ui.Select):
+    def __init__(self, video_options):
         options = [
-            discord.SelectOption(label="Pro - 4s ($1.20)", value="sora-2-pro|4", description="Sora 2 Pro, 4 seconds", emoji="✨"),
-            discord.SelectOption(label="Pro - 8s ($2.40)", value="sora-2-pro|8", description="Sora 2 Pro, 8 seconds (Default)", emoji="✨", default=True),
-            discord.SelectOption(label="Pro - 12s ($3.60)", value="sora-2-pro|12", description="Sora 2 Pro, 12 seconds", emoji="✨"),
-            discord.SelectOption(label="Std - 4s ($0.40)", value="sora-2|4", description="Sora 2, 4 seconds", emoji="🎞️"),
-            discord.SelectOption(label="Std - 8s ($0.80)", value="sora-2|8", description="Sora 2, 8 seconds", emoji="🎞️"),
-            discord.SelectOption(label="Std - 12s ($1.20)", value="sora-2|12", description="Sora 2, 12 seconds", emoji="🎞️"),
+            discord.SelectOption(
+                label=option["label"],
+                value=option["value"],
+                description=option["description"],
+                emoji=option["emoji"],
+                default=option.get("default", False),
+            )
+            for option in video_options
         ]
         super().__init__(placeholder="Select Configuration...", min_values=1, max_values=1, options=options)
 
@@ -50,12 +203,12 @@ class SoraConfigSelect(discord.ui.Select):
         self.view.stop()
 
 
-class SoraConfirmationView(discord.ui.View):
-    def __init__(self, author_id):
+class VideoConfirmationView(discord.ui.View):
+    def __init__(self, author_id, video_options):
         super().__init__(timeout=60)
         self.author_id = author_id
         self.value = None
-        self.add_item(SoraConfigSelect())
+        self.add_item(VideoConfigSelect(video_options))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -71,14 +224,9 @@ class SoraConfirmationView(discord.ui.View):
 
 
 async def handle_generate_video_intent(message, prompt: str, user_id, live_status_with_progress, stream_ok: bool, image_urls=None):
-    if not check_sora_limit(str(user_id), limit=2, window_seconds=3600):
-        await message.reply("⏳ You have reached the limit of 2 Sora videos per hour. Please try again later.")
-        return
-
     image_data = None
     image_filename = None
     image_content_type = None
-    is_remix = False
     base_fail_msg = "Generation failed."
 
     reference_upload = await _resolve_video_reference_upload(message, image_urls=image_urls)
@@ -86,29 +234,9 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
         image_data, image_filename, image_content_type = reference_upload
         base_fail_msg = "Image-to-Video failed."
 
-    remix_target_id = None
-    lower_prompt = prompt.lower()
-    if "remix" in lower_prompt or (not image_data and "edit" in lower_prompt and "video" in lower_prompt):
-        last_vid = get_last_sora_video_id(str(user_id))
-        if last_vid:
-            remix_target_id = last_vid
-            is_remix = True
-            base_fail_msg = "Remix failed."
-        elif "remix" in lower_prompt:
-            await message.reply("⚠️ I couldn't find a previous video of yours to remix. Please generate one first!")
-            return
-
-    cost_msg = (
-        f"**Sora Video Generation**\n"
-        f"Prompt: *{prompt[:100]}...*\n\n"
-        f"⚠️ **Select Configuration:**\n"
-        f"Costs based on duration (4s / 8s / 12s):\n"
-        f"• **Pro**: $1.20 / $2.40 / $3.60\n"
-        f"• **Std**: $0.40 / $0.80 / $1.20\n\n"
-        f"💖 *Help cover API costs:* <https://ko-fi.com/sardistic/goal?g=32>"
-    )
-
-    view = SoraConfirmationView(author_id=user_id)
+    include_veo = veo_is_available()
+    cost_msg = _build_video_cost_message(prompt, include_veo=include_veo)
+    view = VideoConfirmationView(author_id=user_id, video_options=build_video_config_options(include_veo=include_veo))
     confirm_msg = await message.reply(cost_msg, view=view)
     await view.wait()
 
@@ -120,96 +248,163 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
                 pass
         return
 
-    selected_model, selected_seconds_text = view.value.split("|")
-    selected_seconds = int(selected_seconds_text)
+    selected_config = get_video_config_by_value(view.value, include_veo=include_veo)
+    if not selected_config:
+        await confirm_msg.edit(content="❌ Unknown video configuration selected.", view=None)
+        return
+
+    provider = selected_config["provider"]
+    provider_label = selected_config["provider_label"]
+    selected_model = selected_config["model"]
+    selected_seconds = int(selected_config["seconds"])
+    estimated_cost = float(selected_config["cost"])
+
+    if provider == "sora":
+        if not check_sora_limit(str(user_id), limit=2, window_seconds=3600):
+            await confirm_msg.edit(content="⏳ You have reached the limit of 2 Sora videos per hour. Please try again later.", view=None)
+            return
+    else:
+        if not check_veo_limit(str(user_id), limit=2, window_seconds=3600):
+            await confirm_msg.edit(content="⏳ You have reached the limit of 2 Veo videos per hour. Please try again later.", view=None)
+            return
+
+    is_remix = False
+    remix_target_id = None
+    lower_prompt = prompt.lower()
+    if provider == "sora":
+        if "remix" in lower_prompt or (not image_data and "edit" in lower_prompt and "video" in lower_prompt):
+            last_vid = get_last_sora_video_id(str(user_id))
+            if last_vid:
+                remix_target_id = last_vid
+                is_remix = True
+                base_fail_msg = "Remix failed."
+            elif "remix" in lower_prompt:
+                await confirm_msg.edit(
+                    content="⚠️ I couldn't find a previous Sora video of yours to remix. Please generate one first!",
+                    view=None,
+                )
+                return
+    elif "remix" in lower_prompt or (not image_data and "edit" in lower_prompt and "video" in lower_prompt):
+        await confirm_msg.edit(
+            content="⚠️ Veo is wired up for prompt-to-video and image-to-video here. Remix is still Sora-only for now.",
+            view=None,
+        )
+        return
 
     try:
-        await confirm_msg.edit(content=f"✅ **Queued:** {selected_model} ({selected_seconds}s)", view=None)
+        await confirm_msg.edit(content=f"✅ **Queued:** {provider_label} ({selected_seconds}s)", view=None)
     except Exception:
         pass
 
-    progress_data = {"progress": 0.0}
+    progress_data = {"progress": 0.0, "status": "Queued"}
 
     async def _generate_video_task():
-        if is_remix and remix_target_id:
-            job = await remix_sora_video(remix_target_id, prompt)
-        else:
-            job = await create_sora_job(
-                prompt,
-                model=selected_model,
-                size=None if image_data else "1280x720",
-                seconds=selected_seconds,
-                image_data=image_data,
-                image_filename=image_filename,
-                image_content_type=image_content_type,
+        if provider == "sora":
+            if is_remix and remix_target_id:
+                job = await remix_sora_video(remix_target_id, prompt)
+            else:
+                job = await create_sora_job(
+                    prompt,
+                    model=selected_model,
+                    size=None if image_data else "1280x720",
+                    seconds=selected_seconds,
+                    image_data=image_data,
+                    image_filename=image_filename,
+                    image_content_type=image_content_type,
+                )
+
+            if not job.get("ok"):
+                return None, f"Failed to start job: {job.get('error')}"
+
+            video_id = job["data"].get("id")
+            progress_data["status"] = "Processing"
+            logger.info(
+                "Sora Job Started: %s (Model=%s, Sec=%s, Remix=%s)",
+                video_id,
+                selected_model,
+                selected_seconds,
+                is_remix,
             )
 
-        if not job.get("ok"):
-            return None, f"Failed to start job: {job.get('error')}"
+            start_time = asyncio.get_event_loop().time()
+            while True:
+                await asyncio.sleep(4)
+                if asyncio.get_event_loop().time() - start_time > 600:
+                    return None, "Timeout waiting for video generation."
 
-        video_id = job["data"].get("id")
-        logger.info(f"Sora Job Started: {video_id} (Model={selected_model}, Sec={selected_seconds}, Remix={is_remix})")
+                status_res = await get_sora_status(video_id)
+                if not status_res.get("ok"):
+                    logger.warning("Poll check failed: %s", status_res.get("error"))
+                    continue
 
-        start_time = asyncio.get_event_loop().time()
-        while True:
-            await asyncio.sleep(4)
-            if asyncio.get_event_loop().time() - start_time > 600:
-                return None, "Timeout waiting for video generation."
+                status_data = status_res["data"]
+                status = status_data.get("status")
 
-            status_res = await get_sora_status(video_id)
-            if not status_res.get("ok"):
-                logger.warning(f"Poll check failed: {status_res.get('error')}")
-                continue
+                if "progress" in status_data:
+                    try:
+                        raw_p = str(status_data["progress"]).strip().replace("%", "")
+                        p_val = float(raw_p)
+                        if p_val > 1.0:
+                            p_val /= 100.0
+                        progress_data["progress"] = p_val
+                        logger.debug("Sora Poll: %.1f%% (Raw: %s)", p_val * 100, status_data["progress"])
+                    except Exception as e:
+                        logger.warning("Failed to parse progress: %s - %s", status_data["progress"], e)
 
-            status_data = status_res["data"]
-            status = status_data.get("status")
+                if status == "completed":
+                    progress_data["progress"] = 1.0
+                    progress_data["status"] = "Downloading video"
+                    break
+                if status == "failed":
+                    err_msg = status_data.get("error", {}).get("message", "Unknown error")
+                    return None, f"Video generation failed: {err_msg}"
 
-            if "progress" in status_data:
-                try:
-                    raw_p = str(status_data["progress"]).strip().replace("%", "")
-                    p_val = float(raw_p)
-                    if p_val > 1.0:
-                        p_val /= 100.0
-                    progress_data["progress"] = p_val
-                    logger.debug(f"Sora Poll: {p_val * 100:.1f}% (Raw: {status_data['progress']})")
-                except Exception as e:
-                    logger.warning(f"Failed to parse progress: {status_data['progress']} - {e}")
+            content = await download_sora_content(video_id)
+            if not content:
+                return None, "Failed to download video content."
 
-            if status == "completed":
-                progress_data["progress"] = 1.0
-                break
-            if status == "failed":
-                err_msg = status_data.get("error", {}).get("message", "Unknown error")
-                return None, f"Video generation failed: {err_msg}"
+            f = io.BytesIO(content)
+            log_sora_usage(str(user_id), video_id=video_id)
+            return f, None
 
-        content = await download_sora_content(video_id)
+        content, err = await generate_veo_video(
+            prompt,
+            model=selected_model,
+            seconds=selected_seconds,
+            image_data=image_data,
+            image_content_type=image_content_type,
+            generate_audio=False,
+            progress_state=progress_data,
+        )
+        if err:
+            return None, f"Veo generation failed: {err}"
         if not content:
-            return None, "Failed to download video content."
+            return None, "Failed to download Veo video content."
 
-        f = io.BytesIO(content)
-        log_sora_usage(str(user_id), video_id=video_id)
-        return f, None
+        log_veo_usage(str(user_id), video_id=f"{selected_model}:{selected_seconds}")
+        return io.BytesIO(content), None
 
+    duration_estimate = selected_seconds * 10 if provider == "sora" else estimate_veo_runtime(selected_model, selected_seconds)
     status_msg, result = await live_status_with_progress(
         message,
-        action_label=f"Generating ({selected_model}, {selected_seconds}s)",
+        action_label=f"Generating ({provider_label}, {selected_seconds}s)",
         emoji="🎥",
         coro=_generate_video_task(),
-        duration_estimate=selected_seconds * 10,
-        summarizer=(lambda: f"Status: Processing ({int(progress_data['progress'] * 100)}%)") if stream_ok else None,
+        duration_estimate=duration_estimate,
+        summarizer=(lambda: _video_progress_summary(provider_label, progress_data)) if stream_ok else None,
         progress_tracker=progress_data,
     )
 
     if result and isinstance(result, tuple):
         file_obj, err = result
         if file_obj:
-            cost = selected_seconds * (0.30 if "pro" in selected_model else 0.10)
             final_msg = (
-                f"**Video generated** ({selected_model}, {selected_seconds}s)\n"
-                f"Est. Cost: ${cost:.2f} | Support: <https://ko-fi.com/sardistic/goal?g=32>\n"
+                f"**Video generated** ({provider_label}, {selected_seconds}s)\n"
+                f"Est. Cost: ${estimated_cost:.2f} | Support: <https://ko-fi.com/sardistic/goal?g=32>\n"
                 f"Prompt: {prompt[:100]}..."
             )
-            await status_msg.reply(file=discord.File(file_obj, filename="sora_video.mp4"))
+            filename = "sora_video.mp4" if provider == "sora" else "veo_video.mp4"
+            await status_msg.reply(file=discord.File(file_obj, filename=filename))
             await status_msg.edit(content=final_msg)
             return
 
