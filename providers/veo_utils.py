@@ -150,8 +150,13 @@ async def generate_veo_video(
         duration_seconds=int(seconds),
         aspect_ratio=_select_veo_aspect_ratio(image_data),
         resolution=DEFAULT_VEO_RESOLUTION,
-        generate_audio=bool(generate_audio),
     )
+
+    # The Gemini API docs show Veo generation without a generate_audio field.
+    # Audio is native for Veo 3.1, and passing generate_audio through the
+    # Gemini API currently raises a client-side validation error.
+    if generate_audio:
+        logger.info("Ignoring generate_audio=True for Gemini Veo request; audio is handled natively by the model.")
 
     try:
         operation = await asyncio.to_thread(
