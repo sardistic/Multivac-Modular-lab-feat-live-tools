@@ -86,3 +86,15 @@ def get_last_sora_video_id(user_id: str) -> str | None:
 
 def check_sora_limit(user_id: str, limit: int = 2, window_seconds: int = 3600) -> bool:
     return store.check_sora_limit(user_id, limit=limit, window_seconds=window_seconds)
+
+
+def init_veo_usage():
+    return None
+
+
+def log_veo_usage(user_id: str, video_id: str = None):
+    store.log_veo_usage(user_id, video_id=video_id)
+
+
+def check_veo_limit(user_id: str, limit: int = 2, window_seconds: int = 3600) -> bool:
+    return store.check_veo_limit(user_id, limit=limit, window_seconds=window_seconds)
