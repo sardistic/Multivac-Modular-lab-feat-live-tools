@@ -401,6 +401,7 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
         duration_estimate=duration_estimate,
         summarizer=(lambda: _video_progress_summary(provider_label, progress_data)) if stream_ok else None,
         progress_tracker=progress_data,
+        existing_status_msg=confirm_msg,
     )
 
     if result and isinstance(result, tuple):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any, Optional
@@ -104,6 +105,75 @@ def _extract_generated_video(operation: Any) -> Any:
         if generated:
             return generated[0]
     return None
+
+
+def _serialize_veo_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, bytes):
+        return f"<bytes:{len(value)}>"
+    if isinstance(value, dict):
+        return {str(k): _serialize_veo_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_veo_value(v) for v in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _serialize_veo_value(value.model_dump(exclude_none=True))
+        except Exception:
+            pass
+    if hasattr(value, "__dict__"):
+        try:
+            return _serialize_veo_value(vars(value))
+        except Exception:
+            pass
+    return str(value)
+
+
+def _collect_veo_operation_snapshots(operation: Any) -> dict[str, Any]:
+    snapshots: dict[str, Any] = {}
+    for container_name in ("response", "result", "metadata"):
+        container = _safe_attr(operation, container_name)
+        serialized = _serialize_veo_value(container)
+        if serialized not in (None, {}, []):
+            snapshots[container_name] = serialized
+    return snapshots
+
+
+def _compact_json(data: Any, *, max_len: int = 220) -> str:
+    try:
+        text = json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str)
+    except Exception:
+        text = str(data)
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
+
+
+def _build_veo_no_video_message(operation_name: str, snapshots: dict[str, Any]) -> str:
+    response = snapshots.get("response") or {}
+    result = snapshots.get("result") or {}
+    filtered_count = None
+    filtered_reasons = None
+
+    for payload in (response, result):
+        if isinstance(payload, dict):
+            if filtered_count in (None, 0):
+                filtered_count = payload.get("rai_media_filtered_count", filtered_count)
+            if not filtered_reasons:
+                filtered_reasons = payload.get("rai_media_filtered_reasons")
+
+    if filtered_count or filtered_reasons:
+        reasons_text = ", ".join(str(r) for r in (filtered_reasons or [])) or "unspecified"
+        count_text = f" filtered_count={filtered_count};" if filtered_count not in (None, 0) else ""
+        return f"Veo output was filtered by safety checks.{count_text} reasons={reasons_text}"
+
+    debug_parts = [
+        f"{name}={_compact_json(payload, max_len=140)}"
+        for name, payload in snapshots.items()
+    ]
+    if debug_parts:
+        return f"Veo completed without a downloadable video. Debug: {'; '.join(debug_parts)}"
+    return f"Veo completed without a downloadable video (operation={operation_name})."
 
 
 def _select_veo_aspect_ratio(image_data: bytes | None) -> str:
@@ -219,7 +289,14 @@ async def generate_veo_video(
 
     generated_video = _extract_generated_video(operation)
     if not generated_video:
-        return None, "Veo did not return a generated video."
+        snapshots = _collect_veo_operation_snapshots(operation)
+        failure_message = _build_veo_no_video_message(operation_name, snapshots)
+        logger.warning(
+            "Veo completed without generated video: %s snapshots=%s",
+            operation_name,
+            _compact_json(snapshots, max_len=800),
+        )
+        return None, failure_message
 
     logger.info("Veo job completed: %s", operation_name)
     video_file = _safe_attr(generated_video, "video", generated_video)
