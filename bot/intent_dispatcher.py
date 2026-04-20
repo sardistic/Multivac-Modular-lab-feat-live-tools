@@ -94,6 +94,7 @@ async def dispatch_intent(
         await handle_generate_image_intent(
             message=message,
             prompt=prompt,
+            ref_msg=ref_msg,
             duration_estimate=duration_estimate,
             stream_ok=stream_ok,
             live_status_with_progress=live_status_with_progress,

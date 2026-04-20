@@ -21,6 +21,26 @@ from providers.stability_client import (
 )
 
 logger = logging.getLogger("stability_utils")
+_REPLY_PROMPT_MAX_CHARS = 1800
+
+
+def _compose_reply_aware_image_prompt(prompt: str, reply_msg=None) -> str:
+    base_prompt = (prompt or "").strip()
+    reply_text = (getattr(reply_msg, "content", "") or "").strip()
+    if not reply_text:
+        return base_prompt
+
+    reply_text = re.sub(r"\s+", " ", reply_text)
+    if len(reply_text) > _REPLY_PROMPT_MAX_CHARS:
+        reply_text = reply_text[:_REPLY_PROMPT_MAX_CHARS].rstrip() + "..."
+
+    author = getattr(getattr(reply_msg, "author", None), "display_name", None) or getattr(
+        getattr(reply_msg, "author", None), "name", None
+    )
+    context_label = f"Replied message context from {author}" if author else "Replied message context"
+    if base_prompt:
+        return f"{base_prompt}\n\n{context_label}:\n{reply_text}"
+    return f"{context_label}:\n{reply_text}"
 
 
 def extract_width_height_from_prompt(prompt: str) -> tuple[int, int]:
@@ -92,9 +112,10 @@ async def generate_gpt_image(prompt: str) -> Optional[BytesIO]:
 
 async def handle_image_generation(message, prompt: str, reply_msg=None) -> Optional[BytesIO]:
     try:
+        prompt_with_reply_context = _compose_reply_aware_image_prompt(prompt, reply_msg)
         width, height = extract_width_height_from_prompt(prompt)
         if prompt.lower().startswith("stable imagine"):
-            image_prompt = prompt[15:].strip()
+            image_prompt = _compose_reply_aware_image_prompt(prompt[15:].strip(), reply_msg)
             if STABILITY_AVAILABLE:
                 img = await generate_stability_image(image_prompt, width, height)
                 if img:
@@ -102,7 +123,7 @@ async def handle_image_generation(message, prompt: str, reply_msg=None) -> Optio
             return await generate_gpt_image(image_prompt)
 
         if prompt.lower().startswith("gemini imagine"):
-            image_prompt = prompt[14:].strip()
+            image_prompt = _compose_reply_aware_image_prompt(prompt[14:].strip(), reply_msg)
             ref_images = []
             headers = {"User-Agent": "Mozilla/5.0"}
             if reply_msg:
@@ -151,7 +172,7 @@ async def handle_image_generation(message, prompt: str, reply_msg=None) -> Optio
                 await message.channel.send("⚠️ **Gemini generation failed** (likely rate limit or error). Falling back to OpenAI... 🧠")
             return await generate_gpt_image(image_prompt)
 
-        return await generate_gpt_image(prompt)
+        return await generate_gpt_image(prompt_with_reply_context)
     except Exception:
         logger.exception("Error in handle_image_generation")
         return None

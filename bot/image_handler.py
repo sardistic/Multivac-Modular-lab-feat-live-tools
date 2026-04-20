@@ -291,6 +291,7 @@ async def handle_generate_image_intent(
     *,
     message,
     prompt: str,
+    ref_msg,
     duration_estimate: int,
     stream_ok: bool,
     live_status_with_progress,
@@ -389,7 +390,7 @@ async def handle_generate_image_intent(
         message,
         action_label="Generating",
         emoji="🎨",
-        coro=handle_image_generation(message, prompt),
+        coro=handle_image_generation(message, prompt, reply_msg=ref_msg),
         duration_estimate=duration_estimate,
         summarizer=(lambda: "Rendering image… adding details…") if stream_ok else None,
     )
