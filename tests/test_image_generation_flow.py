@@ -1,3 +1,4 @@
+import base64
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -54,6 +55,37 @@ class ImageGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("imagine a portrait based on these details", composed_prompt)
         self.assertIn("Replied message context from Ry7", composed_prompt)
         self.assertIn("A calm scholar with round glasses", composed_prompt)
+
+    @patch("providers.stability_generation.get_openai_image_client")
+    async def test_generate_gpt_image_uses_auto_size(self, mock_get_client):
+        generate = AsyncMock(
+            return_value=SimpleNamespace(
+                data=[SimpleNamespace(b64_json=base64.b64encode(b"img").decode("ascii"))]
+            )
+        )
+        mock_get_client.return_value = SimpleNamespace(images=SimpleNamespace(generate=generate))
+
+        result = await stability_generation.generate_gpt_image("a neon city skyline")
+
+        self.assertEqual(result.read(), b"img")
+        self.assertEqual(generate.await_args.kwargs["size"], "auto")
+
+    @patch("providers.stability_generation.get_openai_image_client")
+    async def test_edit_image_with_prompt_uses_auto_size(self, mock_get_client):
+        edits = AsyncMock(
+            return_value=SimpleNamespace(
+                data=[SimpleNamespace(b64_json=base64.b64encode(b"edited").decode("ascii"))]
+            )
+        )
+        mock_get_client.return_value = SimpleNamespace(images=SimpleNamespace(edits=edits))
+
+        result = await stability_generation.edit_image_with_prompt(
+            "data:image/png;base64,Zm9v",
+            "make it more cinematic",
+        )
+
+        self.assertEqual(result.read(), b"edited")
+        self.assertEqual(edits.await_args.kwargs["size"], "auto")
 
 
 if __name__ == "__main__":

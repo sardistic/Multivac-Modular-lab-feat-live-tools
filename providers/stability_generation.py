@@ -95,7 +95,7 @@ async def generate_gpt_image(prompt: str) -> Optional[BytesIO]:
         result = await get_openai_image_client().images.generate(
             model="gpt-image-1.5",
             prompt=prompt,
-            size="1024x1024",
+            size="auto",
             background=background_type,
             quality="high",
             moderation="low",
@@ -203,7 +203,7 @@ async def edit_image_with_prompt(image_input: str | list[str], prompt: str) -> O
             model="gpt-image-1.5",
             image=base_img,
             prompt=prompt,
-            size="1024x1024",
+            size="auto",
         )
         b64_image = result.data[0].b64_json if result and result.data else None
         if not b64_image:
