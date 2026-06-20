@@ -12,22 +12,16 @@ class ModerationFallbackView(discord.ui.View):
 
         options = [
             discord.SelectOption(
-                label="Gemini 1.5 Pro (Smarter)",
-                value="gemini-1.5-pro",
+                label="Gemini 3 Pro (Smarter)",
+                value="gemini-3-pro-preview",
                 description="Higher reasoning, might be less strict.",
                 emoji="🧠",
             ),
             discord.SelectOption(
-                label="Gemini 1.5 Flash (Fast)",
-                value="gemini-1.5-flash",
+                label="Gemini 3 Flash (Fast)",
+                value="gemini-3-flash-preview",
                 description="Fast and efficient.",
                 emoji="⚡",
-            ),
-            discord.SelectOption(
-                label="Gemini 1.5 Pro 002",
-                value="gemini-1.5-pro-002",
-                description="Updated Pro model.",
-                emoji="🆕",
             ),
             discord.SelectOption(
                 label=f"{OPENAI_CHAT_MODEL} (OpenAI)",

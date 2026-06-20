@@ -150,7 +150,7 @@ def generate_gemini_text(
     status_tracker: Optional[Dict[str, str]] = None,
     enable_code_execution: bool = False,
     search_ids: Optional[Dict[str, Any]] = None,
-    model_name: str = "gemini-2.0-flash",
+    model_name: str = "gemini-3-flash-preview",
 ) -> Tuple[Optional[str], List[Tuple[bytes, str]]]:
     client = get_gemini_client()
     if not client or not types:
@@ -169,7 +169,24 @@ def generate_gemini_text(
         rag_context = ""
         if search_ids:
             clean_prompt = prompt.lower()
-            trigger_words = ["first thing", "first message", "earliest", "beginning", "start", "history", "what did i say", "previous message", "recall", "remember"]
+            trigger_words = [
+                "first thing",
+                "first message",
+                "earliest",
+                "beginning",
+                "start",
+                "history",
+                "last time",
+                "most recent",
+                "when did i",
+                "when did you",
+                "did i mention",
+                "did you say",
+                "what did i say",
+                "previous message",
+                "recall",
+                "remember",
+            ]
             if any(k in clean_prompt for k in trigger_words):
                 try:
                     found_text = memory_utils.search_history_for_context(

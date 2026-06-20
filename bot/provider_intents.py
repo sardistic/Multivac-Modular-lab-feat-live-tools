@@ -120,7 +120,7 @@ async def handle_gemini_chat_intent(
     }
 
     async def _do_gemini_generation(model_name=None):
-        selected_model = model_name or "gemini-2.0-flash"
+        selected_model = model_name or "gemini-3-flash-preview"
 
         async def _run_gen():
             if "gpt" in selected_model.lower():
