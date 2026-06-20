@@ -334,6 +334,18 @@ def generate_gemini_text(
             attempt_contents.append(types.Content(role="user", parts=attempt_parts))
             return attempt_contents
 
+        def _execute_es_tool(function_call) -> str:
+            args = dict(function_call.args) if function_call.args else {}
+            query_string = args.get("query_string") or ""
+            index = args.get("index") or "discord_chat_memory"
+            try:
+                max_results = int(args.get("max_results") or 10)
+            except (TypeError, ValueError):
+                max_results = 10
+            if status_tracker is not None:
+                status_tracker["text"] = f"Searching memory...\n`{query_string}`"
+            return search_elasticsearch_resource(query_string, index=index, max_results=max_results)
+
         def _run_attempt(extra_instruction: Optional[str] = None):
             final_text = []
             generated_artifacts = []
@@ -341,24 +353,12 @@ def generate_gemini_text(
             saw_executable_code = False
             current_lang = "python"
             part_events: List[str] = []
-            response_stream = client.models.generate_content_stream(
-                model=model,
-                contents=_build_attempt_contents(extra_instruction),
-                config=config,
-            )
+            pending_tool_calls: List[Any] = []
+            attempt_contents = _build_attempt_contents(extra_instruction)
 
-            for chunk in response_stream:
-                if chunk.candidates:
-                    cand = chunk.candidates[0]
-                    if cand.finish_reason in ["SAFETY", "kFinishReasonSafety"]:
-                        raise GeminiModerationError(
-                            f"Response blocked by safety filters (reason={cand.finish_reason}).",
-                            getattr(cand, "safety_ratings", []),
-                        )
-
-                if not chunk.candidates:
-                    continue
-                for part in chunk.candidates[0].content.parts:
+            def _consume_parts(parts):
+                nonlocal saw_executable_code, current_lang
+                for part in parts:
                     if part.text:
                         part_events.append(f"text:{len(part.text)}")
                         final_text.append(part.text)
@@ -380,6 +380,9 @@ def generate_gemini_text(
                             args = part.function_call.args
                             if args and "answer" in args:
                                 final_text.append(args["answer"])
+                        elif part.function_call.name == "search_elasticsearch_resource":
+                            part_events.append("function_call:search_elasticsearch_resource")
+                            pending_tool_calls.append(part.function_call)
                         else:
                             part_events.append(f"function_call:{part.function_call.name}")
                             try:
@@ -395,6 +398,54 @@ def generate_gemini_text(
                             code_result_outputs.append(output)
                         if status_tracker is not None:
                             status_tracker["text"] = f"Executed: {outcome}\nResult: {output[:50]}..."
+
+            response_stream = client.models.generate_content_stream(
+                model=model,
+                contents=attempt_contents,
+                config=config,
+            )
+
+            for chunk in response_stream:
+                if chunk.candidates:
+                    cand = chunk.candidates[0]
+                    if cand.finish_reason in ["SAFETY", "kFinishReasonSafety"]:
+                        raise GeminiModerationError(
+                            f"Response blocked by safety filters (reason={cand.finish_reason}).",
+                            getattr(cand, "safety_ratings", []),
+                        )
+
+                if not chunk.candidates:
+                    continue
+                _consume_parts(chunk.candidates[0].content.parts)
+
+            # Execute any tool calls and feed results back to the model for a final answer.
+            tool_rounds = 0
+            while pending_tool_calls and not "".join(final_text).strip() and tool_rounds < 3:
+                tool_rounds += 1
+                calls = pending_tool_calls
+                pending_tool_calls = []
+                attempt_contents.append(
+                    types.Content(role="model", parts=[types.Part(function_call=fc) for fc in calls])
+                )
+                response_parts = []
+                for fc in calls:
+                    result = _execute_es_tool(fc)
+                    response_parts.append(
+                        types.Part(
+                            function_response=types.FunctionResponse(
+                                name=fc.name, response={"result": result}
+                            )
+                        )
+                    )
+                attempt_contents.append(types.Content(role="user", parts=response_parts))
+                part_events.append(f"tool_followup:{tool_rounds}")
+                follow = client.models.generate_content(
+                    model=model,
+                    contents=attempt_contents,
+                    config=config,
+                )
+                if follow.candidates and follow.candidates[0].content:
+                    _consume_parts(follow.candidates[0].content.parts)
 
             cleaned_text = "".join(final_text).strip() if final_text else None
             recovered_artifacts: List[Tuple[bytes, str]] = []
