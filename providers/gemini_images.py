@@ -24,7 +24,7 @@ def generate_gemini_image(prompt: str, width: int = 1024, height: int = 1024) ->
     try:
         config = types.GenerateContentConfig(
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio=aspect_ratio, image_size="1024x1024"),
+            image_config=types.ImageConfig(aspect_ratio=aspect_ratio, image_size="1K"),
             safety_settings=[
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
