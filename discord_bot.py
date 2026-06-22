@@ -520,8 +520,11 @@ async def on_message(message: discord.Message):
     elif lowered_prompt.startswith("claude") or lowered_raw.startswith("claude"):
         intent = "claude_chat"
     elif lowered_prompt.startswith("gemini") or lowered_raw.startswith("gemini"):
+        # "gemini make this a video" must route to video, not image editing or text chat.
+        if any(k in lowered_prompt for k in ("video", "movie", "clip", "animate")):
+            intent = "generate_video"
         # "gemini edit this image..." must route to image editing, not text chat.
-        if has_attachments and any(
+        elif has_attachments and any(
             k in lowered_prompt
             for k in ("edit", "change", "make", "turn", "transform", "fix", "remove", "add", "replace", "redraw")
         ):
