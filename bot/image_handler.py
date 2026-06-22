@@ -10,6 +10,9 @@ import discord
 
 from bot.chat_context import build_chat_context
 from bot.response_policy import apply_personality_overrides
+import urllib.request
+
+from providers.gemini_images import edit_gemini_image
 from providers.gemini_utils import generate_gemini_image
 from providers.openai_client import OPENAI_CHAT_MODEL
 from providers.openai_images import DEFAULT_VISION_DETAIL
@@ -401,6 +404,15 @@ async def handle_generate_image_intent(
         await status_msg.edit(content="❌ Image generation failed.")
 
 
+def _image_ref_to_bytes(img_url: str):
+    """Resolve an image_urls entry (data URI or http URL) to a BytesIO of raw bytes."""
+    if img_url.startswith("data:"):
+        _, _, b64 = img_url.partition(",")
+        return io.BytesIO(base64.b64decode(b64))
+    with urllib.request.urlopen(img_url, timeout=30) as resp:
+        return io.BytesIO(resp.read())
+
+
 async def handle_edit_image_intent(
     *,
     message,
@@ -408,6 +420,7 @@ async def handle_edit_image_intent(
     image_urls,
     prompt_for_image_selection,
     live_status_with_progress,
+    use_gemini: bool = False,
 ):
     images_to_edit = image_urls
     if len(image_urls) > 1:
@@ -415,7 +428,13 @@ async def handle_edit_image_intent(
         if selection != "all":
             images_to_edit = [image_urls[selection]]
 
+    async def _do_single_edit_gemini(img_url: str):
+        image_bytes = await asyncio.to_thread(_image_ref_to_bytes, img_url)
+        return await asyncio.to_thread(edit_gemini_image, image_bytes, prompt)
+
     async def _do_single_edit(img_url: str):
+        if use_gemini:
+            return await _do_single_edit_gemini(img_url)
         edit_instruction = f"You must edit this image. {prompt}. Apply the changes to the image."
         response = await get_openai_client().responses.create(
             model=OPENAI_CHAT_MODEL,
