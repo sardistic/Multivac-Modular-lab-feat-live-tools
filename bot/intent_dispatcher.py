@@ -102,12 +102,14 @@ async def dispatch_intent(
         return True
 
     if intent == "edit_image" and image_urls:
+        use_gemini = raw_prompt.lower().strip().startswith("gemini") or prompt.lower().strip().startswith("gemini")
         await handle_edit_image_intent(
             message=message,
             prompt=prompt,
             image_urls=image_urls,
             prompt_for_image_selection=prompt_for_image_selection,
             live_status_with_progress=live_status_with_progress,
+            use_gemini=use_gemini,
         )
         return True
 
