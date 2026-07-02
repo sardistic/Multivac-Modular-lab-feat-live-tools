@@ -72,6 +72,14 @@ def get_user_instruction(user_id: str) -> str | None:
     return store.get_user_instruction(user_id)
 
 
+def get_channel_last_seen(key: str) -> str | None:
+    return store.get_channel_last_seen(key)
+
+
+def set_channel_last_seen(key: str, last_seen_id: str) -> None:
+    store.set_channel_last_seen(key, last_seen_id)
+
+
 def init_sora_usage():
     return None
 

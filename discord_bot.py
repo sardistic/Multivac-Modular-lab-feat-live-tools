@@ -1,28 +1,19 @@
 # discord_bot.py
-# Full Discord bot with:
-# - Mentions/replies trigger
-# - Intent classification
-# - URL summarize / weather / stock routed to existing utilities
-# - Image generation & editing
-# - Chat uses ES-backed messages[] window (per-user continuous context)
-# - Live progress bar + expand/collapse UI
-# - Timeline-aware system prompt
-# - "memory fetch more" now fetches RECENT messages only (after last-seen id)
-# - NEW: Image-describe injection, reply-reference, tool-nudging
-# - FIX: Google CSE keys pulled via config (metadata → env), search fast-path is gated
+# Discord bot triggered by mentions/replies: classifies intent, then routes to
+# chat (ES-backed per-user context), search, weather/stock, URL summarize,
+# image/video generation and editing. Replies use a live progress bar and
+# expand/collapse UI.
 
 from __future__ import annotations
 
 import os
 import re
-import sys
-import json
 import logging
 import mimetypes
 import asyncio
 import contextlib
 import collections
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 
@@ -48,9 +39,13 @@ from providers.openai_utils import (
 
 # Optional features (your existing utilities)
 from services.weather_utils import get_location_details, get_weather_data
-from services.database_utils import get_message_expansion
+from services.database_utils import (
+    get_message_expansion,
+    get_channel_last_seen,
+    set_channel_last_seen,
+)
 from providers.claude_utils import ANTHROPIC_API_KEY
-from bot.intent_dispatcher import dispatch_intent
+from bot.intent_dispatcher import DispatchContext, dispatch_intent, resolve_keyword_intent
 from bot.message_inputs import (
     collect_gemini_parts,
     collect_image_inputs,
@@ -84,17 +79,8 @@ except Exception:
     STREAM_OK = False
 
 # ---- Logging ----
+# Configured centrally by services.logging_config (called from main.py).
 logger = logging.getLogger("discord_bot")
-if "--verbose" in sys.argv:
-    logging.basicConfig(level=logging.DEBUG)
-else:
-    logging.basicConfig(level=logging.INFO)
-
-# Suppress noisy libraries
-logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("elastic_transport").setLevel(logging.WARNING)
 
 
 def _configured(value: Optional[str]) -> str:
@@ -115,31 +101,24 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# ---- Local state for backfill high-water marks (per guild:channel) ----
-STATE_FILE = "/mnt/data/memory_state.json"
-os.makedirs("/mnt/data", exist_ok=True)
-if not os.path.exists(STATE_FILE):
-    with open(STATE_FILE, "w") as f:
-        json.dump({}, f)
-
-def _load_state() -> Dict[str, Any]:
-    try:
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def _save_state(data: Dict[str, Any]) -> None:
-    with open(STATE_FILE, "w") as f:
-        json.dump(data, f)
-
+# ---- Backfill high-water marks (per guild:channel), stored in SQLite ----
 def _state_key(guild_id: int | None, channel_id: int) -> str:
     g = str(guild_id) if guild_id else "DM"
     return f"{g}:{channel_id}"
 
 # ---- Multi-Image Selection ----
 # Track messages recently processed to prevent gateway replays / feedback loops
-_processed_msg_ids = collections.deque(maxlen=100)
+_processed_msg_ids: "collections.OrderedDict[int, None]" = collections.OrderedDict()
+_PROCESSED_CACHE_SIZE = 1000
+
+def _already_processed(message_id: int) -> bool:
+    """Record message_id; return True if it was already seen recently."""
+    if message_id in _processed_msg_ids:
+        return True
+    _processed_msg_ids[message_id] = None
+    while len(_processed_msg_ids) > _PROCESSED_CACHE_SIZE:
+        _processed_msg_ids.popitem(last=False)
+    return False
 
 # Track users currently being prompted (to prevent on_message from double-processing)
 _pending_image_selection: set[int] = set()  # user IDs awaiting reply
@@ -159,34 +138,47 @@ def _preflight_bar(step: int, total: int = 3, width: int = 10) -> str:
 async def prompt_for_image_selection(message, image_count: int, timeout: float = 30.0):
     """
     Ask user which image to process when multiple are present.
-    Returns: int (0-based index), "all", or 0 on timeout/invalid.
+    Returns: int (0-based index), "all", or 0 on timeout.
+
+    Only messages that look like a selection (a number or "all") are consumed;
+    anything else the user says in the meantime is left for normal handling.
     """
     user_id = message.author.id
     _pending_image_selection.add(user_id)
-    
+
     try:
         prompt_msg = await message.reply(
             f"📷 I see **{image_count} images**. Which one should I edit?\n"
             "Reply with a number (1, 2, ...) or **all**."
         )
-        
+
         def check(m):
-            return m.author.id == user_id and m.channel == message.channel
-        
-        try:
-            reply = await bot.wait_for("message", check=check, timeout=timeout)
+            if m.author.id != user_id or m.channel != message.channel:
+                return False
+            text = m.content.strip().lower()
+            return text == "all" or text.isdigit()
+
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            try:
+                reply = await bot.wait_for("message", check=check, timeout=remaining)
+            except asyncio.TimeoutError:
+                await prompt_msg.edit(content="⏰ Timed out. Using the first image.")
+                return 0
             text = reply.content.strip().lower()
             if text == "all":
                 return "all"
-            if text.isdigit():
-                idx = int(text) - 1
-                if 0 <= idx < image_count:
-                    return idx
-            await message.channel.send("⚠️ Invalid selection. Using the first image.")
-            return 0
-        except asyncio.TimeoutError:
-            await prompt_msg.edit(content="⏰ Timed out. Using the first image.")
-            return 0
+            idx = int(text) - 1
+            if 0 <= idx < image_count:
+                return idx
+            await message.channel.send(
+                f"⚠️ Pick a number between 1 and {image_count}, or **all**."
+            )
+    except asyncio.TimeoutError:
+        return 0
     finally:
         _pending_image_selection.discard(user_id)
 
@@ -199,11 +191,16 @@ def is_probably_image(url: str) -> bool:
     mime, _ = mimetypes.guess_type(path)
     return bool(mime and mime.startswith("image/"))
 
+async def _index_message_async(**kwargs) -> Optional[str]:
+    """Run the synchronous OpenSearch indexing call off the event loop."""
+    return await asyncio.to_thread(index_message, **kwargs)
+
+
 async def _auto_index_bot_message(sent_message, full_text: str, *, original_message=None, reply_to=None, model: Optional[str] = None):
     try:
         src_msg = original_message or reply_to
         if src_msg:
-            index_message(
+            await _index_message_async(
                 message_id=str(sent_message.id),
                 guild_id=str(src_msg.guild.id) if src_msg.guild else "DM",
                 channel_id=str(src_msg.channel.id),
@@ -250,7 +247,7 @@ async def backfill_recent_channel_history_to_es(
 ) -> int:
     """
     Fetch ONLY recent messages:
-      - Uses a channel-scoped 'last_seen_id' (stored locally) as a high-water mark.
+      - Uses a channel-scoped 'last_seen_id' (stored in SQLite) as a high-water mark.
       - If first run (no last_seen), grab the latest <chunk> messages.
       - On subsequent runs, fetch messages strictly AFTER last_seen (i.e., newer).
     Indexes each message by snowflake id; duplicates are naturally ignored by ES.
@@ -266,10 +263,9 @@ async def backfill_recent_channel_history_to_es(
     if channel is None:
         raise RuntimeError(f"Channel {channel_id} not found")
 
-    # Load & read the high-water mark
-    state = _load_state()
+    # Read the high-water mark
     key = _state_key(guild_id, channel_id)
-    last_seen_id = state.get("last_seen_by_channel", {}).get(key)
+    last_seen_id = await asyncio.to_thread(get_channel_last_seen, key)
 
     # Build history kwargs to fetch RECENT, not last
     kwargs: Dict[str, Any] = dict(limit=int(chunk), oldest_first=False)
@@ -288,7 +284,7 @@ async def backfill_recent_channel_history_to_es(
         reply_to = str(msg.reference.message_id) if msg.reference else None
 
         try:
-            index_message(
+            await _index_message_async(
                 message_id=str(msg.id),
                 guild_id=str(msg.guild.id) if msg.guild else "DM",
                 channel_id=str(channel_id),
@@ -302,12 +298,11 @@ async def backfill_recent_channel_history_to_es(
             if msg.id > max_id_seen:
                 max_id_seen = msg.id
         except Exception:
-            logging.exception("Recent backfill index error", exc_info=False)
+            logger.exception("Recent backfill index error")
             continue
 
     if max_id_seen and max_id_seen != (int(last_seen_id) if last_seen_id else 0):
-        state.setdefault("last_seen_by_channel", {})[key] = str(max_id_seen)
-        _save_state(state)
+        await asyncio.to_thread(set_channel_last_seen, key, str(max_id_seen))
 
     return indexed
 
@@ -340,10 +335,11 @@ async def on_raw_reaction_add(payload):
             if u.bot:
                 return
         except Exception:
-            pass  # If we can't fetch, assume user? Or safe to ignore? Let's process.
+            # Can't tell if it's a bot; process anyway rather than drop the reaction.
+            logger.warning("Could not resolve reacting user %s; processing anyway", payload.user_id)
 
     # Check if this message is a truncatable message (fast DB check)
-    rec = get_message_expansion(payload.message_id)
+    rec = await asyncio.to_thread(get_message_expansion, payload.message_id)
     if not rec:
         return
 
@@ -416,9 +412,8 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
     
-    if message.id in _processed_msg_ids:
+    if _already_processed(message.id):
         return
-    _processed_msg_ids.append(message.id)
 
     # Pass-through slash/! commands
     if message.content.startswith(bot.command_prefix):
@@ -455,7 +450,7 @@ async def on_message(message: discord.Message):
 
     # Pre-log the user's message (live indexing)
     try:
-        index_message(
+        await _index_message_async(
             message_id=str(message.id),
             guild_id=str(message.guild.id) if message.guild else "DM",
             channel_id=str(message.channel.id),
@@ -466,7 +461,7 @@ async def on_message(message: discord.Message):
             reply_to_id=(str(message.reference.message_id) if message.reference else None),
         )
     except Exception:
-        pass
+        logger.warning("Live indexing of user message %s failed", message.id, exc_info=True)
     finally:
         if preflight_status is not None:
             with contextlib.suppress(Exception):
@@ -479,7 +474,7 @@ async def on_message(message: discord.Message):
                 await preflight_status.edit(content=f"[🧠 Preparing {_preflight_bar(2)}]\nRunning search…")
         q = extract_search_query(prompt)
         try:
-            results = web_search(q, max_results=5)
+            results = await asyncio.to_thread(web_search, q, max_results=5)
         except Exception:
             results = []
             logger.exception("web_search failed")
@@ -508,37 +503,11 @@ async def on_message(message: discord.Message):
         with contextlib.suppress(Exception):
             await preflight_status.edit(content=f"[🧠 Preparing {_preflight_bar(2)}]\nClassifying intent…")
     
-    # Intent
-    # 1. Determine Intent
-    # Fix for "gemini imagine" being grabbed by chat intent
-    lowered_raw = raw_prompt.lower().strip()
-    lowered_prompt = prompt.lower().strip()
-    if lowered_raw.startswith("gemini imagine"):
-        intent = "generate_image"
-        # We don't strip "gemini" here because stability_utils expects it? 
-        # Actually stability_utils checks if content.startswith("gemini").
-    elif lowered_prompt.startswith("claude") or lowered_raw.startswith("claude"):
-        intent = "claude_chat"
-    elif lowered_prompt.startswith("gemini") or lowered_raw.startswith("gemini"):
-        # "gemini make this a video" must route to video, not image editing or text chat.
-        if any(k in lowered_prompt for k in ("video", "movie", "clip", "animate")):
-            intent = "generate_video"
-        # "gemini edit this image..." must route to image editing, not text chat.
-        elif has_attachments and any(
-            k in lowered_prompt
-            for k in ("edit", "change", "make", "turn", "transform", "fix", "remove", "add", "replace", "redraw")
-        ):
-            intent = "edit_image"
-        else:
-            intent = "gemini_chat"
-    else:
-        # Quick override for video
-        lower_prompt = lowered_prompt
-        if "generate" in lower_prompt and ("video" in lower_prompt or "movie" in lower_prompt or "clip" in lower_prompt or "sora" in lower_prompt):
-             intent = "generate_video"
-        else:
-             intent = await classify_intent(prompt, has_images=has_attachments)
-        
+    # Intent: explicit keyword routing first, LLM classifier otherwise.
+    intent = resolve_keyword_intent(raw_prompt, prompt, has_attachments)
+    if intent is None:
+        intent = await classify_intent(prompt, has_images=has_attachments)
+
     logger.info(f"Intent identified as: {intent} (has_attachments={has_attachments}, image_inputs={len(image_urls)})")
     if preflight_status is not None:
         with contextlib.suppress(Exception):
@@ -549,24 +518,26 @@ async def on_message(message: discord.Message):
 
     try:
         await dispatch_intent(
-            intent=intent,
-            message=message,
-            prompt=prompt,
-            raw_prompt=raw_prompt,
-            user_id=user_id,
-            ref_msg=ref_msg,
-            is_reply_to_bot=is_reply_to_bot,
-            image_urls=image_urls,
-            gemini_parts=gemini_parts,
-            general_url_match=general_url_match,
-            stream_ok=STREAM_OK,
-            bot_user=bot.user,
-            get_location_details=get_location_details,
-            get_weather_data=get_weather_data,
-            live_status_with_progress=live_status_with_progress,
-            send_or_edit_with_truncation=send_or_edit_with_truncation,
-            prompt_for_image_selection=prompt_for_image_selection,
-            moderation_view_factory=ModerationFallbackView,
+            DispatchContext(
+                intent=intent,
+                message=message,
+                prompt=prompt,
+                raw_prompt=raw_prompt,
+                user_id=user_id,
+                bot_user=bot.user,
+                ref_msg=ref_msg,
+                is_reply_to_bot=is_reply_to_bot,
+                image_urls=image_urls,
+                gemini_parts=gemini_parts,
+                general_url_match=general_url_match,
+                stream_ok=STREAM_OK,
+                get_location_details=get_location_details,
+                get_weather_data=get_weather_data,
+                live_status_with_progress=live_status_with_progress,
+                send_or_edit_with_truncation=send_or_edit_with_truncation,
+                prompt_for_image_selection=prompt_for_image_selection,
+                moderation_view_factory=ModerationFallbackView,
+            )
         )
 
     except Exception as e:

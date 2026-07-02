@@ -14,24 +14,19 @@ class ImageGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(content="@bot imagine a character based on this")
 
         await intent_dispatcher.dispatch_intent(
-            intent="generate_image",
-            message=message,
-            prompt="imagine a character based on this",
-            raw_prompt="imagine a character based on this",
-            user_id=123,
-            ref_msg=ref_msg,
-            is_reply_to_bot=False,
-            image_urls=[],
-            gemini_parts=[],
-            general_url_match=None,
-            stream_ok=False,
-            bot_user=SimpleNamespace(id=999),
-            get_location_details=None,
-            get_weather_data=None,
-            live_status_with_progress=AsyncMock(),
-            send_or_edit_with_truncation=AsyncMock(),
-            prompt_for_image_selection=AsyncMock(),
-            moderation_view_factory=lambda **kwargs: None,
+            intent_dispatcher.DispatchContext(
+                intent="generate_image",
+                message=message,
+                prompt="imagine a character based on this",
+                raw_prompt="imagine a character based on this",
+                user_id=123,
+                bot_user=SimpleNamespace(id=999),
+                ref_msg=ref_msg,
+                live_status_with_progress=AsyncMock(),
+                send_or_edit_with_truncation=AsyncMock(),
+                prompt_for_image_selection=AsyncMock(),
+                moderation_view_factory=lambda **kwargs: None,
+            )
         )
 
         self.assertIs(mock_handle_generate.await_args.kwargs["ref_msg"], ref_msg)

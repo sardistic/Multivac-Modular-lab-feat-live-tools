@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Any, Callable, List, Optional
+
 from bot.chat_handler import handle_chat_intent
 from bot.image_handler import (
     handle_describe_image_intent,
@@ -16,6 +19,47 @@ from bot.video_handler import handle_generate_video_intent
 from services.stock_utils import handle_stock_command
 from services.weather_utils import handle_weather_request
 
+_VIDEO_KEYWORDS = ("video", "movie", "clip", "animate")
+_EDIT_KEYWORDS = (
+    "edit", "change", "make", "turn", "transform",
+    "fix", "remove", "add", "replace", "redraw",
+)
+
+
+def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) -> Optional[str]:
+    """Route explicit provider prefixes ("claude ...", "gemini ...") and other
+    unambiguous keyword patterns to an intent.
+
+    Returns None when nothing matches, meaning the LLM classifier should decide.
+    """
+    lowered_raw = raw_prompt.lower().strip()
+    lowered_prompt = prompt.lower().strip()
+
+    # "gemini imagine" would otherwise be grabbed by the chat intent.
+    # The "gemini" prefix is kept in the prompt because stability_utils
+    # checks content.startswith("gemini") to pick the backend.
+    if lowered_raw.startswith("gemini imagine"):
+        return "generate_image"
+
+    if lowered_prompt.startswith("claude") or lowered_raw.startswith("claude"):
+        return "claude_chat"
+
+    if lowered_prompt.startswith("gemini") or lowered_raw.startswith("gemini"):
+        # "gemini make this a video" must route to video, not image editing or chat.
+        if any(k in lowered_prompt for k in _VIDEO_KEYWORDS):
+            return "generate_video"
+        # "gemini edit this image..." must route to image editing, not chat.
+        if has_attachments and any(k in lowered_prompt for k in _EDIT_KEYWORDS):
+            return "edit_image"
+        return "gemini_chat"
+
+    if "generate" in lowered_prompt and any(
+        k in lowered_prompt for k in ("video", "movie", "clip", "sora")
+    ):
+        return "generate_video"
+
+    return None
+
 
 def get_duration_estimate(intent: str) -> int:
     return {
@@ -29,144 +73,153 @@ def get_duration_estimate(intent: str) -> int:
     }.get(intent, 12)
 
 
-async def dispatch_intent(
-    *,
-    intent: str,
-    message,
-    prompt: str,
-    raw_prompt: str,
-    user_id,
-    ref_msg,
-    is_reply_to_bot: bool,
-    image_urls,
-    gemini_parts,
-    general_url_match,
-    stream_ok: bool,
-    bot_user,
-    get_location_details,
-    get_weather_data,
-    live_status_with_progress,
-    send_or_edit_with_truncation,
-    prompt_for_image_selection,
-    moderation_view_factory,
-):
-    duration_estimate = get_duration_estimate(intent)
+@dataclass
+class DispatchContext:
+    """Everything a single triggered message needs to be routed and answered."""
 
-    if intent == "get_weather":
+    intent: str
+    message: Any
+    prompt: str
+    raw_prompt: str
+    user_id: Any
+    bot_user: Any
+    ref_msg: Any = None
+    is_reply_to_bot: bool = False
+    image_urls: List[Any] = field(default_factory=list)
+    gemini_parts: List[Any] = field(default_factory=list)
+    general_url_match: Any = None
+    stream_ok: bool = False
+    # Injected collaborators (Discord-side helpers owned by discord_bot.py)
+    get_location_details: Optional[Callable] = None
+    get_weather_data: Optional[Callable] = None
+    live_status_with_progress: Optional[Callable] = None
+    send_or_edit_with_truncation: Optional[Callable] = None
+    prompt_for_image_selection: Optional[Callable] = None
+    moderation_view_factory: Any = None
+
+
+async def dispatch_intent(ctx: DispatchContext) -> bool:
+    duration_estimate = get_duration_estimate(ctx.intent)
+    message = ctx.message
+
+    if ctx.intent == "get_weather":
         response = await handle_weather_request(
             message,
-            bot_user.id,
-            get_location_details,
-            get_weather_data,
+            ctx.bot_user.id,
+            ctx.get_location_details,
+            ctx.get_weather_data,
             None,
             f"{message.guild.id}-{message.channel.id}",
             message.author.id,
         )
         if response:
-            await send_or_edit_with_truncation(response, channel=message.channel, reply_to=message)
+            await ctx.send_or_edit_with_truncation(response, channel=message.channel, reply_to=message)
         return True
 
-    if intent == "claude_chat":
+    if ctx.intent == "claude_chat":
         await handle_claude_chat_intent(
             message=message,
-            prompt=prompt,
-            stream_ok=stream_ok,
-            live_status_with_progress=live_status_with_progress,
-            send_or_edit_with_truncation=send_or_edit_with_truncation,
+            prompt=ctx.prompt,
+            stream_ok=ctx.stream_ok,
+            live_status_with_progress=ctx.live_status_with_progress,
+            send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
         )
         return True
 
-    if intent == "gemini_chat":
+    if ctx.intent == "gemini_chat":
         await handle_gemini_chat_intent(
             message=message,
-            prompt=prompt,
-            gemini_parts=gemini_parts,
-            live_status_with_progress=live_status_with_progress,
-            send_or_edit_with_truncation=send_or_edit_with_truncation,
-            moderation_view_factory=moderation_view_factory,
+            prompt=ctx.prompt,
+            gemini_parts=ctx.gemini_parts,
+            live_status_with_progress=ctx.live_status_with_progress,
+            send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
+            moderation_view_factory=ctx.moderation_view_factory,
         )
         return True
 
-    if intent == "generate_image":
+    if ctx.intent == "generate_image":
         if message.content.startswith("/debug_context"):
-            await send_debug_context(message, bot_user)
+            await send_debug_context(message, ctx.bot_user)
             return True
         await handle_generate_image_intent(
             message=message,
-            prompt=prompt,
-            ref_msg=ref_msg,
+            prompt=ctx.prompt,
+            ref_msg=ctx.ref_msg,
             duration_estimate=duration_estimate,
-            stream_ok=stream_ok,
-            live_status_with_progress=live_status_with_progress,
+            stream_ok=ctx.stream_ok,
+            live_status_with_progress=ctx.live_status_with_progress,
         )
         return True
 
-    if intent == "edit_image" and image_urls:
-        use_gemini = raw_prompt.lower().strip().startswith("gemini") or prompt.lower().strip().startswith("gemini")
+    if ctx.intent == "edit_image" and ctx.image_urls:
+        use_gemini = (
+            ctx.raw_prompt.lower().strip().startswith("gemini")
+            or ctx.prompt.lower().strip().startswith("gemini")
+        )
         await handle_edit_image_intent(
             message=message,
-            prompt=prompt,
-            image_urls=image_urls,
-            prompt_for_image_selection=prompt_for_image_selection,
-            live_status_with_progress=live_status_with_progress,
+            prompt=ctx.prompt,
+            image_urls=ctx.image_urls,
+            prompt_for_image_selection=ctx.prompt_for_image_selection,
+            live_status_with_progress=ctx.live_status_with_progress,
             use_gemini=use_gemini,
         )
         return True
 
-    if intent == "summarize_url" and general_url_match and not image_urls:
+    if ctx.intent == "summarize_url" and ctx.general_url_match and not ctx.image_urls:
         await handle_summarize_url_intent(
             message=message,
-            url=general_url_match.group(0),
+            url=ctx.general_url_match.group(0),
             duration_estimate=duration_estimate,
-            stream_ok=stream_ok,
-            live_status_with_progress=live_status_with_progress,
-            send_or_edit_with_truncation=send_or_edit_with_truncation,
+            stream_ok=ctx.stream_ok,
+            live_status_with_progress=ctx.live_status_with_progress,
+            send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
         )
         return True
 
-    if intent == "describe_image" and image_urls:
+    if ctx.intent == "describe_image" and ctx.image_urls:
         await handle_describe_image_intent(
             message=message,
-            prompt=prompt,
-            image_urls=image_urls,
-            ref_msg=ref_msg,
-            is_reply_to_bot=is_reply_to_bot,
+            prompt=ctx.prompt,
+            image_urls=ctx.image_urls,
+            ref_msg=ctx.ref_msg,
+            is_reply_to_bot=ctx.is_reply_to_bot,
             duration_estimate=duration_estimate,
-            stream_ok=stream_ok,
-            live_status_with_progress=live_status_with_progress,
-            send_or_edit_with_truncation=send_or_edit_with_truncation,
+            stream_ok=ctx.stream_ok,
+            live_status_with_progress=ctx.live_status_with_progress,
+            send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
         )
         return True
 
-    if intent == "generate_video":
+    if ctx.intent == "generate_video":
         await handle_generate_video_intent(
             message=message,
-            prompt=prompt,
-            user_id=user_id,
-            live_status_with_progress=live_status_with_progress,
-            stream_ok=stream_ok,
-            image_urls=image_urls,
+            prompt=ctx.prompt,
+            user_id=ctx.user_id,
+            live_status_with_progress=ctx.live_status_with_progress,
+            stream_ok=ctx.stream_ok,
+            image_urls=ctx.image_urls,
         )
         return True
 
-    if intent == "get_stock" and prompt.lower().startswith("stock"):
+    if ctx.intent == "get_stock" and ctx.prompt.lower().startswith("stock"):
         async with message.channel.typing():
-            await handle_stock_command(message, prompt)
+            await handle_stock_command(message, ctx.prompt)
         return True
 
     await handle_chat_intent(
         message=message,
-        prompt=prompt,
-        raw_prompt=raw_prompt,
-        user_id=user_id,
-        ref_msg=ref_msg,
-        is_reply_to_bot=is_reply_to_bot,
-        image_urls=image_urls,
-        gemini_parts=gemini_parts,
+        prompt=ctx.prompt,
+        raw_prompt=ctx.raw_prompt,
+        user_id=ctx.user_id,
+        ref_msg=ctx.ref_msg,
+        is_reply_to_bot=ctx.is_reply_to_bot,
+        image_urls=ctx.image_urls,
+        gemini_parts=ctx.gemini_parts,
         duration_estimate=duration_estimate,
-        stream_ok=stream_ok,
-        live_status_with_progress=live_status_with_progress,
-        send_or_edit_with_truncation=send_or_edit_with_truncation,
-        moderation_view_factory=moderation_view_factory,
+        stream_ok=ctx.stream_ok,
+        live_status_with_progress=ctx.live_status_with_progress,
+        send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
+        moderation_view_factory=ctx.moderation_view_factory,
     )
     return True
