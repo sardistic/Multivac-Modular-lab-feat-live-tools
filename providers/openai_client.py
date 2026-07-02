@@ -17,3 +17,17 @@ def get_openai_client() -> AsyncOpenAI:
 USE_RESPONSES = os.getenv("OPENAI_USE_RESPONSES", "").lower() in {"1", "true", "yes", "y", "on"}
 OPENAI_CHAT_MODEL = OPENAI_DEFAULT_MODEL
 OPENAI_INTENT_MODEL = os.getenv("OPENAI_INTENT_MODEL", OPENAI_DEFAULT_MODEL)
+
+
+def model_supports_temperature(model: str) -> bool:
+    """GPT-5+ and the o-series reasoning models reject the `temperature`
+    parameter entirely (only the default is allowed)."""
+    m = (model or "").lower()
+    return not m.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def temperature_kwargs(model: str, temperature: float | None) -> dict:
+    """Return {"temperature": ...} only when the model accepts it, else {}."""
+    if temperature is None or not model_supports_temperature(model):
+        return {}
+    return {"temperature": temperature}
