@@ -3,7 +3,12 @@ from __future__ import annotations
 import logging
 import re
 
-from providers.openai_client import OPENAI_INTENT_MODEL, get_openai_client, temperature_kwargs
+from providers.openai_client import (
+    OPENAI_INTENT_MODEL,
+    get_openai_client,
+    is_reasoning_model,
+    temperature_kwargs,
+)
 from providers.openai_messages import OpenAIModerationError
 
 _INTENT_SYSTEM = (
@@ -55,6 +60,12 @@ async def classify_intent(text: str, has_images: bool = False) -> str:
         else:
             system_prompt = _INTENT_SYSTEM
 
+        # Reasoning models (gpt-5+/o-series) burn hidden reasoning tokens before
+        # emitting the label, so a tiny budget of 16 gets exhausted mid-reasoning
+        # and returns a 400. Give them room and keep reasoning effort minimal.
+        reasoning = is_reasoning_model(OPENAI_INTENT_MODEL)
+        max_out = 2000 if reasoning else 16
+
         payload = {
             "model": OPENAI_INTENT_MODEL,
             **temperature_kwargs(OPENAI_INTENT_MODEL, 0),
@@ -63,17 +74,27 @@ async def classify_intent(text: str, has_images: bool = False) -> str:
                 {"role": "user", "content": text.strip()},
             ],
         }
+        if reasoning:
+            payload["reasoning_effort"] = "minimal"
+
         try:
             resp = await get_openai_client().chat.completions.create(
                 **payload,
-                max_completion_tokens=16,
+                max_completion_tokens=max_out,
             )
         except Exception as e:
             msg = str(e).lower()
-            if "max_completion_tokens" in msg and ("unsupported" in msg or "unknown" in msg):
+            # Drop reasoning_effort if this model/endpoint doesn't accept it.
+            if "reasoning_effort" in msg and "reasoning_effort" in payload:
+                payload.pop("reasoning_effort", None)
                 resp = await get_openai_client().chat.completions.create(
                     **payload,
-                    max_tokens=16,
+                    max_completion_tokens=max_out,
+                )
+            elif "max_completion_tokens" in msg and ("unsupported" in msg or "unknown" in msg):
+                resp = await get_openai_client().chat.completions.create(
+                    **payload,
+                    max_tokens=max_out,
                 )
             else:
                 raise
