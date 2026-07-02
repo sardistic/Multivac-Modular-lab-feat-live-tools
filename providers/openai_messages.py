@@ -5,7 +5,12 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from providers.openai_client import OPENAI_CHAT_MODEL, USE_RESPONSES, get_openai_client
+from providers.openai_client import (
+    OPENAI_CHAT_MODEL,
+    USE_RESPONSES,
+    get_openai_client,
+    temperature_kwargs,
+)
 from providers.openai_images import (
     build_user_content_chat,
     build_user_content_responses,
@@ -180,7 +185,7 @@ async def _create_chat_completion_with_token_fallback(
     *,
     model: str,
     messages: List[Dict[str, Any]],
-    temperature: float,
+    temperature: Optional[float],
     max_tokens: int,
     tools: Optional[list] = None,
     tool_choice: Optional[str] = None,
@@ -188,7 +193,7 @@ async def _create_chat_completion_with_token_fallback(
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": temperature,
+        **temperature_kwargs(model, temperature),
     }
     if tools is not None:
         kwargs["tools"] = tools
@@ -202,6 +207,18 @@ async def _create_chat_completion_with_token_fallback(
         )
     except Exception as e:
         msg = str(e).lower()
+        # Safety net: if the model rejects temperature despite the capability
+        # check, drop it and retry once.
+        if "temperature" in msg and "unsupported" in msg and "temperature" in kwargs:
+            kwargs.pop("temperature", None)
+            return await _create_chat_completion_with_token_fallback(
+                model=model,
+                messages=messages,
+                temperature=None,
+                max_tokens=max_tokens,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
         if "max_completion_tokens" in msg and ("unsupported" in msg or "unknown" in msg):
             return await get_openai_client().chat.completions.create(
                 **kwargs,
@@ -295,7 +312,7 @@ async def _collect_responses_text_with_continuations(
             model=model,
             input=current_input,
             max_output_tokens=max_tokens,
-            temperature=temperature,
+            **temperature_kwargs(model, temperature),
         )
 
         assistant_text = (_extract_responses_text(resp) or "").strip()
@@ -398,7 +415,7 @@ async def _responses_tool_loop(
             input=current_input,
             tools=_normalize_tools(None),
             max_output_tokens=max_tokens,
-            temperature=temperature,
+            **temperature_kwargs(model, temperature),
         )
     return resp, current_input
 
@@ -428,8 +445,8 @@ async def generate_openai_response(
             resp = await get_openai_client().responses.create(
                 model=model,
                 input=msgs,
-                temperature=temperature,
                 max_output_tokens=max_tokens,
+                **temperature_kwargs(model, temperature),
             )
             text = await _collect_responses_text_with_continuations(
                 messages=msgs,
@@ -475,7 +492,7 @@ async def generate_openai_messages_response(
                 model=model,
                 input=norm,
                 max_output_tokens=max_tokens,
-                temperature=temperature,
+                **temperature_kwargs(model, temperature),
             )
             text = await _collect_responses_text_with_continuations(
                 messages=norm,
@@ -546,7 +563,7 @@ async def generate_openai_messages_response_with_tools(
                 input=norm,
                 tools=_normalize_tools(active_tools),
                 max_output_tokens=max_tokens,
-                temperature=temperature,
+                **temperature_kwargs(model, temperature),
             )
             resp, current_input = await _responses_tool_loop(
                 resp,
@@ -575,7 +592,7 @@ async def generate_openai_messages_response_with_tools(
                     }
                 ],
                 max_output_tokens=max_tokens,
-                temperature=temperature,
+                **temperature_kwargs(model, temperature),
             )
             text = _extract_responses_text(final_resp)
             if text:

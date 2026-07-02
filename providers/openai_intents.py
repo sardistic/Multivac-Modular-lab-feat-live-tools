@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 
-from providers.openai_client import OPENAI_INTENT_MODEL, get_openai_client
+from providers.openai_client import OPENAI_INTENT_MODEL, get_openai_client, temperature_kwargs
 from providers.openai_messages import OpenAIModerationError
 
 _INTENT_SYSTEM = (
@@ -57,7 +57,7 @@ async def classify_intent(text: str, has_images: bool = False) -> str:
 
         payload = {
             "model": OPENAI_INTENT_MODEL,
-            "temperature": 0,
+            **temperature_kwargs(OPENAI_INTENT_MODEL, 0),
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text.strip()},
