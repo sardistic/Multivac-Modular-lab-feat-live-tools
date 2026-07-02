@@ -199,10 +199,15 @@ async def handle_search_memory(args: Dict[str, Any]) -> Dict[str, Any]:
         target_user_id = str(requested_target_user)
 
     lowered = query.lower()
-    is_temporal_query = any(
-        k in lowered
-        for k in ["ago", "week", "month", "year", "first", "earliest", "history", "what did i talk", "what did i say"]
-    )
+    is_temporal_query = bool(
+        re.search(
+            r"\b("
+            r"ago|yesterday|week|month|year|first|earliest|history|"
+            r"when did|last time|most recent|recently|previous(?:ly)?"
+            r")\b",
+            lowered,
+        )
+    ) or any(k in lowered for k in ["what did i talk", "what did i say", "did i mention", "did you say"])
 
     if is_temporal_query and query:
         recalled = search_history_for_context(
