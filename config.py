@@ -4,7 +4,23 @@ import requests
 MD_BASE = "http://metadata.google.internal/computeMetadata/v1"
 MD_HEADERS = {"Metadata-Flavor": "Google"}
 
+# Probe the GCE metadata server once. Off-GCE, every _md_fetch would otherwise
+# burn a ~1s timeout per key at import time.
+_md_available: bool | None = None
+
+def _metadata_server_available() -> bool:
+    global _md_available
+    if _md_available is None:
+        try:
+            r = requests.get(MD_BASE, headers=MD_HEADERS, timeout=1.0)
+            _md_available = r.status_code == 200
+        except Exception:
+            _md_available = False
+    return _md_available
+
 def _md_fetch(path: str, timeout: float = 1.0) -> str | None:
+    if not _metadata_server_available():
+        return None
     try:
         r = requests.get(f"{MD_BASE}/{path}", headers=MD_HEADERS, timeout=timeout)
         if r.status_code == 200 and r.text:

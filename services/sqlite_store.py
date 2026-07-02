@@ -142,6 +142,25 @@ class SQLiteStore:
             ).fetchone()
         return bool(row and row[0] == 1)
 
+    def get_channel_last_seen(self, key: str) -> str | None:
+        with self.logs_conn() as conn:
+            row = conn.execute(
+                "SELECT last_seen_id FROM channel_state WHERE key = ?",
+                (key,),
+            ).fetchone()
+        return row[0] if row else None
+
+    def set_channel_last_seen(self, key: str, last_seen_id: str) -> None:
+        with self.logs_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO channel_state (key, last_seen_id, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (key, str(last_seen_id), datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+
     def log_sora_usage(self, user_id: str, video_id: str | None = None) -> None:
         self._log_video_usage("sora_usage", user_id, video_id=video_id)
 
@@ -245,6 +264,12 @@ class SQLiteStore:
                     user_id TEXT,
                     video_id TEXT,
                     timestamp TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS channel_state (
+                    key TEXT PRIMARY KEY,
+                    last_seen_id TEXT,
+                    updated_at TEXT
                 );
                 """
             )

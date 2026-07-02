@@ -1,6 +1,6 @@
 import sys
 import time
-from logger_setup import configure_logging
+from services.logging_config import configure_logging
 
 # Set up logging before importing any bot modules
 configure_logging('--verbose' in sys.argv)
