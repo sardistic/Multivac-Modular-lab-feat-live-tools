@@ -19,11 +19,18 @@ OPENAI_CHAT_MODEL = OPENAI_DEFAULT_MODEL
 OPENAI_INTENT_MODEL = os.getenv("OPENAI_INTENT_MODEL", OPENAI_DEFAULT_MODEL)
 
 
-def model_supports_temperature(model: str) -> bool:
-    """GPT-5+ and the o-series reasoning models reject the `temperature`
-    parameter entirely (only the default is allowed)."""
+def is_reasoning_model(model: str) -> bool:
+    """GPT-5+ and the o-series models are reasoning models: they spend
+    (hidden) reasoning tokens before visible output, so token budgets must be
+    generous and several classic params (temperature) are rejected."""
     m = (model or "").lower()
-    return not m.startswith(("gpt-5", "o1", "o3", "o4"))
+    return m.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def model_supports_temperature(model: str) -> bool:
+    """Reasoning models reject the `temperature` parameter entirely
+    (only the default is allowed)."""
+    return not is_reasoning_model(model)
 
 
 def temperature_kwargs(model: str, temperature: float | None) -> dict:
