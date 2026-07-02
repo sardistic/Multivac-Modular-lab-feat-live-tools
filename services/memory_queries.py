@@ -10,6 +10,75 @@ from config import ALLOW_CROSS_CHANNEL_USER_CONTEXT, ALLOW_CROSS_GUILD_USER_CONT
 
 # Keep sorting compatible with older indices where message_id may be mapped as text.
 _SORT_RECENT = [{"timestamp": {"order": "desc"}}]
+_ROLE_USER = "user"
+_ROLE_ASSISTANT = "assistant"
+
+_USER_RECALL_RE = re.compile(
+    r"\b(?:"
+    r"when did i|what did i|did i|have i|"
+    r"i said|i say|i mentioned|i mention|"
+    r"my message|my messages"
+    r")\b"
+)
+_ASSISTANT_RECALL_RE = re.compile(
+    r"\b(?:"
+    r"when did you|what did you|did you|have you|"
+    r"you said|you say|you mentioned|you mention|you told me|"
+    r"your message|your messages|assistant|bot"
+    r")\b"
+)
+_RECALL_NOISE_PATTERNS = [
+    r"\bwhen did (?:i|you|we)\b",
+    r"\bwhat did (?:i|you|we)\b",
+    r"\bdid (?:i|you|we)\b",
+    r"\bhave (?:i|you|we)\b",
+    r"\bcan you\b",
+    r"\bplease\b",
+    r"\b(?:find|search|look up|lookup)\b",
+    r"\b(?:the )?last time\b",
+    r"\blast\b",
+    r"\bmost recent(?:ly)?\b",
+    r"\brecently\b",
+    r"\bprevious(?:ly)?\b",
+    r"\bearliest\b",
+    r"\bfirst(?: message| thing)?\b",
+    r"\bhistory\b",
+    r"\bmessage(?:s)?\b",
+    r"\bmention(?:ed|ing)?\b",
+    r"\b(?:say|said)\b",
+    r"\btalk(?:ed)? about\b",
+    r"\bbring(?:ing)? up\b",
+    r"\bbrought up\b",
+    r"\btold you\b",
+    r"\babout\b",
+    r"\byesterday\b",
+    r"\blast (?:week|month|year)\b",
+    r"\b\d+\s+(?:sec|second|min|minute|hour|hr|day|week|month|year)s?\s+ago\b",
+    r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
+    r"(?:sec|second|min|minute|hour|hr|day|week|month|year)s?\s+ago\b",
+]
+_PRONOUN_NOISE_RE = re.compile(r"\b(?:i|you|we|me|my|your|our|the)\b")
+
+
+def _infer_role_filter(query_text: str) -> Optional[str]:
+    low = (query_text or "").lower()
+    if _USER_RECALL_RE.search(low):
+        return _ROLE_USER
+    if _ASSISTANT_RECALL_RE.search(low):
+        return _ROLE_ASSISTANT
+    return None
+
+
+def _extract_recall_search_terms(query_text: str) -> str:
+    cleaned = (query_text or "").lower()
+    cleaned = re.sub(r"[\"'`“”‘’]", " ", cleaned)
+    cleaned = re.sub(r"[?!.:,/\\()\[\]{}<>]", " ", cleaned)
+    for pattern in _RECALL_NOISE_PATTERNS:
+        cleaned = re.sub(pattern, " ", cleaned)
+    cleaned = _PRONOUN_NOISE_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
 
 def _build_scope_filters(
     *,
@@ -299,6 +368,7 @@ def search_history_for_context(
     user_id: str | int,
     query_text: str,
     target_user_id: str | int | None = None,
+    target_role: str | None = None,
     limit: int = 5,
     oldest_first: bool = False,
 ) -> str:
@@ -308,6 +378,9 @@ def search_history_for_context(
         user_id=user_id,
         target_user_id=target_user_id,
     )
+    effective_role = target_role or _infer_role_filter(query_text)
+    if effective_role in {_ROLE_USER, _ROLE_ASSISTANT}:
+        scope_filters.append({"term": {"role": effective_role}})
     if "random" in query_text.lower():
         query = {
             "function_score": {
@@ -320,14 +393,12 @@ def search_history_for_context(
     else:
         time_range = _parse_relative_time_search(query_text)
         query = {"bool": {"filter": list(scope_filters), "must": []}}
+        skip_content_filter = any(k in query_text.lower() for k in ["first message", "first thing", "history", "beginning", "start"])
+        cleaned = _extract_recall_search_terms(query_text)
         if time_range:
             query["bool"]["filter"].append({"range": {"timestamp": time_range}})
-        else:
-            skip_content_filter = any(k in query_text.lower() for k in ["first message", "first thing", "history", "beginning", "start"])
-            if not skip_content_filter and query_text.strip():
-                cleaned = query_text.replace("search", "").replace("history", "").strip()
-                if cleaned:
-                    query["bool"]["must"].append({"match": {"content": cleaned}})
+        if not skip_content_filter and cleaned:
+            query["bool"]["must"].append({"match": {"content": cleaned}})
         sort_order = "asc" if oldest_first else "desc"
         resp = search_raw(
             query,
@@ -355,6 +426,7 @@ def fetch_matches_recent(
     channel_id: str | int,
     user_id: str | int,
     target_user_id: str | int | None = None,
+    target_role: str | None = None,
     query: str,
     size: int = 16,
     source: List[str] | None = None,
@@ -365,7 +437,10 @@ def fetch_matches_recent(
         user_id=user_id,
         target_user_id=target_user_id,
     )
-    cleaned_query = (query or "").strip()
+    effective_role = target_role or _infer_role_filter(query)
+    if effective_role in {_ROLE_USER, _ROLE_ASSISTANT}:
+        scope_filters.append({"term": {"role": effective_role}})
+    cleaned_query = _extract_recall_search_terms(query) or (query or "").strip()
 
     bool_query: Dict[str, Any] = {
         "filter": list(scope_filters),

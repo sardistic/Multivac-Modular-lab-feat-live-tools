@@ -1,19 +1,6 @@
-# Python
 __pycache__/
 *.pyc
+*.db
 .env
 .venv/
 venv/
-
-# Local app data
-conversation_history.db
-user_locations.db
-archive/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Poetry
-# (keep lockfile tracked; remove this next line if you WANT to commit lock updates)
-# poetry.lock

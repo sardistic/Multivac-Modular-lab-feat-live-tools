@@ -1,0 +1,53 @@
+diff --git a/providers/openai_messages.py b/providers/openai_messages.py
+--- a/providers/openai_messages.py
++++ b/providers/openai_messages.py
+@@ -348,0 +349,3 @@ async def generate_openai_messages_response_with_tools(
++        active_tools = TOOLS_DEF if tools is None else tools
++        chat_tools = active_tools or None
++        chat_tool_choice = "auto" if chat_tools else None
+@@ -350,15 +353,17 @@ async def generate_openai_messages_response_with_tools(
+-            tool_instruction = {
+-                "role": "system",
+-            "content": (
+-                "You have access to tools. When the user asks about your code, commits, files, "
+-                "weather, stocks, or other data you can fetch, USE the appropriate tool to get "
+-                "real information. Do not say you 'would use' a tool - actually call it."
+-                "If the user asks about past conversation/history/timeframes (e.g., 'what did I say last month', "
+-                "'2 weeks ago', 'yesterday'), call `search_memory` before answering."
+-                "For recall questions, prefer semantic/temporal intent over literal keyword matching."
+-                "If the user asks to change how you should speak or behave from now on, call "
+-                "`update_behavioral_instruction` before answering. Treat new long-term behavior "
+-                "requests as replacing conflicting old ones."
+-            ),
+-        }
+-            messages_with_instruction = [tool_instruction] + messages
++            messages_with_instruction = list(messages)
++            if active_tools:
++                tool_instruction = {
++                    "role": "system",
++                "content": (
++                    "You have access to tools. When the user asks about your code, commits, files, "
++                    "weather, stocks, or other data you can fetch, USE the appropriate tool to get "
++                    "real information. Do not say you 'would use' a tool - actually call it."
++                    "If the user asks about past conversation/history/timeframes (e.g., 'what did I say last month', "
++                    "'2 weeks ago', 'yesterday'), call `search_memory` before answering."
++                    "For recall questions, prefer semantic/temporal intent over literal keyword matching."
++                    "If the user asks to change how you should speak or behave from now on, call "
++                    "`update_behavioral_instruction` before answering. Treat new long-term behavior "
++                    "requests as replacing conflicting old ones."
++                ),
++            }
++                messages_with_instruction.insert(0, tool_instruction)
+@@ -369 +374 @@ async def generate_openai_messages_response_with_tools(
+-                tools=_normalize_tools(tools),
++                tools=_normalize_tools(active_tools),
+@@ -410,2 +415,2 @@ async def generate_openai_messages_response_with_tools(
+-            tools=tools or TOOLS_DEF,
+-            tool_choice="auto",
++            tools=chat_tools,
++            tool_choice=chat_tool_choice,
+@@ -437,2 +442,2 @@ async def generate_openai_messages_response_with_tools(
+-                tool_choice="auto",
+-                tools=tools or TOOLS_DEF,
++                tool_choice=chat_tool_choice,
++                tools=chat_tools,
