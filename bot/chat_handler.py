@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from bot.chat_context import build_chat_context
@@ -31,7 +32,10 @@ async def handle_chat_intent(
         selected_model = model_name or default_model or OPENAI_CHAT_MODEL
 
         async def _chat_with_es_window():
-            msgs = build_chat_context(
+            # build_chat_context makes several synchronous ES queries (window,
+            # timeline, salient recall) — keep them off the event loop.
+            msgs = await asyncio.to_thread(
+                build_chat_context,
                 message=message,
                 user_id=user_id,
                 raw_prompt=raw_prompt,
