@@ -5,7 +5,12 @@ from datetime import datetime, timezone, timedelta
 def _parse_iso(ts: str) -> datetime:
     if ts.endswith("Z"):
         ts = ts[:-1] + "+00:00"
-    return datetime.fromisoformat(ts)
+    dt = datetime.fromisoformat(ts)
+    # Naive timestamps (e.g. datetime.utcnow().isoformat() stored in SQLite)
+    # are UTC by convention here.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 def _plural(n: int, unit: str) -> str:
     return f"{n} {unit}" + ("" if n == 1 else "s")

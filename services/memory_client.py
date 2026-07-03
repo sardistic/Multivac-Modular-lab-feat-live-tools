@@ -44,9 +44,14 @@ OPENSEARCH_ENABLED = _get_bool("OPENSEARCH_ENABLED", True)
 class MemoryRuntime:
     client: Optional[Elasticsearch] = None
     disabled: bool = not OPENSEARCH_ENABLED
+    disabled_at: Optional[datetime] = None
 
 
 runtime = MemoryRuntime()
+
+# After a failure, retry the connection this often instead of staying dead
+# until the process restarts.
+ES_RETRY_COOLDOWN_S = 120
 
 
 def _now_utc() -> datetime:
@@ -64,12 +69,24 @@ def conversation_key(guild_id: str | int, channel_id: str | int, user_id: str | 
 def _disable_es(reason: str) -> None:
     runtime.client = None
     runtime.disabled = True
-    logger.warning("[ES] disabling ES-backed memory: %s", reason)
+    runtime.disabled_at = _now_utc()
+    logger.warning(
+        "[ES] disabling ES-backed memory: %s (will retry in %ss)", reason, ES_RETRY_COOLDOWN_S
+    )
 
 
 def init_es_client(force: bool = False) -> Optional[Elasticsearch]:
     if runtime.disabled and not force:
-        return None
+        # Hard-disabled via env: never retry.
+        if not OPENSEARCH_ENABLED:
+            return None
+        # Transient failure: retry once the cooldown has passed.
+        if runtime.disabled_at is None or (
+            _now_utc() - runtime.disabled_at
+        ).total_seconds() < ES_RETRY_COOLDOWN_S:
+            return None
+        logger.info("[ES] retry cooldown elapsed; attempting reconnect")
+        runtime.disabled = False
     if runtime.client is not None and not force:
         return runtime.client
 

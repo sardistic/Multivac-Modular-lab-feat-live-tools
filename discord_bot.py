@@ -398,6 +398,21 @@ async def on_raw_reaction_add(payload):
     finally:
         _expansion_locks.discard(payload.message_id)
 
+@bot.event
+async def on_command_error(ctx, error):
+    """Surface command failures to the user instead of hanging a deferred
+    interaction on silent 'thinking'."""
+    root = getattr(error, "original", None) or error.__cause__ or error
+    logger.error(
+        "Command %s failed: %r",
+        getattr(ctx.command, "name", "?"),
+        root,
+        exc_info=root,
+    )
+    with contextlib.suppress(Exception):
+        await ctx.reply(f"❌ `{getattr(ctx.command, 'name', '?')}` failed: {type(root).__name__}: {str(root)[:150]}")
+
+
 # --------------------------
 # Commands
 # --------------------------
@@ -535,10 +550,15 @@ async def on_message(message: discord.Message):
     prompt = raw_prompt
     user_id = message.author.id
 
-    is_direct_mention = bot.user.mentioned_in(message)
+    # Only an EXPLICIT @bot mention in the message text counts as a trigger.
+    # mentioned_in() is also true for role mentions (any @role the bot holds),
+    # which made the bot jump into conversations nobody addressed to it.
+    is_direct_mention = bool(bot.user) and (
+        f"<@{bot.user.id}>" in (message.content or "")
+        or f"<@!{bot.user.id}>" in (message.content or "")
+    )
     ref_msg, is_reply_to_bot = await resolve_reference_message(message, bot.user)
 
-    # Allow the plain text trigger too
     if not (is_direct_mention or is_reply_to_bot) or message.mention_everyone:
         return
     
