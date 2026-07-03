@@ -75,25 +75,18 @@ def _extract_youtube_id(url: str) -> str | None:
 
 
 async def handle_get_youtube_transcript(args: Dict[str, Any]) -> Dict[str, Any]:
+    import asyncio
+
+    from services.youtube_utils import fetch_youtube_transcript
+
     url = (args or {}).get("url", "")
     vid = _extract_youtube_id(url)
     if not vid:
         return {"ok": False, "error": "bad_youtube_url"}
-    try:
-        from youtube_transcript_api import (
-            NoTranscriptFound,
-            TranscriptsDisabled,
-            VideoUnavailable,
-            YouTubeTranscriptApi,
-        )
-
-        transcript_list = YouTubeTranscriptApi.get_transcript(vid, languages=["en"])
-        text = " ".join(chunk["text"] for chunk in transcript_list if chunk.get("text"))
-        return {"ok": True, "video_id": vid, "text": text}
-    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable) as e:
-        return {"ok": False, "error": f"transcript_unavailable: {e.__class__.__name__}"}
-    except Exception as e:
-        return {"ok": False, "error": f"transcript_error: {e}"}
+    text = await asyncio.to_thread(fetch_youtube_transcript, vid)
+    if not text:
+        return {"ok": False, "error": "transcript_unavailable"}
+    return {"ok": True, "video_id": vid, "text": text[:12000]}
 
 
 async def handle_summarize_url(args: Dict[str, Any]) -> Dict[str, Any]:
