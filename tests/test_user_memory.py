@@ -93,6 +93,33 @@ class UsageCostsTests(unittest.TestCase):
         self.assertAlmostEqual(usage_costs.estimate_cost("gpt-5.5", usage), 1.25)
         self.assertEqual(usage_costs.estimate_cost("mystery-model", usage), 0.0)
 
+    def test_migrates_old_schema_without_user_id(self):
+        # Simulate a database created before the user_id column existed.
+        import sqlite3
+        conn = sqlite3.connect(usage_costs.DB_PATH)
+        conn.executescript(
+            """
+            CREATE TABLE usage_logs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts_utc TEXT NOT NULL,
+              model TEXT NOT NULL,
+              label TEXT,
+              prompt_tokens INTEGER NOT NULL DEFAULT 0,
+              completion_tokens INTEGER NOT NULL DEFAULT 0,
+              total_tokens INTEGER NOT NULL DEFAULT 0,
+              cost_usd REAL NOT NULL DEFAULT 0.0,
+              meta_json TEXT
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        usage_costs.set_request_context(user_id="5")
+        usage_costs.record("gpt-5.5", {"prompt_tokens": 10, "completion_tokens": 5}, 0.0)
+        mine = usage_costs.today_for_user("5")
+        self.assertEqual(mine["calls"], 1)
+
     def test_responses_api_token_keys_normalized(self):
         usage_costs.set_request_context(user_id="7")
         usage_costs.record("gpt-5.5", {"input_tokens": 200, "output_tokens": 100}, 0.0)
