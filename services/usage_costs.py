@@ -49,7 +49,6 @@ CREATE TABLE IF NOT EXISTS usage_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_logs (ts_utc);
-CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_logs (user_id);
 """
 
 # ----------------------------
@@ -119,10 +118,12 @@ def _conn_rw():
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.executescript(SCHEMA)
-        # Migrate pre-user_id databases in place.
+        # Migrate pre-user_id databases in place. Must run before creating the
+        # user_id index, or the index DDL fails on old tables.
         cols = {r[1] for r in conn.execute("PRAGMA table_info(usage_logs)")}
         if "user_id" not in cols:
             conn.execute("ALTER TABLE usage_logs ADD COLUMN user_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_logs (user_id)")
         yield conn
         conn.commit()
     finally:
