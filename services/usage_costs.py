@@ -75,6 +75,8 @@ def get_request_context() -> Dict[str, Any]:
 _DEFAULT_PRICING: Dict[str, tuple] = {
     # prefix: (input_per_1m, output_per_1m)
     "gpt-5.5": (1.25, 10.00),
+    "gpt-5.4-mini": (0.25, 2.00),
+    "gpt-5.4-nano": (0.05, 0.40),
     "gpt-5": (1.25, 10.00),
     "gpt-4o": (2.50, 10.00),
     "gpt-4.1": (2.00, 8.00),

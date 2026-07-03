@@ -99,6 +99,36 @@ def build_user_awareness_block(user_id, display_name: str | None = None) -> str 
     return header + "\n" + "\n".join(parts)
 
 
+def user_memory_stats(user_id) -> Optional[dict]:
+    """Count this user's messages in the Elasticsearch index and find their
+    earliest indexed message. Returns None when ES is unavailable."""
+    from services.memory_client import search_raw
+
+    uid = str(user_id)
+    query = {"bool": {"filter": [{"term": {"user_id": uid}}, {"term": {"role": "user"}}]}}
+    try:
+        res = search_raw(
+            query,
+            size=1,
+            source=["timestamp", "ts"],
+            sort=[{"ts": {"order": "asc", "unmapped_type": "date"}}],
+        )
+    except Exception:
+        logger.warning("user_memory_stats query failed", exc_info=True)
+        return None
+
+    hits = (res or {}).get("hits", {})
+    total = hits.get("total", 0)
+    if isinstance(total, dict):
+        total = total.get("value", 0)
+    first_seen = None
+    rows = hits.get("hits", [])
+    if rows:
+        src = rows[0].get("_source", {})
+        first_seen = src.get("timestamp") or src.get("ts")
+    return {"indexed_messages": int(total or 0), "first_seen": first_seen}
+
+
 def _profile_is_stale(uid: str) -> bool:
     prof = get_user_profile(uid)
     if not prof:
@@ -144,6 +174,7 @@ async def maybe_refresh_profile(*, guild_id, channel_id, user_id) -> None:
             history_lines.append(f"[{ts}] {(r.get('content') or '')[:400]}")
         history_text = "\n".join(history_lines)[:12000]
 
+        from providers.openai_client import OPENAI_LIGHT_MODEL
         from providers.openai_messages import generate_openai_messages_response
 
         distilled = await generate_openai_messages_response(
@@ -151,6 +182,7 @@ async def maybe_refresh_profile(*, guild_id, channel_id, user_id) -> None:
                 {"role": "system", "content": _DISTILL_SYSTEM},
                 {"role": "user", "content": f"Message history (newest first):\n{history_text}"},
             ],
+            model=OPENAI_LIGHT_MODEL,
             max_tokens=2000,
         )
         distilled = (distilled or "").strip()

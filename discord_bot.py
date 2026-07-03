@@ -317,13 +317,27 @@ async def backfill_recent_channel_history_to_es(
 # Events
 # --------------------------
 
+_app_commands_synced = False
+
+
 @bot.event
 async def on_ready():
     await bot.change_presence(
         activity=discord.Activity(type=discord.ActivityType.watching, name="Graphs Go BRRR 📈")
     )
     logger.info("Bot is online and ready!")
-    logger.info("Startup: Gemini Tools Patch Loaded (Scipy+Artifacts) v3")
+
+    # Register slash (application) commands with Discord. Global sync; if the
+    # commands don't appear, the bot needs re-inviting with the
+    # 'applications.commands' OAuth scope.
+    global _app_commands_synced
+    if not _app_commands_synced:
+        try:
+            synced = await bot.tree.sync()
+            _app_commands_synced = True
+            logger.info("Synced %d application commands: %s", len(synced), [c.name for c in synced])
+        except Exception:
+            logger.exception("Application command sync failed")
 
 @bot.event
 async def on_raw_reaction_add(payload):
@@ -388,11 +402,11 @@ async def on_raw_reaction_add(payload):
 # Commands
 # --------------------------
 
-@bot.command(name="ping")
+@bot.hybrid_command(name="ping", description="Check that the bot is alive.")
 async def ping(ctx):
     await ctx.reply("pong")
 
-@bot.command(name="memory_fetch_more")
+@bot.hybrid_command(name="memory_fetch_more", description="Index recent channel messages into long-term memory (mods only).")
 @commands.has_permissions(manage_messages=True)
 async def memory_fetch_more(ctx, chunk: int = 200):
     """
@@ -400,6 +414,8 @@ async def memory_fetch_more(ctx, chunk: int = 200):
     Uses a per-channel 'last_seen_id' high-water mark; first run grabs latest <chunk>.
     """
     try:
+        if ctx.interaction:
+            await ctx.defer()
         count = await backfill_recent_channel_history_to_es(
             ctx.guild.id if ctx.guild else None, ctx.channel.id, chunk=chunk
         )
@@ -407,9 +423,11 @@ async def memory_fetch_more(ctx, chunk: int = 200):
     except Exception as e:
         await ctx.reply(f"❌ {e}")
 
-@bot.command(name="memories")
+@bot.hybrid_command(name="memories", description="See what the bot remembers about you.")
 async def memories(ctx):
-    """Show what the bot remembers about you (facts + profile freshness)."""
+    """Show remembered facts, profile freshness, and indexed-history stats."""
+    if ctx.interaction:
+        await ctx.defer(ephemeral=True)
     uid = str(ctx.author.id)
     facts = await asyncio.to_thread(list_user_facts, uid, 25)
     profile = await asyncio.to_thread(get_user_profile, uid)
@@ -420,14 +438,39 @@ async def memories(ctx):
             lines.append(f"`#{f['id']}` {f['fact']}")
     else:
         lines.append("_No saved facts yet — tell me things worth remembering._")
+
+    from services.time_context import time_ago_str
     if profile and profile.get("updated_at"):
-        from services.time_context import time_ago_str
-        lines.append(f"\n_Profile last distilled {time_ago_str(profile['updated_at'])} ago._")
+        lines.append(f"\n_Profile last distilled {time_ago_str(profile['updated_at'])} ago — see `/profile`._")
+
+    # Long-term history stats straight from Elasticsearch.
+    try:
+        from services.user_profile import user_memory_stats
+        stats = await asyncio.to_thread(user_memory_stats, uid)
+        if stats and stats.get("indexed_messages"):
+            since = f" since {stats['first_seen'][:10]}" if stats.get("first_seen") else ""
+            lines.append(f"_{stats['indexed_messages']:,} of your messages indexed in long-term memory{since}._")
+    except Exception:
+        logger.warning("user_memory_stats failed", exc_info=True)
+
     lines.append("_Use `/forget <text>` to remove anything._")
     await ctx.reply("\n".join(lines)[:1990])
 
 
-@bot.command(name="forget")
+@bot.hybrid_command(name="profile", description="Show the bot's distilled profile of you.")
+async def profile(ctx):
+    if ctx.interaction:
+        await ctx.defer(ephemeral=True)
+    prof = await asyncio.to_thread(get_user_profile, str(ctx.author.id))
+    if not prof or not (prof.get("profile") or "").strip():
+        await ctx.reply("_No distilled profile yet — chat with me a bit more and one will form._")
+        return
+    from services.time_context import time_ago_str
+    when = f" _(refreshed {time_ago_str(prof['updated_at'])} ago)_" if prof.get("updated_at") else ""
+    await ctx.reply(f"📋 **My read on you**{when}:\n{prof['profile']}"[:1990])
+
+
+@bot.hybrid_command(name="forget", description="Delete remembered facts matching some text.")
 async def forget(ctx, *, text: str = ""):
     """Delete remembered facts matching the given text."""
     if not text.strip():
@@ -440,9 +483,11 @@ async def forget(ctx, *, text: str = ""):
         await ctx.reply(f"Nothing stored matches “{text.strip()}”.")
 
 
-@bot.command(name="usage")
+@bot.hybrid_command(name="usage", description="Show API usage and costs (yours + totals).")
 async def usage(ctx):
     """Show API usage: yours today, plus totals (mods see per-user breakdown)."""
+    if ctx.interaction:
+        await ctx.defer()
     uid = str(ctx.author.id)
     mine = await asyncio.to_thread(usage_costs.today_for_user, uid)
     day = await asyncio.to_thread(usage_costs.today)

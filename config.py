@@ -65,9 +65,10 @@ def _truthy(s: str | None, default: bool = False) -> bool:
 DISCORD_TOKEN           = get_metadata("DISCORD_TOKEN")
 OPENAI_API_KEY          = get_metadata("OPENAI_API_KEY")
 OPENAI_DEFAULT_MODEL    = get_metadata("OPENAI_DEFAULT_MODEL", "gpt-5.5")
-# Cheaper tier for casual banter ('chat_light' intent). Defaults to the main
-# model (no behavior change) until pointed at e.g. gpt-5.5-mini.
-OPENAI_CASUAL_MODEL     = get_metadata("OPENAI_CASUAL_MODEL", OPENAI_DEFAULT_MODEL)
+# Cheaper tiers (verified available on this key 2026-07): mini for casual
+# banter + profile distillation, nano for intent classification.
+OPENAI_CASUAL_MODEL     = get_metadata("OPENAI_CASUAL_MODEL", "gpt-5.4-mini")
+OPENAI_INTENT_MODEL     = get_metadata("OPENAI_INTENT_MODEL", "gpt-5.4-nano")
 STABILITY_HOST          = get_metadata("STABILITY_HOST")
 STABILITY_KEY           = get_metadata("STABILITY_KEY")
 GOOGLE_PLACES_API_KEY   = get_metadata("GOOGLE_PLACES_API_KEY")
