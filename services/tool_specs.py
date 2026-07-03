@@ -220,6 +220,27 @@ TOOL_SPECS = [
     {
         "type": "function",
         "function": {
+            "name": "read_own_logs",
+            "description": "Read my own recent runtime logs (journalctl). Use this to self-reflect when asked about my errors, crashes, weird behavior, restarts, or health — e.g. 'why did you hang earlier?', 'check your logs'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "lines": {"type": "integer", "description": "How many recent log lines to return (max 120)", "default": 40},
+                    "level": {
+                        "type": "string",
+                        "enum": ["all", "warning", "error"],
+                        "description": "Filter to warnings+errors or errors only.",
+                        "default": "all",
+                    },
+                    "grep": {"type": "string", "description": "Optional case-insensitive substring filter."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remember_fact",
             "description": "Store a durable fact about the current user for future conversations (e.g. 'has a dog named Kevin', 'works night shifts', 'building a Discord bot called Multivac'). Use when the user shares personal info that will matter later. Do NOT store secrets, one-off trivia, or anything the user asks you to forget.",
             "parameters": {

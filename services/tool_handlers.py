@@ -305,6 +305,49 @@ async def handle_update_behavioral_instruction(args: Dict[str, Any]) -> Dict[str
         return {"ok": False, "error": f"db_error: {e}"}
 
 
+# Redact anything that looks like a credential before logs reach the model.
+_SECRET_RE = re.compile(
+    r"(sk-[A-Za-z0-9_\-]{8,}|xox[a-z]-[A-Za-z0-9\-]{8,}|AIza[A-Za-z0-9_\-]{10,}|"
+    r"(?i:(?:api[_-]?key|token|password|secret)\s*[=:]\s*)\S{6,})"
+)
+
+
+async def handle_read_own_logs(args: Dict[str, Any]) -> Dict[str, Any]:
+    import asyncio
+
+    lines = max(1, min(int(args.get("lines", 40) or 40), 120))
+    level = (args.get("level") or "all").lower()
+    grep = (args.get("grep") or "").lower()
+
+    cmd = ["journalctl", "-u", "discordbot", "-n", "600", "--no-pager", "-q", "-o", "short"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except FileNotFoundError:
+        return {"ok": False, "error": "journalctl_not_available"}
+    except Exception as e:
+        return {"ok": False, "error": f"log_read_failed: {e}"}
+
+    if proc.returncode != 0:
+        return {"ok": False, "error": f"journalctl_failed: {err.decode(errors='replace')[:200]}"}
+
+    rows = out.decode(errors="replace").splitlines()
+    if level == "error":
+        rows = [r for r in rows if "ERROR" in r or "Traceback" in r or "CRITICAL" in r]
+    elif level == "warning":
+        rows = [r for r in rows if any(k in r for k in ("ERROR", "WARNING", "Traceback", "CRITICAL"))]
+    if grep:
+        rows = [r for r in rows if grep in r.lower()]
+
+    rows = [_SECRET_RE.sub("[REDACTED]", r) for r in rows[-lines:]]
+    text = "\n".join(rows)
+    return {"ok": True, "lines_returned": len(rows), "logs": text[-6000:]}
+
+
 async def handle_remember_fact(args: Dict[str, Any]) -> Dict[str, Any]:
     from services.database_utils import add_user_fact, list_user_facts
 
@@ -415,6 +458,7 @@ TOOL_HANDLERS = {
     "update_behavioral_instruction": handle_update_behavioral_instruction,
     "remember_fact": handle_remember_fact,
     "forget_fact": handle_forget_fact,
+    "read_own_logs": handle_read_own_logs,
     "list_available_tools": handle_list_available_tools,
     "generate_sora_video": handle_generate_sora_video,
 }
