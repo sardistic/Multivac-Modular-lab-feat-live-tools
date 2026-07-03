@@ -27,6 +27,7 @@ async def handle_chat_intent(
     send_or_edit_with_truncation,
     moderation_view_factory,
     default_model=None,
+    clarify_hint: bool = False,
 ):
     async def _do_chat_generation(model_name=None):
         selected_model = model_name or default_model or OPENAI_CHAT_MODEL
@@ -42,6 +43,17 @@ async def handle_chat_intent(
                 ref_msg=ref_msg,
                 is_reply_to_bot=is_reply_to_bot,
             )
+            if clarify_hint:
+                msgs.append({
+                    "role": "system",
+                    "content": (
+                        "The latest user message is vague on its own ('do that', 'make it "
+                        "better'). FIRST try to resolve what they mean from the conversation "
+                        "history above — especially anything you just offered or discussed. "
+                        "If it's resolvable, just do it. Only if genuinely unresolvable, ask "
+                        "ONE short clarifying question."
+                    ),
+                })
             ctx = {
                 "guild_id": message.guild.id if message.guild else "DM",
                 "channel_id": message.channel.id,
