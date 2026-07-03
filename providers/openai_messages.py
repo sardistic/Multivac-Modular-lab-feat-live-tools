@@ -16,7 +16,15 @@ from providers.openai_images import (
     build_user_content_responses,
     normalize_image_inputs,
 )
+from services import usage_costs
 from services.tools_registry import TOOL_SPECS, execute_tool
+
+
+async def _responses_create(**kwargs):
+    """responses.create with usage/cost accounting."""
+    resp = await get_openai_client().responses.create(**kwargs)
+    usage_costs.record_response(kwargs.get("model", ""), resp)
+    return resp
 
 REFUSAL_PATTERNS = [
     r"I cannot help you with that",
@@ -201,10 +209,12 @@ async def _create_chat_completion_with_token_fallback(
         kwargs["tool_choice"] = tool_choice
 
     try:
-        return await get_openai_client().chat.completions.create(
+        resp = await get_openai_client().chat.completions.create(
             **kwargs,
             max_completion_tokens=max_tokens,
         )
+        usage_costs.record_response(model, resp)
+        return resp
     except Exception as e:
         msg = str(e).lower()
         # Safety net: if the model rejects temperature despite the capability
@@ -220,10 +230,12 @@ async def _create_chat_completion_with_token_fallback(
                 tool_choice=tool_choice,
             )
         if "max_completion_tokens" in msg and ("unsupported" in msg or "unknown" in msg):
-            return await get_openai_client().chat.completions.create(
+            resp = await get_openai_client().chat.completions.create(
                 **kwargs,
                 max_tokens=max_tokens,
             )
+            usage_costs.record_response(model, resp)
+            return resp
         raise
 
 
@@ -308,7 +320,7 @@ async def _collect_responses_text_with_continuations(
             }
         )
 
-        resp = await get_openai_client().responses.create(
+        resp = await _responses_create(
             model=model,
             input=current_input,
             max_output_tokens=max_tokens,
@@ -410,7 +422,7 @@ async def _responses_tool_loop(
         for cid, name, args in uses:
             output_text = await _exec_tool(name, args, context=tool_context)
             current_input.append({"type": "function_call_output", "call_id": cid, "output": str(output_text)})
-        resp = await get_openai_client().responses.create(
+        resp = await _responses_create(
             model=model,
             input=current_input,
             tools=_normalize_tools(None),
@@ -442,7 +454,7 @@ async def generate_openai_response(
         img_norm = normalize_image_inputs(image_urls)
         if USE_RESPONSES:
             msgs.append({"role": "user", "content": build_user_content_responses(prompt, img_norm)})
-            resp = await get_openai_client().responses.create(
+            resp = await _responses_create(
                 model=model,
                 input=msgs,
                 max_output_tokens=max_tokens,
@@ -488,7 +500,7 @@ async def generate_openai_messages_response(
     try:
         if USE_RESPONSES:
             norm = _normalize_messages_for_responses(messages)
-            resp = await get_openai_client().responses.create(
+            resp = await _responses_create(
                 model=model,
                 input=norm,
                 max_output_tokens=max_tokens,
@@ -558,7 +570,7 @@ async def generate_openai_messages_response_with_tools(
                 }
                 messages_with_instruction.insert(0, tool_instruction)
             norm = _normalize_messages_for_responses(messages_with_instruction)
-            resp = await get_openai_client().responses.create(
+            resp = await _responses_create(
                 model=model,
                 input=norm,
                 tools=_normalize_tools(active_tools),
@@ -577,7 +589,7 @@ async def generate_openai_messages_response_with_tools(
             text = _extract_responses_text(resp)
             if text:
                 return text
-            final_resp = await get_openai_client().responses.create(
+            final_resp = await _responses_create(
                 model=model,
                 input=current_input
                 + [

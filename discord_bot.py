@@ -43,7 +43,14 @@ from services.database_utils import (
     get_message_expansion,
     get_channel_last_seen,
     set_channel_last_seen,
+    get_user_seen,
+    set_user_seen,
+    list_user_facts,
+    delete_user_facts_matching,
+    get_user_profile,
 )
+from services import usage_costs
+from services.user_profile import maybe_refresh_profile
 from providers.claude_utils import ANTHROPIC_API_KEY
 from bot.intent_dispatcher import DispatchContext, dispatch_intent, resolve_keyword_intent
 from bot.message_inputs import (
@@ -400,6 +407,64 @@ async def memory_fetch_more(ctx, chunk: int = 200):
     except Exception as e:
         await ctx.reply(f"❌ {e}")
 
+@bot.command(name="memories")
+async def memories(ctx):
+    """Show what the bot remembers about you (facts + profile freshness)."""
+    uid = str(ctx.author.id)
+    facts = await asyncio.to_thread(list_user_facts, uid, 25)
+    profile = await asyncio.to_thread(get_user_profile, uid)
+
+    lines = [f"🧠 **What I remember about {ctx.author.display_name}:**"]
+    if facts:
+        for f in reversed(facts):
+            lines.append(f"`#{f['id']}` {f['fact']}")
+    else:
+        lines.append("_No saved facts yet — tell me things worth remembering._")
+    if profile and profile.get("updated_at"):
+        from services.time_context import time_ago_str
+        lines.append(f"\n_Profile last distilled {time_ago_str(profile['updated_at'])} ago._")
+    lines.append("_Use `/forget <text>` to remove anything._")
+    await ctx.reply("\n".join(lines)[:1990])
+
+
+@bot.command(name="forget")
+async def forget(ctx, *, text: str = ""):
+    """Delete remembered facts matching the given text."""
+    if not text.strip():
+        await ctx.reply("Usage: `/forget <text to match>`")
+        return
+    deleted = await asyncio.to_thread(delete_user_facts_matching, str(ctx.author.id), text.strip())
+    if deleted:
+        await ctx.reply(f"🗑️ Forgot {deleted} fact{'s' if deleted != 1 else ''} matching “{text.strip()}”.")
+    else:
+        await ctx.reply(f"Nothing stored matches “{text.strip()}”.")
+
+
+@bot.command(name="usage")
+async def usage(ctx):
+    """Show API usage: yours today, plus totals (mods see per-user breakdown)."""
+    uid = str(ctx.author.id)
+    mine = await asyncio.to_thread(usage_costs.today_for_user, uid)
+    day = await asyncio.to_thread(usage_costs.today)
+    month = await asyncio.to_thread(usage_costs.month_to_date)
+
+    lines = [
+        "📊 **API usage**",
+        f"You today: {mine['calls']} calls, {mine['total_tokens']:,} tokens, ${mine['cost']:.4f}",
+        f"Everyone today: {day['calls']} calls, {day['total_tokens']:,} tokens, ${day['cost']:.4f}",
+        f"Month to date: {month['calls']} calls, {month['total_tokens']:,} tokens, ${month['cost']:.2f}",
+    ]
+
+    perms = getattr(ctx.author, "guild_permissions", None)
+    if perms and perms.manage_messages:
+        top = await asyncio.to_thread(usage_costs.top_users_today, 5)
+        if top:
+            lines.append("\n**Top spenders today:**")
+            for t in top:
+                lines.append(f"<@{t['user_id']}>: {t['calls']} calls, ${t['cost']:.4f}")
+    await ctx.reply("\n".join(lines)[:1990])
+
+
 # --------------------------
 # Main message handler
 # --------------------------
@@ -503,10 +568,37 @@ async def on_message(message: discord.Message):
         with contextlib.suppress(Exception):
             await preflight_status.edit(content=f"[🧠 Preparing {_preflight_bar(2)}]\nClassifying intent…")
     
+    # Attribute all API spend during this message to the requesting user.
+    usage_costs.set_request_context(
+        user_id=str(user_id),
+        guild_id=str(message.guild.id) if message.guild else "DM",
+        channel_id=str(message.channel.id),
+    )
+
     # Intent: explicit keyword routing first, LLM classifier otherwise.
+    # The classifier sees the user's previous request so follow-ups like
+    # "another one" route to the same intent.
+    seen = None
+    try:
+        seen = await asyncio.to_thread(get_user_seen, str(user_id))
+    except Exception:
+        logger.warning("get_user_seen failed", exc_info=True)
+
     intent = resolve_keyword_intent(raw_prompt, prompt, has_attachments)
     if intent is None:
-        intent = await classify_intent(prompt, has_images=has_attachments)
+        intent = await classify_intent(
+            prompt,
+            has_images=has_attachments,
+            recent_turns=[f"user: {seen['last_prompt']}"] if seen and seen.get("last_prompt") else None,
+            prev_intent=seen.get("last_intent") if seen else None,
+        )
+
+    usage_costs.set_request_context(
+        user_id=str(user_id),
+        guild_id=str(message.guild.id) if message.guild else "DM",
+        channel_id=str(message.channel.id),
+        intent=intent,
+    )
 
     logger.info(f"Intent identified as: {intent} (has_attachments={has_attachments}, image_inputs={len(image_urls)})")
     if preflight_status is not None:
@@ -550,6 +642,20 @@ async def on_message(message: discord.Message):
     if leftover_status is not None:
         with contextlib.suppress(Exception):
             await leftover_status.delete()
+
+    # Track last interaction (time-passage awareness + intent continuity) and
+    # opportunistically refresh the distilled user profile off the reply path.
+    try:
+        await asyncio.to_thread(set_user_seen, str(user_id), intent=intent, prompt=prompt)
+    except Exception:
+        logger.warning("set_user_seen failed", exc_info=True)
+    asyncio.create_task(
+        maybe_refresh_profile(
+            guild_id=str(message.guild.id) if message.guild else "DM",
+            channel_id=str(message.channel.id),
+            user_id=str(user_id),
+        )
+    )
 
     # let other cogs/commands run too
     await bot.process_commands(message)

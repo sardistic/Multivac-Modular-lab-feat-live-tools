@@ -68,6 +68,8 @@ def get_duration_estimate(intent: str) -> int:
         "summarize_url": 10,
         "describe_image": 8,
         "chat": 6,
+        "chat_light": 4,
+        "clarify": 3,
         "get_weather": 5,
         "get_stock": 5,
     }.get(intent, 12)
@@ -207,6 +209,36 @@ async def dispatch_intent(ctx: DispatchContext) -> bool:
             await handle_stock_command(message, ctx.prompt)
         return True
 
+    if ctx.intent == "clarify":
+        # The classifier judged the request too ambiguous to route without
+        # wasting an expensive generation: ask one short question instead.
+        from providers.openai_client import OPENAI_LIGHT_MODEL
+        from providers.openai_messages import generate_openai_messages_response
+
+        question = await generate_openai_messages_response(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "The user's request is too ambiguous to act on. Ask exactly ONE "
+                        "short, friendly clarifying question that would let you proceed. "
+                        "No preamble, just the question."
+                    ),
+                },
+                {"role": "user", "content": ctx.raw_prompt or ctx.prompt},
+            ],
+            model=OPENAI_LIGHT_MODEL,
+            max_tokens=2000,
+        )
+        if question and question.strip() and not question.startswith("⚠️"):
+            await ctx.send_or_edit_with_truncation(
+                question.strip(), channel=message.channel, reply_to=message
+            )
+            return True
+        # Clarify generation failed; fall through to normal chat.
+
+    from providers.openai_client import OPENAI_LIGHT_MODEL as _light_model
+
     await handle_chat_intent(
         message=message,
         prompt=ctx.prompt,
@@ -221,5 +253,6 @@ async def dispatch_intent(ctx: DispatchContext) -> bool:
         live_status_with_progress=ctx.live_status_with_progress,
         send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
         moderation_view_factory=ctx.moderation_view_factory,
+        default_model=_light_model if ctx.intent == "chat_light" else None,
     )
     return True

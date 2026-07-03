@@ -25,9 +25,10 @@ async def handle_chat_intent(
     live_status_with_progress,
     send_or_edit_with_truncation,
     moderation_view_factory,
+    default_model=None,
 ):
     async def _do_chat_generation(model_name=None):
-        selected_model = model_name or OPENAI_CHAT_MODEL
+        selected_model = model_name or default_model or OPENAI_CHAT_MODEL
 
         async def _chat_with_es_window():
             msgs = build_chat_context(
@@ -94,6 +95,10 @@ async def handle_chat_intent(
                     original_message=message,
                     model=selected_model,
                 )
+            elif selected_model != OPENAI_CHAT_MODEL:
+                # Light-tier model punted; escalate to the main model once.
+                logger.info("Empty response from %s; escalating to %s", selected_model, OPENAI_CHAT_MODEL)
+                await _do_chat_generation(model_name=OPENAI_CHAT_MODEL)
             else:
                 await status_msg.edit(content="🤖 INSUFFICIENT DATA FOR MEANINGFUL ANSWER")
 
