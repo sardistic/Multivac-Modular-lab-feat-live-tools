@@ -651,10 +651,34 @@ async def on_message(message: discord.Message):
 
     intent = resolve_keyword_intent(raw_prompt, prompt, has_attachments)
     if intent is None:
+        # Give the classifier the last few real turns (user AND assistant) so
+        # "do that" right after the bot offered something routes to chat, not
+        # to a blind clarification.
+        recent_turns = None
+        try:
+            from services.memory_utils import build_message_window
+
+            window = await asyncio.to_thread(
+                build_message_window,
+                guild_id=message.guild.id if message.guild else "DM",
+                channel_id=message.channel.id,
+                user_id=user_id,
+                limit_msgs=4,
+            )
+            recent_turns = [
+                f"{m.get('role', 'user')}: {(m.get('content') or '')[:200]}"
+                for m in (window or [])
+                if (m.get("content") or "").strip()
+            ] or None
+        except Exception:
+            logger.warning("classifier context window failed", exc_info=True)
+        if not recent_turns and seen and seen.get("last_prompt"):
+            recent_turns = [f"user: {seen['last_prompt']}"]
+
         intent = await classify_intent(
             prompt,
             has_images=has_attachments,
-            recent_turns=[f"user: {seen['last_prompt']}"] if seen and seen.get("last_prompt") else None,
+            recent_turns=recent_turns,
             prev_intent=seen.get("last_intent") if seen else None,
         )
 
