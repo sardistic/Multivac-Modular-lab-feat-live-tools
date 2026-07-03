@@ -209,6 +209,27 @@ class SQLiteStore:
             )
             conn.commit()
 
+    # ---- Condensed YouTube transcript cache (one condensation cost per video) ----
+
+    def get_cached_transcript_summary(self, video_id: str) -> str | None:
+        with self.logs_conn() as conn:
+            row = conn.execute(
+                "SELECT summary FROM yt_transcript_cache WHERE video_id = ?",
+                (str(video_id),),
+            ).fetchone()
+        return row[0] if row else None
+
+    def set_cached_transcript_summary(self, video_id: str, summary: str) -> None:
+        with self.logs_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO yt_transcript_cache (video_id, summary, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (str(video_id), summary, datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+
     # ---- Last-interaction tracking (time-passage awareness, intent continuity) ----
 
     def get_user_seen(self, user_id: str) -> dict | None:
@@ -420,6 +441,12 @@ class SQLiteStore:
                     last_seen_at TEXT,
                     last_intent TEXT,
                     last_prompt TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS yt_transcript_cache (
+                    video_id TEXT PRIMARY KEY,
+                    summary TEXT,
+                    created_at TEXT
                 );
                 """
             )
