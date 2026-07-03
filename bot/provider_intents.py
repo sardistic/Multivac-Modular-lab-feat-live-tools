@@ -19,8 +19,26 @@ from providers.openai_utils import (
 from bot.response_policy import apply_personality_overrides, build_personality_system_message
 from services.memory_utils import build_message_window
 from services.url_utils import extract_main_text, fetch_url_content, reduce_text_length
+from services.youtube_utils import extract_youtube_id, fetch_youtube_transcript
 
 logger = logging.getLogger("discord_bot")
+
+
+async def _youtube_transcript_for(text_with_url: str, max_chars: int = 9000) -> str | None:
+    """If the text contains a YouTube URL, fetch the actual spoken transcript.
+    Without this, summaries get built from the video description/metadata,
+    which often covers 20 seconds of a 40-minute video."""
+    vid = extract_youtube_id(text_with_url or "")
+    if not vid:
+        return None
+    try:
+        transcript = await asyncio.to_thread(fetch_youtube_transcript, vid)
+    except Exception:
+        logger.warning("YouTube transcript fetch failed for %s", vid, exc_info=True)
+        return None
+    if not transcript:
+        return None
+    return transcript[:max_chars]
 
 
 async def handle_claude_chat_intent(
@@ -107,6 +125,14 @@ async def handle_gemini_chat_intent(
         ]
         if personality_msg:
             context_msgs.insert(0, {"role": "system", "content": personality_msg})
+
+    # Ground YouTube links in the real transcript, not the description.
+    transcript = await _youtube_transcript_for(clean_prompt)
+    if transcript:
+        clean_prompt += (
+            "\n\n[VIDEO TRANSCRIPT — this is the linked video's actual spoken content. "
+            "Base your answer on THIS, not the title/description/thumbnail:]\n" + transcript
+        )
 
     status_tracker = {"text": ""}
 
@@ -228,12 +254,20 @@ async def handle_summarize_url_intent(
     send_or_edit_with_truncation,
 ):
     async def _do_summarize():
-        html = fetch_url_content(url)
-        title, text = extract_main_text(html)
-        condensed = reduce_text_length(text, max_chars=3000)
+        # YouTube: summarize the actual transcript, not the page metadata.
+        transcript = await _youtube_transcript_for(url)
+        if transcript:
+            title = "YouTube video"
+            condensed = reduce_text_length(transcript, max_chars=9000)
+            source_note = "This is the video's spoken transcript."
+        else:
+            html = await asyncio.to_thread(fetch_url_content, url)
+            title, text = extract_main_text(html)
+            condensed = reduce_text_length(text, max_chars=3000)
+            source_note = ""
         personality_msg = build_personality_system_message(message.author.id, intent="summarize_url")
         msgs = [
-            {"role": "system", "content": "Summarize crisply (bullets ok) and extract key facts/figures."},
+            {"role": "system", "content": "Summarize crisply (bullets ok) and extract key facts/figures. " + source_note},
             {"role": "user", "content": f"Title: {title or ''}\n\n{condensed}"},
         ]
         if personality_msg:
