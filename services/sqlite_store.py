@@ -142,6 +142,98 @@ class SQLiteStore:
             ).fetchone()
         return bool(row and row[0] == 1)
 
+    # ---- Per-user long-term facts (model-invoked via remember_fact tool) ----
+
+    def add_user_fact(self, user_id: str, fact: str, category: str | None = None) -> int:
+        with self.logs_conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO user_facts (user_id, fact, category, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(user_id), fact, category, datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def list_user_facts(self, user_id: str, limit: int = 50) -> list[dict]:
+        with self.logs_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, fact, category, created_at FROM user_facts
+                WHERE user_id = ? ORDER BY id DESC LIMIT ?
+                """,
+                (str(user_id), int(limit)),
+            ).fetchall()
+        return [
+            {"id": r[0], "fact": r[1], "category": r[2], "created_at": r[3]}
+            for r in rows
+        ]
+
+    def delete_user_fact(self, user_id: str, fact_id: int) -> bool:
+        with self.logs_conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM user_facts WHERE user_id = ? AND id = ?",
+                (str(user_id), int(fact_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def delete_user_facts_matching(self, user_id: str, query: str) -> int:
+        with self.logs_conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM user_facts WHERE user_id = ? AND fact LIKE ?",
+                (str(user_id), f"%{query}%"),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    # ---- Distilled per-user profile (background summarization) ----
+
+    def get_user_profile(self, user_id: str) -> dict | None:
+        with self.logs_conn() as conn:
+            row = conn.execute(
+                "SELECT profile, updated_at FROM user_profiles WHERE user_id = ?",
+                (str(user_id),),
+            ).fetchone()
+        return {"profile": row[0], "updated_at": row[1]} if row else None
+
+    def set_user_profile(self, user_id: str, profile: str) -> None:
+        with self.logs_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO user_profiles (user_id, profile, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (str(user_id), profile, datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+
+    # ---- Last-interaction tracking (time-passage awareness, intent continuity) ----
+
+    def get_user_seen(self, user_id: str) -> dict | None:
+        with self.logs_conn() as conn:
+            row = conn.execute(
+                "SELECT last_seen_at, last_intent, last_prompt FROM user_seen WHERE user_id = ?",
+                (str(user_id),),
+            ).fetchone()
+        return (
+            {"last_seen_at": row[0], "last_intent": row[1], "last_prompt": row[2]}
+            if row
+            else None
+        )
+
+    def set_user_seen(self, user_id: str, *, intent: str | None = None, prompt: str | None = None) -> None:
+        with self.logs_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO user_seen (user_id, last_seen_at, last_intent, last_prompt)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(user_id), datetime.utcnow().isoformat(), intent, (prompt or "")[:500]),
+            )
+            conn.commit()
+
     def get_channel_last_seen(self, key: str) -> str | None:
         with self.logs_conn() as conn:
             row = conn.execute(
@@ -186,6 +278,42 @@ class SQLiteStore:
 
     def check_veo_limit(self, user_id: str, limit: int = 2, window_seconds: int = 3600) -> bool:
         return self._check_usage_limit("veo_usage", user_id, limit=limit, window_seconds=window_seconds)
+
+    def sora_limit_status(self, user_id: str, limit: int = 2, window_seconds: int = 3600) -> dict:
+        return self._usage_limit_status("sora_usage", user_id, limit=limit, window_seconds=window_seconds)
+
+    def veo_limit_status(self, user_id: str, limit: int = 2, window_seconds: int = 3600) -> dict:
+        return self._usage_limit_status("veo_usage", user_id, limit=limit, window_seconds=window_seconds)
+
+    def _usage_limit_status(self, table_name: str, user_id: str, limit: int, window_seconds: int) -> dict:
+        """Like _check_usage_limit but also reports remaining uses and when the
+        oldest in-window use expires (so refusals can say 'resets in 23m')."""
+        whitelist = {"54277066459193344", "54280542740287488"}
+        if str(user_id) in whitelist:
+            return {"allowed": True, "remaining": limit, "resets_in_seconds": 0}
+
+        with self.logs_conn() as conn:
+            rows = conn.execute(
+                f"SELECT timestamp FROM {table_name} WHERE user_id = ?",
+                (str(user_id),),
+            ).fetchall()
+
+        now = datetime.utcnow()
+        in_window: list[datetime] = []
+        for (ts_str,) in rows:
+            try:
+                ts = datetime.fromisoformat(ts_str)
+            except (ValueError, TypeError):
+                continue
+            if (now - ts).total_seconds() < window_seconds:
+                in_window.append(ts)
+
+        remaining = max(0, limit - len(in_window))
+        resets_in = 0
+        if in_window and remaining == 0:
+            oldest = min(in_window)
+            resets_in = max(0, int(window_seconds - (now - oldest).total_seconds()))
+        return {"allowed": remaining > 0, "remaining": remaining, "resets_in_seconds": resets_in}
 
     def _log_video_usage(self, table_name: str, user_id: str, video_id: str | None = None) -> None:
         with self.logs_conn() as conn:
@@ -270,6 +398,28 @@ class SQLiteStore:
                     key TEXT PRIMARY KEY,
                     last_seen_id TEXT,
                     updated_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS user_facts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    fact TEXT NOT NULL,
+                    category TEXT,
+                    created_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_user_facts_user ON user_facts (user_id);
+
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    user_id TEXT PRIMARY KEY,
+                    profile TEXT,
+                    updated_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS user_seen (
+                    user_id TEXT PRIMARY KEY,
+                    last_seen_at TEXT,
+                    last_intent TEXT,
+                    last_prompt TEXT
                 );
                 """
             )

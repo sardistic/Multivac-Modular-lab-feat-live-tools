@@ -72,6 +72,46 @@ def get_user_instruction(user_id: str) -> str | None:
     return store.get_user_instruction(user_id)
 
 
+def add_user_fact(user_id: str, fact: str, category: str | None = None) -> int:
+    return store.add_user_fact(user_id, fact, category)
+
+
+def list_user_facts(user_id: str, limit: int = 50) -> list[dict]:
+    return store.list_user_facts(user_id, limit)
+
+
+def delete_user_fact(user_id: str, fact_id: int) -> bool:
+    return store.delete_user_fact(user_id, fact_id)
+
+
+def delete_user_facts_matching(user_id: str, query: str) -> int:
+    return store.delete_user_facts_matching(user_id, query)
+
+
+def get_user_profile(user_id: str) -> dict | None:
+    return store.get_user_profile(user_id)
+
+
+def set_user_profile(user_id: str, profile: str) -> None:
+    store.set_user_profile(user_id, profile)
+
+
+def get_user_seen(user_id: str) -> dict | None:
+    return store.get_user_seen(user_id)
+
+
+def set_user_seen(user_id: str, *, intent: str | None = None, prompt: str | None = None) -> None:
+    store.set_user_seen(user_id, intent=intent, prompt=prompt)
+
+
+def sora_limit_status(user_id: str, limit: int = 2, window_seconds: int = 3600) -> dict:
+    return store.sora_limit_status(user_id, limit=limit, window_seconds=window_seconds)
+
+
+def veo_limit_status(user_id: str, limit: int = 2, window_seconds: int = 3600) -> dict:
+    return store.veo_limit_status(user_id, limit=limit, window_seconds=window_seconds)
+
+
 def get_channel_last_seen(key: str) -> str | None:
     return store.get_channel_last_seen(key)
 

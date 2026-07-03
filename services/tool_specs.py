@@ -220,6 +220,39 @@ TOOL_SPECS = [
     {
         "type": "function",
         "function": {
+            "name": "remember_fact",
+            "description": "Store a durable fact about the current user for future conversations (e.g. 'has a dog named Kevin', 'works night shifts', 'building a Discord bot called Multivac'). Use when the user shares personal info that will matter later. Do NOT store secrets, one-off trivia, or anything the user asks you to forget.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fact": {"type": "string", "description": "One short sentence, third person, e.g. 'Prefers concise answers.'"},
+                    "category": {
+                        "type": "string",
+                        "enum": ["identity", "preference", "project", "event", "relationship", "other"],
+                        "description": "Rough category of the fact.",
+                    },
+                },
+                "required": ["fact"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forget_fact",
+            "description": "Delete stored facts about the current user that match a phrase. Use when the user says something is wrong, outdated, or asks you to forget it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "match": {"type": "string", "description": "Phrase to match against stored facts, e.g. 'dog named Kevin'."},
+                },
+                "required": ["match"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_available_tools",
             "description": "List all my available tools and what they do. Call this to see what capabilities I have.",
             "parameters": {"type": "object", "properties": {}, "required": []},

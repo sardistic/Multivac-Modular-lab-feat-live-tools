@@ -305,21 +305,66 @@ async def handle_update_behavioral_instruction(args: Dict[str, Any]) -> Dict[str
         return {"ok": False, "error": f"db_error: {e}"}
 
 
+async def handle_remember_fact(args: Dict[str, Any]) -> Dict[str, Any]:
+    from services.database_utils import add_user_fact, list_user_facts
+
+    ctx = args.get("_context", {})
+    user_id = ctx.get("user_id")
+    if not user_id:
+        return {"ok": False, "error": "missing_user_context"}
+
+    fact = (args.get("fact") or "").strip()
+    if not fact:
+        return {"ok": False, "error": "missing_fact"}
+    if len(fact) > 300:
+        fact = fact[:300]
+
+    # Skip near-duplicates so repeated mentions don't pile up.
+    existing = list_user_facts(user_id, limit=100)
+    lowered = fact.lower()
+    for f in existing:
+        if f["fact"].lower() == lowered:
+            return {"ok": True, "status": "already_known", "fact": fact}
+
+    fact_id = add_user_fact(user_id, fact, args.get("category"))
+    return {"ok": True, "status": "remembered", "id": fact_id, "fact": fact}
+
+
+async def handle_forget_fact(args: Dict[str, Any]) -> Dict[str, Any]:
+    from services.database_utils import delete_user_facts_matching
+
+    ctx = args.get("_context", {})
+    user_id = ctx.get("user_id")
+    if not user_id:
+        return {"ok": False, "error": "missing_user_context"}
+
+    match = (args.get("match") or "").strip()
+    if not match:
+        return {"ok": False, "error": "missing_match"}
+    deleted = delete_user_facts_matching(user_id, match)
+    return {"ok": True, "deleted": deleted}
+
+
 async def handle_generate_sora_video(args: Dict[str, Any]) -> Dict[str, Any]:
     from providers.openai_images import image_input_to_upload
     from providers.sora_utils import create_sora_job
-    from services.database_utils import check_sora_limit, log_sora_usage
+    from services.database_utils import log_sora_usage, sora_limit_status
 
     ctx = args.get("_context", {})
     user_id = ctx.get("user_id")
     if not user_id:
         return {"ok": False, "error": "missing_user_context_for_rate_limit"}
 
-    if not check_sora_limit(user_id, limit=2, window_seconds=3600):
+    status = sora_limit_status(user_id, limit=2, window_seconds=3600)
+    if not status["allowed"]:
+        mins = max(1, status["resets_in_seconds"] // 60)
         return {
             "ok": False,
             "error": "rate_limit_exceeded",
-            "message": "You have reached the limit of 2 Sora videos per hour. Please try again later.",
+            "message": (
+                f"You've used both of your 2 Sora videos for this hour. "
+                f"Your next one unlocks in about {mins} minute{'s' if mins != 1 else ''}."
+            ),
         }
 
     prompt = args.get("prompt", "")
@@ -368,6 +413,8 @@ TOOL_HANDLERS = {
     "git_repo_info": handle_git_repo_info,
     "search_memory": handle_search_memory,
     "update_behavioral_instruction": handle_update_behavioral_instruction,
+    "remember_fact": handle_remember_fact,
+    "forget_fact": handle_forget_fact,
     "list_available_tools": handle_list_available_tools,
     "generate_sora_video": handle_generate_sora_video,
 }

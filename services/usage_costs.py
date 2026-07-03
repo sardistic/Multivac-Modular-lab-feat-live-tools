@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import sqlite3
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   ts_utc            TEXT NOT NULL,            -- ISO8601 in UTC
   model             TEXT NOT NULL,
   label             TEXT,
+  user_id           TEXT,
   prompt_tokens     INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
   total_tokens      INTEGER NOT NULL DEFAULT 0,
@@ -47,7 +49,59 @@ CREATE TABLE IF NOT EXISTS usage_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_logs (ts_utc);
+CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_logs (user_id);
 """
+
+# ----------------------------
+# Per-request attribution context
+# ----------------------------
+# Set once per incoming Discord message (task-local, safe under asyncio):
+#   usage_costs.set_request_context(user_id="123", intent="chat")
+# Every record() during that task picks it up automatically.
+_request_ctx: contextvars.ContextVar[Dict[str, Any] | None] = contextvars.ContextVar(
+    "usage_request_ctx", default=None
+)
+
+def set_request_context(**fields: Any) -> None:
+    _request_ctx.set({k: v for k, v in fields.items() if v is not None})
+
+def get_request_context() -> Dict[str, Any]:
+    return dict(_request_ctx.get() or {})
+
+# ----------------------------
+# Pricing (USD per 1M tokens). Best-effort; unknown models record cost 0.
+# Override via env: OPENAI_PRICE_JSON='{"gpt-5.5": [1.25, 10.0]}'
+# ----------------------------
+_DEFAULT_PRICING: Dict[str, tuple] = {
+    # prefix: (input_per_1m, output_per_1m)
+    "gpt-5.5": (1.25, 10.00),
+    "gpt-5": (1.25, 10.00),
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4.1": (2.00, 8.00),
+}
+
+def _pricing() -> Dict[str, tuple]:
+    raw = os.getenv("OPENAI_PRICE_JSON")
+    if not raw:
+        return _DEFAULT_PRICING
+    try:
+        parsed = json.loads(raw)
+        return {k: tuple(v) for k, v in parsed.items()}
+    except Exception:
+        logger.warning("Bad OPENAI_PRICE_JSON; using defaults")
+        return _DEFAULT_PRICING
+
+def estimate_cost(model: str, usage: Dict[str, Any] | None) -> float:
+    fields = _usage_fields(usage)
+    m = (model or "").lower()
+    best = None
+    for prefix, rates in _pricing().items():
+        if m.startswith(prefix.lower()) and (best is None or len(prefix) > len(best[0])):
+            best = (prefix, rates)
+    if not best:
+        return 0.0
+    in_rate, out_rate = best[1]
+    return (fields["prompt_tokens"] * in_rate + fields["completion_tokens"] * out_rate) / 1_000_000.0
 
 # ----------------------------
 # DB helpers
@@ -63,6 +117,10 @@ def _conn_rw():
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.executescript(SCHEMA)
+        # Migrate pre-user_id databases in place.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(usage_logs)")}
+        if "user_id" not in cols:
+            conn.execute("ALTER TABLE usage_logs ADD COLUMN user_id TEXT")
         yield conn
         conn.commit()
     finally:
@@ -122,16 +180,20 @@ def record(
     Insert a single usage entry. Call this right after each OpenAI API call.
     """
     fields = _usage_fields(usage)
+    ctx = get_request_context()
+    user_id = (meta or {}).get("user_id") or ctx.get("user_id")
+    label = label or ctx.get("intent")
     payload = {
         "usage": usage or {},
         "label": label,
+        **ctx,
         **(meta or {})
     }
     meta_json = json.dumps(payload, ensure_ascii=False)
 
     logger.debug(
-        "record(): model=%s label=%s prompt=%s completion=%s total=%s cost=%s",
-        model, label, fields["prompt_tokens"], fields["completion_tokens"],
+        "record(): model=%s label=%s user=%s prompt=%s completion=%s total=%s cost=%s",
+        model, label, user_id, fields["prompt_tokens"], fields["completion_tokens"],
         fields["total_tokens"], cost
     )
 
@@ -139,13 +201,14 @@ def record(
         c.execute(
             """
             INSERT INTO usage_logs
-              (ts_utc, model, label, prompt_tokens, completion_tokens, total_tokens, cost_usd, meta_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              (ts_utc, model, label, user_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, meta_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 _now_utc_iso(),
                 model,
                 label,
+                str(user_id) if user_id else None,
                 fields["prompt_tokens"],
                 fields["completion_tokens"],
                 fields["total_tokens"],
@@ -153,6 +216,28 @@ def record(
                 meta_json,
             ),
         )
+
+
+def record_response(model: str, response: Any, *, label: Optional[str] = None) -> None:
+    """Record usage straight from an OpenAI SDK response object (chat or
+    responses API). Cost is estimated from the pricing table. Never raises."""
+    try:
+        usage_obj = getattr(response, "usage", None)
+        if usage_obj is None:
+            return
+        if hasattr(usage_obj, "model_dump"):
+            usage = usage_obj.model_dump()
+        elif isinstance(usage_obj, dict):
+            usage = usage_obj
+        else:
+            usage = {
+                "prompt_tokens": getattr(usage_obj, "prompt_tokens", None) or getattr(usage_obj, "input_tokens", 0),
+                "completion_tokens": getattr(usage_obj, "completion_tokens", None) or getattr(usage_obj, "output_tokens", 0),
+            }
+        actual_model = getattr(response, "model", None) or model
+        record(actual_model, usage, estimate_cost(actual_model, usage), label=label)
+    except Exception:
+        logger.warning("record_response failed", exc_info=True)
 
 def last() -> Dict[str, Any]:
     """
@@ -222,6 +307,29 @@ def month_to_date() -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     return _aggregate_where("ts_utc >= ?", (start.isoformat(),))
+
+def today_for_user(user_id: str) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return _aggregate_where("ts_utc >= ? AND user_id = ?", (start.isoformat(), str(user_id)))
+
+def top_users_today(limit: int = 5) -> list:
+    now = datetime.now(timezone.utc)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    with _conn_rw() as c:
+        rows = c.execute(
+            """
+            SELECT user_id, COUNT(*), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0.0)
+            FROM usage_logs
+            WHERE ts_utc >= ? AND user_id IS NOT NULL
+            GROUP BY user_id ORDER BY SUM(cost_usd) DESC LIMIT ?
+            """,
+            (start.isoformat(), int(limit)),
+        ).fetchall()
+    return [
+        {"user_id": r[0], "calls": r[1], "total_tokens": r[2], "cost": float(r[3])}
+        for r in rows
+    ]
 
 # ----------------------------
 # CLI self-test (optional)
