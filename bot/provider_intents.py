@@ -27,10 +27,28 @@ logger = logging.getLogger("discord_bot")
 async def _youtube_transcript_for(text_with_url: str, max_chars: int = 9000) -> str | None:
     """If the text contains a YouTube URL, fetch the actual spoken transcript.
     Without this, summaries get built from the video description/metadata,
-    which often covers 20 seconds of a 40-minute video."""
+    which often covers 20 seconds of a 40-minute video.
+
+    Long transcripts are map-reduce condensed through the cheap model tiers
+    (so the whole video is represented, not just the first 9k chars) and the
+    condensed form is cached per video id — one condensation cost per video,
+    ever, no matter how many users ask about it."""
     vid = extract_youtube_id(text_with_url or "")
     if not vid:
         return None
+
+    from services.database_utils import (
+        get_cached_transcript_summary,
+        set_cached_transcript_summary,
+    )
+
+    try:
+        cached = await asyncio.to_thread(get_cached_transcript_summary, vid)
+        if cached:
+            return cached
+    except Exception:
+        logger.warning("transcript cache read failed", exc_info=True)
+
     try:
         transcript = await asyncio.to_thread(fetch_youtube_transcript, vid)
     except Exception:
@@ -38,7 +56,17 @@ async def _youtube_transcript_for(text_with_url: str, max_chars: int = 9000) -> 
         return None
     if not transcript:
         return None
-    return transcript[:max_chars]
+    if len(transcript) <= max_chars:
+        return transcript
+
+    from services.condense import condense_long_text
+
+    condensed = await condense_long_text(transcript, target_chars=max_chars)
+    try:
+        await asyncio.to_thread(set_cached_transcript_summary, vid, condensed)
+    except Exception:
+        logger.warning("transcript cache write failed", exc_info=True)
+    return condensed
 
 
 async def handle_claude_chat_intent(

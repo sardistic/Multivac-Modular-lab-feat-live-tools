@@ -112,6 +112,14 @@ def veo_limit_status(user_id: str, limit: int = 2, window_seconds: int = 3600) -
     return store.veo_limit_status(user_id, limit=limit, window_seconds=window_seconds)
 
 
+def get_cached_transcript_summary(video_id: str) -> str | None:
+    return store.get_cached_transcript_summary(video_id)
+
+
+def set_cached_transcript_summary(video_id: str, summary: str) -> None:
+    store.set_cached_transcript_summary(video_id, summary)
+
+
 def get_channel_last_seen(key: str) -> str | None:
     return store.get_channel_last_seen(key)
 

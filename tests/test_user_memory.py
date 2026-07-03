@@ -46,6 +46,18 @@ class UserMemoryStoreTests(unittest.TestCase):
         self.assertEqual(seen["last_intent"], "chat")
         self.assertEqual(seen["last_prompt"], "hello there")
 
+    def test_transcript_cache_roundtrip(self):
+        self.assertIsNone(self.store.get_cached_transcript_summary("vid123"))
+        self.store.set_cached_transcript_summary("vid123", "condensed notes")
+        self.assertEqual(self.store.get_cached_transcript_summary("vid123"), "condensed notes")
+
+    def test_condense_short_text_passthrough_costs_nothing(self):
+        import asyncio
+        from services.condense import condense_long_text
+        text = "short transcript"
+        # Under target: returned untouched without any model call.
+        self.assertEqual(asyncio.run(condense_long_text(text, target_chars=9000)), text)
+
     def test_sora_limit_status_reports_reset(self):
         status = self.store.sora_limit_status("u9", limit=2)
         self.assertTrue(status["allowed"])
