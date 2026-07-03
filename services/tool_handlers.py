@@ -311,8 +311,13 @@ async def handle_read_own_logs(args: Dict[str, Any]) -> Dict[str, Any]:
     lines = max(1, min(int(args.get("lines", 40) or 40), 120))
     level = (args.get("level") or "all").lower()
     grep = (args.get("grep") or "").lower()
+    since_minutes = max(1, min(int(args.get("since_minutes", 180) or 180), 2880))
 
-    cmd = ["journalctl", "-u", "discordbot", "-n", "600", "--no-pager", "-q", "-o", "short"]
+    cmd = [
+        "journalctl", "-u", "discordbot", "-n", "600",
+        "--since", f"-{since_minutes}min",
+        "--no-pager", "-q", "-o", "short",
+    ]
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,

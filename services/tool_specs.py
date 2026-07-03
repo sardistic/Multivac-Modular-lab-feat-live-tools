@@ -221,7 +221,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "read_own_logs",
-            "description": "Read my own recent runtime logs (journalctl). Use this to self-reflect when asked about my errors, crashes, weird behavior, restarts, or health — e.g. 'why did you hang earlier?', 'check your logs'.",
+            "description": "Read my own recent runtime logs (journalctl). Use this to self-reflect when asked about my errors, crashes, weird behavior, restarts, or health — e.g. 'why did you hang earlier?', 'check your logs'. Mind the timestamps: an error from hours ago may already be fixed — report old entries as past events, not current problems.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -233,6 +233,7 @@ TOOL_SPECS = [
                         "default": "all",
                     },
                     "grep": {"type": "string", "description": "Optional case-insensitive substring filter."},
+                    "since_minutes": {"type": "integer", "description": "Only logs from the last N minutes (default 180, max 2880).", "default": 180},
                 },
                 "required": [],
             },

@@ -15,7 +15,8 @@ if STABILITY_HOST:
 if STABILITY_KEY:
     os.environ["STABILITY_KEY"] = STABILITY_KEY
 else:
-    logging.warning("STABILITY_KEY not set; Stability image generation/editing will be disabled.")
+    # Optional provider — absence is a configuration choice, not a problem.
+    logger.info("STABILITY_KEY not set; Stability image generation/editing disabled.")
 
 openai_image_client: AsyncOpenAI | None = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
