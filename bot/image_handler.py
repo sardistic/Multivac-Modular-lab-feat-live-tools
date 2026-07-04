@@ -390,16 +390,21 @@ async def handle_generate_image_intent(
             await status_msg.edit(content="❌ Failed to generate weather widget.")
         return
 
+    # Mutable so a mid-flight provider fallback (moderation block) updates
+    # the live status label.
+    provider_state = {"provider": "Gemini" if use_gemini else "OpenAI"}
     status_msg, image_data = await live_status_with_progress(
         message,
-        action_label=f"Generating ({'Gemini' if use_gemini else 'OpenAI'})",
+        action_label=lambda: f"Generating ({provider_state['provider']})",
         emoji="🎨",
-        coro=handle_image_generation(message, prompt, reply_msg=ref_msg, use_gemini=use_gemini),
+        coro=handle_image_generation(
+            message, prompt, reply_msg=ref_msg, use_gemini=use_gemini, provider_state=provider_state
+        ),
         duration_estimate=duration_estimate,
         summarizer=(lambda: "Rendering image… adding details…") if stream_ok else None,
     )
     if image_data:
-        await status_msg.edit(content="✅ Image generated")
+        await status_msg.edit(content=f"✅ Image generated ({provider_state['provider']})")
         await message.channel.send(file=discord.File(image_data, "generated_image.png"))
     else:
         logger.warning("Image generation returned None (prompt=%.100r)", prompt)

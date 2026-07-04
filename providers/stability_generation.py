@@ -151,7 +151,13 @@ _GEMINI_IMAGE_PREFIX_RE = re.compile(
 )
 
 
-async def handle_image_generation(message, prompt: str, reply_msg=None, use_gemini: bool | None = None) -> Optional[BytesIO]:
+async def handle_image_generation(
+    message, prompt: str, reply_msg=None, use_gemini: bool | None = None, provider_state: dict | None = None
+) -> Optional[BytesIO]:
+    def _set_provider(name: str) -> None:
+        if provider_state is not None:
+            provider_state["provider"] = name
+
     try:
         prompt_with_reply_context = _compose_reply_aware_image_prompt(prompt, reply_msg)
         width, height = extract_width_height_from_prompt(prompt)
@@ -221,6 +227,7 @@ async def handle_image_generation(message, prompt: str, reply_msg=None, use_gemi
                 return img
             if message:
                 await message.channel.send("⚠️ **Gemini generation failed** (likely rate limit or error). Falling back to OpenAI... 🧠")
+            _set_provider("OpenAI")
             try:
                 return await generate_gpt_image(image_prompt)
             except ImageModerationError:
@@ -235,6 +242,7 @@ async def handle_image_generation(message, prompt: str, reply_msg=None, use_gemi
             # accept what OpenAI's safety system refused.
             if message:
                 await message.channel.send("🚫 OpenAI's safety system rejected this prompt — trying **Gemini** instead…")
+            _set_provider("Gemini")
             img = await asyncio.to_thread(generate_gemini_image, prompt_with_reply_context, width, height)
             if img:
                 return img
