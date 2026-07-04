@@ -104,7 +104,9 @@ async def generate_gpt_image(prompt: str) -> Optional[BytesIO]:
         _record_image_usage(result, label="image_generation")
         b64_image = result.data[0].b64_json if result and result.data else None
         if not b64_image:
+            logger.warning("gpt-image returned no image data (prompt=%.80r, result=%r)", prompt, result)
             return None
+        logger.info("gpt-image generated %d bytes (prompt=%.80r)", len(b64_image) * 3 // 4, prompt)
         return BytesIO(base64.b64decode(b64_image))
     except Exception:
         logger.exception("Error generating GPT image")

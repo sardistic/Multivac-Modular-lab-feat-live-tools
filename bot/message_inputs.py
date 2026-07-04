@@ -63,6 +63,15 @@ async def resolve_reference_message(message, bot_user):
     return ref_msg, is_reply_to_bot
 
 
+def _forward_snapshots(message) -> List[Any]:
+    """Forwarded messages carry their content/attachments/embeds in message
+    snapshots, not on the message itself."""
+    if message is None:
+        return []
+    snaps = getattr(message, "message_snapshots", None) or getattr(message, "snapshots", None)
+    return list(snaps or [])
+
+
 def _embed_image_candidates(embeds) -> List[str]:
     candidates: List[str] = []
     for embed in embeds or []:
@@ -105,6 +114,11 @@ def has_visual_inputs(message, ref_msg=None) -> bool:
         return True
     if ref_msg and _embed_image_candidates(getattr(ref_msg, "embeds", None)):
         return True
+    for snap in _forward_snapshots(message) + _forward_snapshots(ref_msg):
+        if getattr(snap, "attachments", None):
+            return True
+        if _embed_image_candidates(getattr(snap, "embeds", None)):
+            return True
     for url in _extract_urls_from_text(message.content):
         if _looks_like_image_url(url):
             return True
@@ -140,6 +154,19 @@ async def collect_image_inputs(message, ref_msg, image_url_to_base64) -> List[st
 
     if message.embeds:
         for url in _embed_image_candidates(message.embeds):
+            b64 = await image_url_to_base64(url)
+            if b64:
+                image_urls.append(b64)
+
+    # Forwarded posts: images live in message snapshots.
+    for snap in _forward_snapshots(message) + _forward_snapshots(ref_msg):
+        for attachment in getattr(snap, "attachments", None) or []:
+            ctype = getattr(attachment, "content_type", None)
+            if ctype and ctype.startswith("image/"):
+                b64 = await image_url_to_base64(attachment.url)
+                if b64:
+                    image_urls.append(b64)
+        for url in _embed_image_candidates(getattr(snap, "embeds", None)):
             b64 = await image_url_to_base64(url)
             if b64:
                 image_urls.append(b64)
