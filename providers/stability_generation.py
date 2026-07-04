@@ -143,7 +143,7 @@ _GEMINI_IMAGE_PREFIX_RE = re.compile(
 )
 
 
-async def handle_image_generation(message, prompt: str, reply_msg=None) -> Optional[BytesIO]:
+async def handle_image_generation(message, prompt: str, reply_msg=None, use_gemini: bool | None = None) -> Optional[BytesIO]:
     try:
         prompt_with_reply_context = _compose_reply_aware_image_prompt(prompt, reply_msg)
         width, height = extract_width_height_from_prompt(prompt)
@@ -155,9 +155,18 @@ async def handle_image_generation(message, prompt: str, reply_msg=None) -> Optio
                     return img
             return await generate_gpt_image(image_prompt)
 
+        # Provider selection is passed in by the dispatcher (the user said
+        # "gemini" somewhere); the prefix regex is only used to strip routing
+        # words like "gemini generate an image of" from the actual prompt.
         gemini_prefix = _GEMINI_IMAGE_PREFIX_RE.match(prompt)
-        if gemini_prefix:
-            image_prompt = _compose_reply_aware_image_prompt(prompt[gemini_prefix.end():].strip(), reply_msg)
+        if use_gemini is None:
+            use_gemini = bool(gemini_prefix)
+        if use_gemini:
+            if gemini_prefix:
+                core_prompt = prompt[gemini_prefix.end():].strip()
+            else:
+                core_prompt = re.sub(r"^gemini[\s,:]*", "", prompt, flags=re.IGNORECASE).strip() or prompt
+            image_prompt = _compose_reply_aware_image_prompt(core_prompt, reply_msg)
             ref_images = []
             headers = {"User-Agent": "Mozilla/5.0"}
             if reply_msg:

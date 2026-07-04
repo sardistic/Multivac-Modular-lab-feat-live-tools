@@ -1,69 +1,60 @@
 import unittest
 
-from bot.intent_dispatcher import resolve_keyword_intent
+from bot.intent_dispatcher import resolve_keyword_intent, wants_gemini
 
 
-class KeywordIntentRoutingTests(unittest.TestCase):
-    def test_routing_table(self):
-        # (raw_prompt, prompt, has_attachments, expected_intent)
+class KeywordRoutingTests(unittest.TestCase):
+    """Keywords pick the provider; the LLM classifier picks the intent.
+    resolve_keyword_intent only shortcuts explicit 'claude ...' messages."""
+
+    def test_claude_prefix_shortcuts_to_claude_chat(self):
+        self.assertEqual(
+            resolve_keyword_intent("claude what is entropy", "claude what is entropy", False),
+            "claude_chat",
+        )
+        self.assertEqual(
+            resolve_keyword_intent("<@123> something", "Claude something", False),
+            "claude_chat",
+        )
+
+    def test_everything_else_defers_to_classifier(self):
         cases = [
-            # Explicit provider prefixes
-            ("gemini imagine a castle", "gemini imagine a castle", False, "generate_image"),
-            ("claude what is entropy", "claude what is entropy", False, "claude_chat"),
-            ("gemini what is entropy", "gemini what is entropy", False, "gemini_chat"),
-            # Gemini + video keywords beat image editing and chat
-            ("gemini make this a video", "gemini make this a video", True, "generate_video"),
-            ("gemini animate this", "gemini animate this", True, "generate_video"),
-            # Gemini + edit keywords + attachment routes to image editing
-            ("gemini edit this image", "gemini edit this image", True, "edit_image"),
-            ("gemini remove the background", "gemini remove the background", True, "edit_image"),
-            # Same wording without an attachment stays chat
-            ("gemini remove the background", "gemini remove the background", False, "gemini_chat"),
-            # Image-generation phrasing beyond the literal "gemini imagine"
-            ("gemini generate an image of a liminal rose", "gemini generate an image of a liminal rose", False, "generate_image"),
-            ("gemini draw a picture of a cat", "gemini draw a picture of a cat", False, "generate_image"),
-            ("gemini create art of a sunset", "gemini create art of a sunset", False, "generate_image"),
-            # But plain gemini questions without image nouns stay chat
-            ("gemini generate a haiku", "gemini generate a haiku", False, "gemini_chat"),
-            # Generic (no provider prefix) image requests are deterministic
-            ("imagine a castle at dusk", "imagine a castle at dusk", False, "generate_image"),
-            ("generate imagine of liminal rose", "generate imagine of liminal rose", False, "generate_image"),
-            ("make me a picture of a dog", "make me a picture of a dog", False, "generate_image"),
-            ("create an image of the sea", "create an image of the sea", False, "generate_image"),
-            # Non-image generate/make requests still go to the classifier
-            ("generate a haiku", "generate a haiku", False, None),
-            ("make me a playlist", "make me a playlist", False, None),
-            # Generic video generation phrasing
-            ("generate a video of a cat", "generate a video of a cat", False, "generate_video"),
-            ("generate a sora clip", "generate a sora clip", False, "generate_video"),
-            # No keyword match: defer to the LLM classifier
-            ("what's the weather", "what's the weather", False, None),
-            ("describe this", "describe this", True, None),
-            ("", "", False, None),
+            ("gemini what is entropy", False),
+            ("gemini generate an image of a liminal rose", False),
+            ("gemini make this a video", True),
+            ("gemini edit this image", True),
+            ("generate imagine of liminal rose", False),
+            ("imagine a castle at dusk", False),
+            ("make me a picture of a dog", False),
+            ("generate a video of a cat", False),
+            ("what's the weather", False),
+            ("", False),
         ]
-        for raw_prompt, prompt, has_attachments, expected in cases:
-            with self.subTest(raw=raw_prompt, attachments=has_attachments):
-                self.assertEqual(
-                    resolve_keyword_intent(raw_prompt, prompt, has_attachments),
-                    expected,
-                )
+        for prompt, has_attachments in cases:
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(resolve_keyword_intent(prompt, prompt, has_attachments))
 
-    def test_case_and_whitespace_insensitive(self):
-        self.assertEqual(
-            resolve_keyword_intent("  Claude hello", "  Claude hello", False),
-            "claude_chat",
-        )
-        self.assertEqual(
-            resolve_keyword_intent("GEMINI IMAGINE a dog", "GEMINI IMAGINE a dog", False),
-            "generate_image",
-        )
 
-    def test_mention_stripped_prompt_still_matches(self):
-        # raw_prompt may retain the mention while prompt has it stripped
-        self.assertEqual(
-            resolve_keyword_intent("<@123> something", "claude something", False),
-            "claude_chat",
-        )
+class ProviderSelectionTests(unittest.TestCase):
+    def test_wants_gemini(self):
+        positive = [
+            "gemini imagine a castle",
+            "Gemini generate an image of a rose",
+            "generate an image of a rose with gemini",
+            "make a picture using gemini",
+        ]
+        negative = [
+            "imagine a castle",
+            "generate an image of the gemini zodiac sign",
+            "draw the gemini constellation",
+            "",
+        ]
+        for p in positive:
+            with self.subTest(p=p):
+                self.assertTrue(wants_gemini(p))
+        for p in negative:
+            with self.subTest(p=p):
+                self.assertFalse(wants_gemini(p))
 
 
 if __name__ == "__main__":
