@@ -70,6 +70,17 @@ def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) 
     ):
         return "generate_video"
 
+    # Obvious image requests route deterministically, without the LLM
+    # classifier (whose conversation-context hints can misfire on these).
+    # "imagine a castle", "generate imagine of liminal rose" (imagine as a
+    # typo for image), "make me a picture of a dog".
+    if lowered_prompt.startswith(("imagine ", "imagine:")):
+        return "generate_image"
+    if lowered_prompt.startswith(("generate", "create", "draw", "paint", "make")) and any(
+        n in lowered_prompt for n in _IMAGE_NOUNS + ("imagine",)
+    ):
+        return "generate_image"
+
     return None
 
 

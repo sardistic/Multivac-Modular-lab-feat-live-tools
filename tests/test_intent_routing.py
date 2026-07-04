@@ -25,6 +25,14 @@ class KeywordIntentRoutingTests(unittest.TestCase):
             ("gemini create art of a sunset", "gemini create art of a sunset", False, "generate_image"),
             # But plain gemini questions without image nouns stay chat
             ("gemini generate a haiku", "gemini generate a haiku", False, "gemini_chat"),
+            # Generic (no provider prefix) image requests are deterministic
+            ("imagine a castle at dusk", "imagine a castle at dusk", False, "generate_image"),
+            ("generate imagine of liminal rose", "generate imagine of liminal rose", False, "generate_image"),
+            ("make me a picture of a dog", "make me a picture of a dog", False, "generate_image"),
+            ("create an image of the sea", "create an image of the sea", False, "generate_image"),
+            # Non-image generate/make requests still go to the classifier
+            ("generate a haiku", "generate a haiku", False, None),
+            ("make me a playlist", "make me a playlist", False, None),
             # Generic video generation phrasing
             ("generate a video of a cat", "generate a video of a cat", False, "generate_video"),
             ("generate a sora clip", "generate a sora clip", False, "generate_video"),
