@@ -298,6 +298,7 @@ async def handle_generate_image_intent(
     duration_estimate: int,
     stream_ok: bool,
     live_status_with_progress,
+    use_gemini: bool = False,
 ):
     weather_match = re.search(r"imagine\s+weather\s+(.*)", prompt, flags=re.IGNORECASE)
     if weather_match:
@@ -391,9 +392,9 @@ async def handle_generate_image_intent(
 
     status_msg, image_data = await live_status_with_progress(
         message,
-        action_label="Generating",
+        action_label=f"Generating ({'Gemini' if use_gemini else 'OpenAI'})",
         emoji="🎨",
-        coro=handle_image_generation(message, prompt, reply_msg=ref_msg),
+        coro=handle_image_generation(message, prompt, reply_msg=ref_msg, use_gemini=use_gemini),
         duration_estimate=duration_estimate,
         summarizer=(lambda: "Rendering image… adding details…") if stream_ok else None,
     )

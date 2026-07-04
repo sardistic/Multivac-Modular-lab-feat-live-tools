@@ -19,69 +19,35 @@ from bot.video_handler import handle_generate_video_intent
 from services.stock_utils import handle_stock_command
 from services.weather_utils import handle_weather_request
 
-_VIDEO_KEYWORDS = ("video", "movie", "clip", "animate")
-_EDIT_KEYWORDS = (
-    "edit", "change", "make", "turn", "transform",
-    "fix", "remove", "add", "replace", "redraw",
-)
-_IMAGE_GEN_VERBS = ("imagine", "generate", "create", "draw", "paint", "make")
-_IMAGE_NOUNS = (
-    "image", "picture", "photo", "pic", "art", "artwork",
-    "drawing", "portrait", "wallpaper", "logo",
-)
-
-
 def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) -> Optional[str]:
-    """Route explicit provider prefixes ("claude ...", "gemini ...") and other
-    unambiguous keyword patterns to an intent.
+    """Keywords decide the PROVIDER, the LLM classifier decides the INTENT.
 
-    Returns None when nothing matches, meaning the LLM classifier should decide.
-    """
+    The only intent shortcut left is an explicit "claude ..." prefix (Claude
+    only does chat here). Everything else — including "gemini ..." messages —
+    goes to the classifier, which understands 'gemini generate an image of X'
+    means image generation. Which backend renders it is decided separately
+    (wants_gemini)."""
     lowered_raw = raw_prompt.lower().strip()
     lowered_prompt = prompt.lower().strip()
-
-    # "gemini imagine" would otherwise be grabbed by the chat intent.
-    # The "gemini" prefix is kept in the prompt because stability_utils
-    # checks content.startswith("gemini") to pick the backend.
-    if lowered_raw.startswith("gemini imagine"):
-        return "generate_image"
 
     if lowered_prompt.startswith("claude") or lowered_raw.startswith("claude"):
         return "claude_chat"
 
-    if lowered_prompt.startswith("gemini") or lowered_raw.startswith("gemini"):
-        # "gemini make this a video" must route to video, not image editing or chat.
-        if any(k in lowered_prompt for k in _VIDEO_KEYWORDS):
-            return "generate_video"
-        # "gemini edit this image..." must route to image editing, not chat.
-        if has_attachments and any(k in lowered_prompt for k in _EDIT_KEYWORDS):
-            return "edit_image"
-        # "gemini generate an image of X" / "gemini draw a picture of Y" must
-        # route to image generation, not text chat (which apologizes that it
-        # can't render images).
-        if any(v in lowered_prompt for v in _IMAGE_GEN_VERBS) and any(
-            n in lowered_prompt for n in _IMAGE_NOUNS
-        ):
-            return "generate_image"
-        return "gemini_chat"
-
-    if "generate" in lowered_prompt and any(
-        k in lowered_prompt for k in ("video", "movie", "clip", "sora")
-    ):
-        return "generate_video"
-
-    # Obvious image requests route deterministically, without the LLM
-    # classifier (whose conversation-context hints can misfire on these).
-    # "imagine a castle", "generate imagine of liminal rose" (imagine as a
-    # typo for image), "make me a picture of a dog".
-    if lowered_prompt.startswith(("imagine ", "imagine:")):
-        return "generate_image"
-    if lowered_prompt.startswith(("generate", "create", "draw", "paint", "make")) and any(
-        n in lowered_prompt for n in _IMAGE_NOUNS + ("imagine",)
-    ):
-        return "generate_image"
-
     return None
+
+
+def wants_gemini(prompt: str) -> bool:
+    """Provider selection: the user said gemini -> use gemini; otherwise the
+    default provider (OpenAI). Word-boundary aware so 'the gemini zodiac
+    sign' in the middle of a scene description doesn't count, but leading
+    'gemini ...' or 'with/using gemini' does."""
+    lowered = (prompt or "").lower().strip()
+    return (
+        lowered.startswith("gemini")
+        or "with gemini" in lowered
+        or "using gemini" in lowered
+        or "use gemini" in lowered
+    )
 
 
 def get_duration_estimate(intent: str) -> int:
@@ -173,14 +139,12 @@ async def dispatch_intent(ctx: DispatchContext) -> bool:
             duration_estimate=duration_estimate,
             stream_ok=ctx.stream_ok,
             live_status_with_progress=ctx.live_status_with_progress,
+            use_gemini=wants_gemini(ctx.prompt) or wants_gemini(ctx.raw_prompt),
         )
         return True
 
     if ctx.intent == "edit_image" and ctx.image_urls:
-        use_gemini = (
-            ctx.raw_prompt.lower().strip().startswith("gemini")
-            or ctx.prompt.lower().strip().startswith("gemini")
-        )
+        use_gemini = wants_gemini(ctx.prompt) or wants_gemini(ctx.raw_prompt)
         await handle_edit_image_intent(
             message=message,
             prompt=ctx.prompt,
