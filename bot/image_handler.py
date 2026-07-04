@@ -401,6 +401,7 @@ async def handle_generate_image_intent(
         await status_msg.edit(content="✅ Image generated")
         await message.channel.send(file=discord.File(image_data, "generated_image.png"))
     else:
+        logger.warning("Image generation returned None (prompt=%.100r)", prompt)
         await status_msg.edit(content="❌ Image generation failed.")
 
 
