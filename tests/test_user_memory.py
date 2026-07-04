@@ -100,6 +100,25 @@ class UsageCostsTests(unittest.TestCase):
         top = usage_costs.top_users_today()
         self.assertEqual(top[0]["user_id"], "42")
 
+    def test_today_breakdown_groups_by_model_and_label(self):
+        usage_costs.set_request_context(user_id="42")
+        usage_costs.record("gpt-5.5", {"prompt_tokens": 100, "completion_tokens": 50}, 0.02, label="chat")
+        usage_costs.record("gpt-5.5", {"prompt_tokens": 200, "completion_tokens": 80}, 0.03, label="chat")
+        usage_costs.record("gpt-5.4-nano", {"prompt_tokens": 50, "completion_tokens": 5}, 0.0001, label="intent_classify")
+        usage_costs.record("gpt-image-1.5", None, 0.06, label="image_generation")
+
+        rows = usage_costs.today_breakdown("42")
+        self.assertEqual(len(rows), 3)
+        # Most expensive first
+        self.assertEqual(rows[0]["model"], "gpt-image-1.5")
+        chat_row = next(r for r in rows if r["label"] == "chat")
+        self.assertEqual(chat_row["calls"], 2)
+        self.assertEqual(chat_row["total_tokens"], 430)
+        # Other users excluded
+        self.assertEqual(usage_costs.today_breakdown("99"), [])
+        # None aggregates everyone
+        self.assertEqual(len(usage_costs.today_breakdown(None)), 3)
+
     def test_estimate_cost_known_and_unknown_models(self):
         usage = {"prompt_tokens": 1_000_000, "completion_tokens": 0}
         self.assertAlmostEqual(usage_costs.estimate_cost("gpt-5.5", usage), 1.25)
