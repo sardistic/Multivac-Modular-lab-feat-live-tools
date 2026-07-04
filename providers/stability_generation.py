@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import logging
@@ -89,6 +90,10 @@ async def generate_stability_image(image_prompt: str, width: int = 960, height: 
     return None
 
 
+class ImageModerationError(Exception):
+    """The provider's safety system refused the image prompt."""
+
+
 async def generate_gpt_image(prompt: str) -> Optional[BytesIO]:
     try:
         background_type = "transparent" if "transparent background" in prompt.lower() else "auto"
@@ -108,7 +113,10 @@ async def generate_gpt_image(prompt: str) -> Optional[BytesIO]:
             return None
         logger.info("gpt-image generated %d bytes (prompt=%.80r)", len(b64_image) * 3 // 4, prompt)
         return BytesIO(base64.b64decode(b64_image))
-    except Exception:
+    except Exception as e:
+        if "moderation_blocked" in str(e):
+            logger.warning("gpt-image moderation block (prompt=%.80r)", prompt)
+            raise ImageModerationError("OpenAI's safety system rejected this image prompt.") from e
         logger.exception("Error generating GPT image")
         return None
 
@@ -213,9 +221,26 @@ async def handle_image_generation(message, prompt: str, reply_msg=None, use_gemi
                 return img
             if message:
                 await message.channel.send("⚠️ **Gemini generation failed** (likely rate limit or error). Falling back to OpenAI... 🧠")
-            return await generate_gpt_image(image_prompt)
+            try:
+                return await generate_gpt_image(image_prompt)
+            except ImageModerationError:
+                if message:
+                    await message.channel.send("🚫 OpenAI's safety system also rejected this prompt. Try rephrasing.")
+                return None
 
-        return await generate_gpt_image(prompt_with_reply_context)
+        try:
+            return await generate_gpt_image(prompt_with_reply_context)
+        except ImageModerationError:
+            # Mirror the chat path's cross-provider fallback: Gemini may
+            # accept what OpenAI's safety system refused.
+            if message:
+                await message.channel.send("🚫 OpenAI's safety system rejected this prompt — trying **Gemini** instead…")
+            img = await asyncio.to_thread(generate_gemini_image, prompt_with_reply_context, width, height)
+            if img:
+                return img
+            if message:
+                await message.channel.send("🚫 Gemini couldn't render it either. Try rephrasing the prompt.")
+            return None
     except Exception:
         logger.exception("Error in handle_image_generation")
         return None
