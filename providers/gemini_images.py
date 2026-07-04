@@ -33,6 +33,7 @@ def generate_gemini_image(prompt: str, width: int = 1024, height: int = 1024) ->
             ],
         )
         response = client.models.generate_content(model=model, contents=[prompt], config=config)
+        _record_gemini_image_cost(model, "image_generation")
         if response.parts:
             for part in response.parts:
                 if part.inline_data:
@@ -52,6 +53,18 @@ def generate_gemini_image(prompt: str, width: int = 1024, height: int = 1024) ->
     return None
 
 
+def _record_gemini_image_cost(model: str, label: str) -> None:
+    """Flat per-image ledger entry (GEMINI_IMAGE_COST_USD, default 0.13)."""
+    try:
+        import os
+
+        from services import usage_costs
+
+        usage_costs.record(model, None, float(os.getenv("GEMINI_IMAGE_COST_USD", "0.13")), label=label)
+    except Exception:
+        logger.warning("gemini image usage recording failed", exc_info=True)
+
+
 def edit_gemini_image(image_bytes: BytesIO, prompt: str) -> Optional[BytesIO]:
     client = get_gemini_client()
     if not client or not types or not PILImage:
@@ -59,6 +72,7 @@ def edit_gemini_image(image_bytes: BytesIO, prompt: str) -> Optional[BytesIO]:
 
     try:
         input_image = PILImage.open(image_bytes)
+        _record_gemini_image_cost("gemini-3-pro-image-preview", "image_edit")
         response = client.models.generate_content(
             model="gemini-3-pro-image-preview",
             contents=[prompt, input_image],
@@ -96,6 +110,7 @@ def generate_gemini_with_references(prompt: str, reference_images: list[BytesIO]
 
     try:
         pil_images = [PILImage.open(img_bytes) for img_bytes in reference_images]
+        _record_gemini_image_cost("gemini-3-pro-image-preview", "image_generation")
         response = client.models.generate_content(
             model="gemini-3-pro-image-preview",
             contents=[prompt, *pil_images],

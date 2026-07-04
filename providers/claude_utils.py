@@ -96,7 +96,19 @@ async def generate_claude_response(
         # TODO: Add tool support when needed. 
         
         response = await client.messages.create(**kwargs)
-        
+
+        try:
+            from services import usage_costs
+            u = getattr(response, "usage", None)
+            if u is not None:
+                usage = {
+                    "prompt_tokens": getattr(u, "input_tokens", 0) or 0,
+                    "completion_tokens": getattr(u, "output_tokens", 0) or 0,
+                }
+                usage_costs.record(model, usage, usage_costs.estimate_cost(model, usage), label="claude_chat")
+        except Exception:
+            logger.warning("claude usage recording failed", exc_info=True)
+
         # 4. Extract Text
         content_block = response.content[0]
         if content_block.type == "text":

@@ -101,6 +101,7 @@ async def generate_gpt_image(prompt: str) -> Optional[BytesIO]:
             moderation="low",
             n=1,
         )
+        _record_image_usage(result, label="image_generation")
         b64_image = result.data[0].b64_json if result and result.data else None
         if not b64_image:
             return None
@@ -108,6 +109,24 @@ async def generate_gpt_image(prompt: str) -> Optional[BytesIO]:
     except Exception:
         logger.exception("Error generating GPT image")
         return None
+
+
+def _record_image_usage(result, *, label: str) -> None:
+    """Ledger entry for a gpt-image call: token-based when the API reports
+    usage, else a flat per-image estimate (OPENAI_IMAGE_COST_USD, default 0.06)."""
+    try:
+        import os
+
+        from services import usage_costs
+
+        if getattr(result, "usage", None) is not None:
+            usage_costs.record_response("gpt-image-1.5", result, label=label)
+        else:
+            usage_costs.record(
+                "gpt-image-1.5", None, float(os.getenv("OPENAI_IMAGE_COST_USD", "0.06")), label=label
+            )
+    except Exception:
+        logger.warning("image usage recording failed", exc_info=True)
 
 
 async def handle_image_generation(message, prompt: str, reply_msg=None) -> Optional[BytesIO]:
@@ -205,6 +224,7 @@ async def edit_image_with_prompt(image_input: str | list[str], prompt: str) -> O
             prompt=prompt,
             size="auto",
         )
+        _record_image_usage(result, label="image_edit")
         b64_image = result.data[0].b64_json if result and result.data else None
         if not b64_image:
             return None

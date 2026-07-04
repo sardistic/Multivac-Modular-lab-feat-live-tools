@@ -7,11 +7,13 @@ import discord
 from providers.openai_images import image_input_to_upload
 from providers.sora_utils import create_sora_job, download_sora_content, get_sora_status, remix_sora_video
 from providers.veo_utils import (
+    estimate_veo_cost,
     estimate_veo_runtime,
     generate_veo_video,
     get_veo_model_options,
     veo_is_available,
 )
+from services import usage_costs
 from services.database_utils import (
     check_sora_limit,
     check_veo_limit,
@@ -21,6 +23,23 @@ from services.database_utils import (
 )
 
 logger = logging.getLogger("discord_bot")
+
+
+def _record_video_cost(provider: str, model: str, seconds: int) -> None:
+    """Ledger entry for a completed video generation, using the same price
+    table shown to users in the confirmation dropdown."""
+    try:
+        cost = 0.0
+        if provider == "sora":
+            for o in SORA_VIDEO_OPTIONS:
+                if o["model"] == model and o["seconds"] == seconds:
+                    cost = o["cost"]
+                    break
+        else:
+            cost = estimate_veo_cost(model, seconds)
+        usage_costs.record(model, None, cost, label="video_generation")
+    except Exception:
+        logger.warning("video usage recording failed", exc_info=True)
 
 SORA_VIDEO_OPTIONS = [
     {
@@ -373,6 +392,7 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
 
             f = io.BytesIO(content)
             log_sora_usage(str(user_id), video_id=video_id)
+            _record_video_cost("sora", selected_model, selected_seconds)
             return f, None
 
         content, err = await generate_veo_video(
@@ -390,6 +410,7 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
             return None, "Failed to download Veo video content."
 
         log_veo_usage(str(user_id), video_id=f"{selected_model}:{selected_seconds}")
+        _record_video_cost("veo", selected_model, selected_seconds)
         return io.BytesIO(content), None
 
     duration_estimate = selected_seconds * 10 if provider == "sora" else estimate_veo_runtime(selected_model, selected_seconds)
