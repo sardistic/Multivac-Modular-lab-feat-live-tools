@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
@@ -32,6 +33,13 @@ def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) 
 
     if lowered_prompt.startswith("claude") or lowered_raw.startswith("claude"):
         return "claude_chat"
+
+    # "imagine ..." is this bot's established image command word — always an
+    # image request, with or without a leading provider name. (Provider is
+    # still chosen separately via wants_gemini.)
+    without_provider = re.sub(r"^gemini[\s,:]+", "", lowered_prompt)
+    if without_provider.startswith(("imagine ", "imagine:")):
+        return "generate_image"
 
     return None
 
