@@ -129,6 +129,18 @@ def _record_image_usage(result, *, label: str) -> None:
         logger.warning("image usage recording failed", exc_info=True)
 
 
+# "gemini imagine X", "gemini generate an image of X", "gemini draw a picture
+# of Y", ... — match the routing prefix so it can be stripped from the actual
+# image prompt.
+_GEMINI_IMAGE_PREFIX_RE = re.compile(
+    r"^gemini\s+(?:imagine|generate|create|draw|paint|make)\b"
+    r"(?:\s+(?:an|a|the|me|us)\b)*"
+    r"(?:\s+(?:image|picture|photo|pic|artwork|art|drawing|portrait|wallpaper|logo)\b)?"
+    r"(?:\s+of\b|\s*:)?\s*",
+    re.IGNORECASE,
+)
+
+
 async def handle_image_generation(message, prompt: str, reply_msg=None) -> Optional[BytesIO]:
     try:
         prompt_with_reply_context = _compose_reply_aware_image_prompt(prompt, reply_msg)
@@ -141,8 +153,9 @@ async def handle_image_generation(message, prompt: str, reply_msg=None) -> Optio
                     return img
             return await generate_gpt_image(image_prompt)
 
-        if prompt.lower().startswith("gemini imagine"):
-            image_prompt = _compose_reply_aware_image_prompt(prompt[14:].strip(), reply_msg)
+        gemini_prefix = _GEMINI_IMAGE_PREFIX_RE.match(prompt)
+        if gemini_prefix:
+            image_prompt = _compose_reply_aware_image_prompt(prompt[gemini_prefix.end():].strip(), reply_msg)
             ref_images = []
             headers = {"User-Agent": "Mozilla/5.0"}
             if reply_msg:
