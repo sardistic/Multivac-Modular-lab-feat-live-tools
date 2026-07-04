@@ -130,6 +130,9 @@ async def classify_intent(
                 )
             else:
                 raise
+        from services import usage_costs
+        usage_costs.record_response(OPENAI_INTENT_MODEL, resp, label="intent_classify")
+
         label = (resp.choices[0].message.content or "").strip().lower()
         label = re.sub(r"[^a-z_]", "", label)
         return label if label in VALID_INTENTS else "chat"

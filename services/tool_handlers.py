@@ -430,6 +430,16 @@ async def handle_generate_sora_video(args: Dict[str, Any]) -> Dict[str, Any]:
     if result.get("ok"):
         video_id = ((result.get("data") or {}).get("id"))
         log_sora_usage(user_id, video_id=video_id)
+        try:
+            import os
+
+            from services import usage_costs
+
+            usage_costs.record(
+                "sora-2-pro", None, float(os.getenv("SORA_TOOL_COST_USD", "2.40")), label="video_generation"
+            )
+        except Exception:
+            pass
         return {"ok": True, "status": "queued", "video_id": video_id, "data": result.get("data")}
     return result
 

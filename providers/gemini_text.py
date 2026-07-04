@@ -13,6 +13,23 @@ import services.memory_utils as memory_utils
 logger = logging.getLogger("gemini_utils")
 
 
+def _record_gemini_usage(model: str, usage_metadata, label: str = "gemini_chat") -> None:
+    """Log token usage/cost for a Gemini call into the shared usage ledger."""
+    if usage_metadata is None:
+        return
+    try:
+        from services import usage_costs
+
+        usage = {
+            "prompt_tokens": getattr(usage_metadata, "prompt_token_count", 0) or 0,
+            "completion_tokens": (getattr(usage_metadata, "candidates_token_count", 0) or 0)
+            + (getattr(usage_metadata, "thoughts_token_count", 0) or 0),
+        }
+        usage_costs.record(model, usage, usage_costs.estimate_cost(model, usage), label=label)
+    except Exception:
+        logger.warning("gemini usage recording failed", exc_info=True)
+
+
 class GeminiModerationError(Exception):
     def __init__(self, message, safety_ratings=None):
         super().__init__(message)
@@ -405,7 +422,10 @@ def generate_gemini_text(
                 config=config,
             )
 
+            attempt_usage = None
             for chunk in response_stream:
+                if getattr(chunk, "usage_metadata", None) is not None:
+                    attempt_usage = chunk.usage_metadata
                 if chunk.candidates:
                     cand = chunk.candidates[0]
                     if cand.finish_reason in ["SAFETY", "kFinishReasonSafety"]:
@@ -444,8 +464,12 @@ def generate_gemini_text(
                     contents=attempt_contents,
                     config=config,
                 )
+                if getattr(follow, "usage_metadata", None) is not None:
+                    attempt_usage = follow.usage_metadata
                 if follow.candidates and follow.candidates[0].content:
                     _consume_parts(follow.candidates[0].content.parts)
+
+            _record_gemini_usage(model, attempt_usage)
 
             cleaned_text = "".join(final_text).strip() if final_text else None
             recovered_artifacts: List[Tuple[bytes, str]] = []
