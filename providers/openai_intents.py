@@ -43,8 +43,10 @@ _INTENT_SYSTEM = (
     "- If the request is IMPOSSIBLE to route because it is ambiguous in a way that would "
     "waste an expensive generation (e.g. 'make it better' with no referent, 'do the thing') "
     "-> 'clarify'. Use sparingly; when CONVERSATION CONTEXT resolves the ambiguity, route normally.\n"
-    "- Follow-ups like 'another one', 'same but blue' refer to the PREVIOUS INTENT shown in "
-    "context; route to that same intent.\n"
+    "- PREVIOUS INTENT and CONVERSATION CONTEXT are ONLY for resolving elliptical "
+    "follow-ups like 'another one' or 'same but blue'. A fully-specified new request "
+    "must be classified on its own wording alone — do NOT copy the previous intent "
+    "just because the topic is similar.\n"
     "- Else -> 'chat'.\n\n"
     "IMPORTANT: Output ONLY ONE label."
 )
