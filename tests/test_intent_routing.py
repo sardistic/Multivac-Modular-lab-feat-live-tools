@@ -17,6 +17,17 @@ class KeywordRoutingTests(unittest.TestCase):
             "claude_chat",
         )
 
+    def test_imagine_is_a_deterministic_image_command(self):
+        cases = [
+            "imagine a castle at dusk",
+            "imagine a cool hackerman yelling at a chatbot",
+            "gemini imagine a liminal rose",
+            "IMAGINE: neon rain",
+        ]
+        for prompt in cases:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(resolve_keyword_intent(prompt, prompt, False), "generate_image")
+
     def test_everything_else_defers_to_classifier(self):
         cases = [
             ("gemini what is entropy", False),
@@ -24,10 +35,10 @@ class KeywordRoutingTests(unittest.TestCase):
             ("gemini make this a video", True),
             ("gemini edit this image", True),
             ("generate imagine of liminal rose", False),
-            ("imagine a castle at dusk", False),
             ("make me a picture of a dog", False),
             ("generate a video of a cat", False),
             ("what's the weather", False),
+            ("imagines are weird", False),  # not the command word
             ("", False),
         ]
         for prompt, has_attachments in cases:
