@@ -24,6 +24,11 @@ _EDIT_KEYWORDS = (
     "edit", "change", "make", "turn", "transform",
     "fix", "remove", "add", "replace", "redraw",
 )
+_IMAGE_GEN_VERBS = ("imagine", "generate", "create", "draw", "paint", "make")
+_IMAGE_NOUNS = (
+    "image", "picture", "photo", "pic", "art", "artwork",
+    "drawing", "portrait", "wallpaper", "logo",
+)
 
 
 def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) -> Optional[str]:
@@ -51,6 +56,13 @@ def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) 
         # "gemini edit this image..." must route to image editing, not chat.
         if has_attachments and any(k in lowered_prompt for k in _EDIT_KEYWORDS):
             return "edit_image"
+        # "gemini generate an image of X" / "gemini draw a picture of Y" must
+        # route to image generation, not text chat (which apologizes that it
+        # can't render images).
+        if any(v in lowered_prompt for v in _IMAGE_GEN_VERBS) and any(
+            n in lowered_prompt for n in _IMAGE_NOUNS
+        ):
+            return "generate_image"
         return "gemini_chat"
 
     if "generate" in lowered_prompt and any(

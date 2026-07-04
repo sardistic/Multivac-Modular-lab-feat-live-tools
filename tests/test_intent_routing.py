@@ -19,6 +19,12 @@ class KeywordIntentRoutingTests(unittest.TestCase):
             ("gemini remove the background", "gemini remove the background", True, "edit_image"),
             # Same wording without an attachment stays chat
             ("gemini remove the background", "gemini remove the background", False, "gemini_chat"),
+            # Image-generation phrasing beyond the literal "gemini imagine"
+            ("gemini generate an image of a liminal rose", "gemini generate an image of a liminal rose", False, "generate_image"),
+            ("gemini draw a picture of a cat", "gemini draw a picture of a cat", False, "generate_image"),
+            ("gemini create art of a sunset", "gemini create art of a sunset", False, "generate_image"),
+            # But plain gemini questions without image nouns stay chat
+            ("gemini generate a haiku", "gemini generate a haiku", False, "gemini_chat"),
             # Generic video generation phrasing
             ("generate a video of a cat", "generate a video of a cat", False, "generate_video"),
             ("generate a sora clip", "generate a sora clip", False, "generate_video"),
