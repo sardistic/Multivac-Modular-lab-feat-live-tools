@@ -1,3 +1,5 @@
+import asyncio
+import os
 import unittest
 
 from bot.intent_dispatcher import resolve_keyword_intent, wants_gemini
@@ -66,6 +68,47 @@ class ProviderSelectionTests(unittest.TestCase):
         for p in negative:
             with self.subTest(p=p):
                 self.assertFalse(wants_gemini(p))
+
+
+@unittest.skipUnless(
+    os.getenv("RUN_LIVE_INTENT_TESTS") == "1",
+    "live classifier test; set RUN_LIVE_INTENT_TESTS=1 to run",
+)
+class LiveReplyToImageClassifierTests(unittest.TestCase):
+    """Replies to a just-generated image must split by what they ask for:
+    reactions are commentary, change requests are edits, 'another one' is a
+    fresh generation. Hits the real classifier model, so opt-in only."""
+
+    RECENT_TURNS = [
+        "user: imagine a retro movie theater marquee at night",
+        "bot: ✅ Image generated (GPT Image 1.5) [image attached]",
+    ]
+
+    def _classify(self, text: str) -> str:
+        from providers.openai_intents import classify_intent
+
+        return asyncio.run(
+            classify_intent(
+                text,
+                recent_turns=self.RECENT_TURNS,
+                prev_intent="generate_image",
+            )
+        )
+
+    def test_bare_reaction_is_chat_light(self):
+        for reaction in ("kino", "nice", "based", "lol"):
+            with self.subTest(reaction=reaction):
+                self.assertEqual(self._classify(reaction), "chat_light")
+
+    def test_change_request_is_edit_image(self):
+        for prompt in ("make it darker", "remove the text on the marquee"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(self._classify(prompt), "edit_image")
+
+    def test_another_one_is_generate_image(self):
+        for prompt in ("another one", "same but at sunrise"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(self._classify(prompt), "generate_image")
 
 
 if __name__ == "__main__":

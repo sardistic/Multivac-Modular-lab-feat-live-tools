@@ -17,7 +17,11 @@ from providers.gemini_utils import generate_gemini_image
 from providers.openai_client import OPENAI_CHAT_MODEL
 from providers.openai_images import DEFAULT_VISION_DETAIL
 from providers.openai_utils import generate_openai_messages_response, get_openai_client
-from providers.stability_utils import handle_image_generation
+from providers.stability_utils import (
+    IMG_MODEL_GEMINI,
+    IMG_MODEL_OPENAI,
+    handle_image_generation,
+)
 from services.weather_utils import get_location_details, get_weather_data
 
 logger = logging.getLogger("discord_bot")
@@ -391,11 +395,15 @@ async def handle_generate_image_intent(
         return
 
     # Mutable so a mid-flight provider fallback (moderation block) updates
-    # the live status label.
-    provider_state = {"provider": "Gemini" if use_gemini else "OpenAI"}
+    # the live status label. "model" is the specific model name once a
+    # generation branch is entered; it starts at the best guess from routing.
+    provider_state = {
+        "provider": "Gemini" if use_gemini else "OpenAI",
+        "model": IMG_MODEL_GEMINI if use_gemini else IMG_MODEL_OPENAI,
+    }
     status_msg, image_data = await live_status_with_progress(
         message,
-        action_label=lambda: f"Generating ({provider_state['provider']})",
+        action_label=lambda: f"Generating ({provider_state['model']})",
         emoji="🎨",
         coro=handle_image_generation(
             message, prompt, reply_msg=ref_msg, use_gemini=use_gemini, provider_state=provider_state
@@ -404,7 +412,7 @@ async def handle_generate_image_intent(
         summarizer=(lambda: "Rendering image… adding details…") if stream_ok else None,
     )
     if image_data:
-        await status_msg.edit(content=f"✅ Image generated ({provider_state['provider']})")
+        await status_msg.edit(content=f"✅ Image generated ({provider_state['model']})")
         await message.channel.send(file=discord.File(image_data, "generated_image.png"))
     else:
         logger.warning("Image generation returned None (prompt=%.100r)", prompt)

@@ -24,6 +24,11 @@ from providers.stability_client import (
 logger = logging.getLogger("stability_utils")
 _REPLY_PROMPT_MAX_CHARS = 1800
 
+# Friendly, user-facing model labels shown in the live status / ✅ line.
+IMG_MODEL_OPENAI = "GPT Image 1.5"
+IMG_MODEL_GEMINI = "Gemini 3 Pro Image"
+IMG_MODEL_STABILITY = "Stable Diffusion 1.5"
+
 
 def _compose_reply_aware_image_prompt(prompt: str, reply_msg=None) -> str:
     base_prompt = (prompt or "").strip()
@@ -154,9 +159,10 @@ _GEMINI_IMAGE_PREFIX_RE = re.compile(
 async def handle_image_generation(
     message, prompt: str, reply_msg=None, use_gemini: bool | None = None, provider_state: dict | None = None
 ) -> Optional[BytesIO]:
-    def _set_provider(name: str) -> None:
+    def _set_provider(name: str, model: str) -> None:
         if provider_state is not None:
             provider_state["provider"] = name
+            provider_state["model"] = model
 
     try:
         prompt_with_reply_context = _compose_reply_aware_image_prompt(prompt, reply_msg)
@@ -164,9 +170,11 @@ async def handle_image_generation(
         if prompt.lower().startswith("stable imagine"):
             image_prompt = _compose_reply_aware_image_prompt(prompt[15:].strip(), reply_msg)
             if STABILITY_AVAILABLE:
+                _set_provider("Stability", IMG_MODEL_STABILITY)
                 img = await generate_stability_image(image_prompt, width, height)
                 if img:
                     return img
+            _set_provider("OpenAI", IMG_MODEL_OPENAI)
             return await generate_gpt_image(image_prompt)
 
         # Provider selection is passed in by the dispatcher (the user said
@@ -181,6 +189,7 @@ async def handle_image_generation(
             else:
                 core_prompt = re.sub(r"^gemini[\s,:]*", "", prompt, flags=re.IGNORECASE).strip() or prompt
             image_prompt = _compose_reply_aware_image_prompt(core_prompt, reply_msg)
+            _set_provider("Gemini", IMG_MODEL_GEMINI)
             ref_images = []
             headers = {"User-Agent": "Mozilla/5.0"}
             if reply_msg:
@@ -227,7 +236,7 @@ async def handle_image_generation(
                 return img
             if message:
                 await message.channel.send("⚠️ **Gemini generation failed** (likely rate limit or error). Falling back to OpenAI... 🧠")
-            _set_provider("OpenAI")
+            _set_provider("OpenAI", IMG_MODEL_OPENAI)
             try:
                 return await generate_gpt_image(image_prompt)
             except ImageModerationError:
@@ -235,6 +244,7 @@ async def handle_image_generation(
                     await message.channel.send("🚫 OpenAI's safety system also rejected this prompt. Try rephrasing.")
                 return None
 
+        _set_provider("OpenAI", IMG_MODEL_OPENAI)
         try:
             return await generate_gpt_image(prompt_with_reply_context)
         except ImageModerationError:
@@ -242,7 +252,7 @@ async def handle_image_generation(
             # accept what OpenAI's safety system refused.
             if message:
                 await message.channel.send("🚫 OpenAI's safety system rejected this prompt — trying **Gemini** instead…")
-            _set_provider("Gemini")
+            _set_provider("Gemini", IMG_MODEL_GEMINI)
             img = await asyncio.to_thread(generate_gemini_image, prompt_with_reply_context, width, height)
             if img:
                 return img

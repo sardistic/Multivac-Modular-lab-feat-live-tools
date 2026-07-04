@@ -54,6 +54,13 @@ _INTENT_SYSTEM = (
     "follow-ups like 'another one' or 'same but blue'. A fully-specified new request "
     "must be classified on its own wording alone — do NOT copy the previous intent "
     "just because the topic is similar.\n"
+    "- Replies to a just-generated image split three ways: a bare reaction, compliment, "
+    "or interjection ('kino', 'nice', 'based', 'lol', 'fire', 'goated') -> 'chat_light' — "
+    "it is commentary, NOT a request, even if PREVIOUS INTENT was an image intent. "
+    "A reply that asks to CHANGE the image ('make it darker', 'add a cat', 'remove the "
+    "text', 'now without the border') -> 'edit_image'. A reply that asks for ANOTHER "
+    "generation ('another one', 'same but blue', 'do one at night') -> 'generate_image'. "
+    "Only messages that ask for something inherit the previous intent.\n"
     "- Else -> 'chat'.\n\n"
     "Examples:\n"
     "'imagine a cool hackerman yelling at a chatbot, dramatic lighting' -> generate_image\n"
@@ -61,7 +68,10 @@ _INTENT_SYSTEM = (
     "'a moody picture of rain on neon streets' -> generate_image\n"
     "'gemini make this a video' -> generate_video\n"
     "'what is a liminal space' -> chat_light\n"
-    "'can you improve this image prompt for me' -> chat\n\n"
+    "'can you improve this image prompt for me' -> chat\n"
+    "'kino' (replying to a generated image) -> chat_light\n"
+    "'make it darker' (replying to a generated image) -> edit_image\n"
+    "'another one' (replying to a generated image) -> generate_image\n\n"
     "IMPORTANT: Output ONLY ONE label."
 )
 
@@ -93,6 +103,7 @@ async def classify_intent(
                 + "- 'generate_image' = User wants to CREATE a NEW image from scratch (imagine, generate, draw, paint, create)\n\n"
                 + "IMPORTANT: If the user says 'edit', 'change', 'make', 'transform' -> 'edit_image' (even if it involves text).\n"
                 + "Only use 'describe_image' if they specifically ask what is in the image, or to transcribe/translate text WITHOUT modifying the image.\n"
+                + "A bare reaction or compliment about the image ('kino', 'nice', 'lol', 'based') -> 'chat_light'; it requests nothing.\n"
                 + "Only use 'chat' if the message is clearly NOT about the attached images."
             )
         else:
