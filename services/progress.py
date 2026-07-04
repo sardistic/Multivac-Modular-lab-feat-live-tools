@@ -17,6 +17,15 @@ PARTIAL_BLOCKS = [
 ]
 FADE_BLOCKS = ['.', ':', '-', '░', '▒', '▓']
 
+def _resolve_label(action_label) -> str:
+    """action_label may be a plain string or a zero-arg callable, so long
+    operations can update their label mid-flight (e.g. provider fallback)."""
+    try:
+        return action_label() if callable(action_label) else action_label
+    except Exception:
+        return "Working"
+
+
 async def start_progress_bar(message, task: asyncio.Task, action_label="Working", emoji="💬", duration_estimate=40, progress_tracker: dict = None):
     width = 24
     animation_update_interval = 0.1     # Local animation refresh (every 100ms)
@@ -36,7 +45,7 @@ async def start_progress_bar(message, task: asyncio.Task, action_label="Working"
                  progress = min(elapsed / duration_estimate, 1.0)
 
             bar = build_progress_bar(progress, width, fancy=True)
-            render = f"{emoji} {action_label} {bar}"
+            render = f"{emoji} {_resolve_label(action_label)} {bar}"
 
             if now - last_discord_edit >= discord_edit_interval:
                 try:
@@ -49,7 +58,7 @@ async def start_progress_bar(message, task: asyncio.Task, action_label="Working"
 
         # FINAL forced full-bar once done
         bar = build_progress_bar(1.0, width, fancy=False)
-        final_render = f"{emoji} {action_label} {bar}"
+        final_render = f"{emoji} {_resolve_label(action_label)} {bar}"
         try:
             await message.edit(content=final_render)
         except Exception:

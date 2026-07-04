@@ -6,7 +6,7 @@ from typing import List, Optional
 import discord
 
 from services.database_utils import get_message_expansion, save_message_expansion, set_message_expanded
-from services.progress import start_progress_bar
+from services.progress import _resolve_label, start_progress_bar
 
 LINE_TRUNCATE_AT = 2
 DISCORD_MESSAGE_LIMIT = 2000
@@ -196,19 +196,19 @@ async def live_status_with_progress(
     status_msg = existing_status_msg
     if status_msg is None:
         try:
-            status_msg = await message.reply(f"[{emoji} {action_label} ░░░░░░░░░░]")
+            status_msg = await message.reply(f"[{emoji} {_resolve_label(action_label)} ░░░░░░░░░░]")
         except Exception:
             # Avoid leaking an un-awaited coroutine if reply fails before task creation.
             with contextlib.suppress(Exception):
                 if asyncio.iscoroutine(coro):
                     coro.close()
             with contextlib.suppress(Exception):
-                status_msg = await message.channel.send(f"[{emoji} {action_label} ░░░░░░░░░░]")
+                status_msg = await message.channel.send(f"[{emoji} {_resolve_label(action_label)} ░░░░░░░░░░]")
             if status_msg is None:
                 raise
     else:
         with contextlib.suppress(Exception):
-            await status_msg.edit(content=f"[{emoji} {action_label} ░░░░░░░░░░]")
+            await status_msg.edit(content=f"[{emoji} {_resolve_label(action_label)} ░░░░░░░░░░]")
 
     loop = asyncio.get_event_loop()
     task = loop.create_task(coro)
@@ -234,7 +234,7 @@ async def live_status_with_progress(
             try:
                 s = summarizer()
                 if s:
-                    content = f"[{emoji} {action_label} ░░░░░░░░░░]\n{s}"
+                    content = f"[{emoji} {_resolve_label(action_label)} ░░░░░░░░░░]\n{s}"
                     if editor:
                         await editor.update(content)
                     else:
