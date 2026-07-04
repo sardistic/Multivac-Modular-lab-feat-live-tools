@@ -507,16 +507,28 @@ async def usage(ctx):
     mine = await asyncio.to_thread(usage_costs.today_for_user, uid)
     day = await asyncio.to_thread(usage_costs.today)
     month = await asyncio.to_thread(usage_costs.month_to_date)
+    my_break = await asyncio.to_thread(usage_costs.today_breakdown, uid, 8)
+
+    def _fmt_row(b):
+        tokens = f", {b['total_tokens']:,} tok" if b["total_tokens"] else ""
+        return f"  `{b['model']}` {b['label']}: {b['calls']}×{tokens}, ${b['cost']:.4f}"
 
     lines = [
         "📊 **API usage**",
-        f"You today: {mine['calls']} calls, {mine['total_tokens']:,} tokens, ${mine['cost']:.4f}",
-        f"Everyone today: {day['calls']} calls, {day['total_tokens']:,} tokens, ${day['cost']:.4f}",
-        f"Month to date: {month['calls']} calls, {month['total_tokens']:,} tokens, ${month['cost']:.2f}",
+        f"**You today:** {mine['calls']} calls, {mine['total_tokens']:,} tokens, ${mine['cost']:.4f}",
     ]
+    lines.extend(_fmt_row(b) for b in my_break)
+    lines.append(f"**Everyone today:** {day['calls']} calls, {day['total_tokens']:,} tokens, ${day['cost']:.4f}")
 
     perms = getattr(ctx.author, "guild_permissions", None)
-    if perms and perms.manage_messages:
+    is_mod = bool(perms and perms.manage_messages)
+    if is_mod:
+        all_break = await asyncio.to_thread(usage_costs.today_breakdown, None, 8)
+        lines.extend(_fmt_row(b) for b in all_break)
+
+    lines.append(f"**Month to date:** {month['calls']} calls, {month['total_tokens']:,} tokens, ${month['cost']:.2f}")
+
+    if is_mod:
         top = await asyncio.to_thread(usage_costs.top_users_today, 5)
         if top:
             lines.append("\n**Top spenders today:**")

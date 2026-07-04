@@ -316,6 +316,35 @@ def month_to_date() -> Dict[str, Any]:
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     return _aggregate_where("ts_utc >= ?", (start.isoformat(),))
 
+def today_breakdown(user_id: Optional[str] = None, limit: int = 12) -> list:
+    """Per model+label rollup for today, most expensive first.
+    user_id=None aggregates everyone."""
+    now = datetime.now(timezone.utc)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    where = "ts_utc >= ?"
+    args: tuple = (start.isoformat(),)
+    if user_id is not None:
+        where += " AND user_id = ?"
+        args += (str(user_id),)
+    with _conn_rw() as c:
+        rows = c.execute(
+            f"""
+            SELECT model, COALESCE(label, 'other'), COUNT(*),
+                   COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0.0)
+            FROM usage_logs
+            WHERE {where}
+            GROUP BY model, COALESCE(label, 'other')
+            ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC
+            LIMIT ?
+            """,
+            args + (int(limit),),
+        ).fetchall()
+    return [
+        {"model": r[0], "label": r[1], "calls": r[2], "total_tokens": r[3], "cost": float(r[4])}
+        for r in rows
+    ]
+
+
 def today_for_user(user_id: str) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
