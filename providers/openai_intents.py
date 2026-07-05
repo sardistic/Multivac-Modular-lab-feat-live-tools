@@ -82,6 +82,17 @@ VALID_INTENTS = {
 }
 
 
+def _keyword_fallback_intent(text: str) -> str:
+    """Deterministic route for when the classifier itself can't run (OpenAI
+    down / out of quota). The only provider signal we can honor without an LLM
+    is an explicit 'gemini ...' prefix — that request plainly wants Gemini, so
+    send it to gemini_chat rather than to 'chat', which would just hit the same
+    dead OpenAI backend. Everything else defaults to 'chat'."""
+    if (text or "").strip().lower().startswith("gemini"):
+        return "gemini_chat"
+    return "chat"
+
+
 async def classify_intent(
     text: str,
     has_images: bool = False,
@@ -166,5 +177,6 @@ async def classify_intent(
     except Exception as e:
         if isinstance(e, OpenAIModerationError):
             raise
-        logging.warning("[intent] fallback to chat due to: %s", e)
-        return "chat"
+        fallback = _keyword_fallback_intent(text)
+        logging.warning("[intent] classifier failed (%s); keyword fallback -> %s", e, fallback)
+        return fallback

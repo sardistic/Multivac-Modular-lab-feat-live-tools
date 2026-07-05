@@ -70,6 +70,57 @@ class ProviderSelectionTests(unittest.TestCase):
                 self.assertFalse(wants_gemini(p))
 
 
+class ClassifierOutageFallbackTests(unittest.TestCase):
+    """When the OpenAI classifier can't run, routing must degrade gracefully:
+    an explicit 'gemini ...' request still reaches Gemini instead of bouncing
+    to 'chat' (which would hit the same dead OpenAI backend)."""
+
+    def test_keyword_fallback_routes_gemini_prefix(self):
+        from providers.openai_intents import _keyword_fallback_intent
+
+        self.assertEqual(_keyword_fallback_intent("gemini tell me a joke"), "gemini_chat")
+        self.assertEqual(_keyword_fallback_intent("  GEMINI what's up"), "gemini_chat")
+
+    def test_keyword_fallback_defaults_to_chat(self):
+        from providers.openai_intents import _keyword_fallback_intent
+
+        for text in ("what's the weather", "tell me about entropy", "", "claude hi"):
+            with self.subTest(text=text):
+                self.assertEqual(_keyword_fallback_intent(text), "chat")
+
+    def test_classify_intent_falls_back_when_openai_down(self):
+        import providers.openai_intents as oi
+
+        def _boom():
+            raise RuntimeError("insufficient_quota")
+
+        original = oi.get_openai_client
+        oi.get_openai_client = _boom
+        try:
+            self.assertEqual(asyncio.run(oi.classify_intent("gemini lose weight tips")), "gemini_chat")
+            self.assertEqual(asyncio.run(oi.classify_intent("how do magnets work")), "chat")
+        finally:
+            oi.get_openai_client = original
+
+
+class ChatOutageDetectionTests(unittest.TestCase):
+    """The Gemini chat fallback fires on OpenAI's error sentinel strings and
+    nothing else."""
+
+    def test_detects_openai_error_sentinels(self):
+        from bot.chat_handler import _is_openai_outage
+
+        self.assertTrue(_is_openai_outage("⚠️ OpenAI tools error: Error code: 429 - quota"))
+        self.assertTrue(_is_openai_outage("⚠️ OpenAI error: connection reset"))
+
+    def test_ignores_normal_answers(self):
+        from bot.chat_handler import _is_openai_outage
+
+        for text in ("Here's how magnets work…", "", None, "⚠️ Response Blocked by Safety Filters"):
+            with self.subTest(text=text):
+                self.assertFalse(_is_openai_outage(text))
+
+
 @unittest.skipUnless(
     os.getenv("RUN_LIVE_INTENT_TESTS") == "1",
     "live classifier test; set RUN_LIVE_INTENT_TESTS=1 to run",

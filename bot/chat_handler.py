@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 
 from bot.chat_context import build_chat_context
@@ -9,6 +10,21 @@ from providers.openai_client import OPENAI_CHAT_MODEL
 from providers.openai_utils import OpenAIModerationError, TOOLS_DEF, generate_openai_messages_response_with_tools
 
 logger = logging.getLogger("discord_bot")
+
+# Model used to answer chat when the OpenAI backend is unavailable (quota/429,
+# rate limit, connection). Keeps the bot usable during an OpenAI outage.
+GEMINI_FALLBACK_CHAT_MODEL = "gemini-3-flash-preview"
+
+
+def _is_openai_outage(text) -> bool:
+    """True when a chat generation returned one of the '⚠️ OpenAI ... error:'
+    sentinel strings (see providers/openai_messages.py) instead of a real
+    answer — meaning the OpenAI call itself failed rather than the model
+    choosing to say something. Triggers the Gemini fallback below."""
+    if not isinstance(text, str):
+        return False
+    stripped = text.lstrip()
+    return stripped.startswith("⚠️ OpenAI") and "error:" in stripped
 
 
 async def handle_chat_intent(
@@ -63,7 +79,10 @@ async def handle_chat_intent(
 
             if "gemini" in selected_model.lower():
                 status_res = {"text": ""}
-                text_resp, artifacts = generate_gemini_text(
+                # to_thread: generate_gemini_text is synchronous/blocking and
+                # this runs on the event loop (as a live OpenAI-outage fallback).
+                text_resp, artifacts = await asyncio.to_thread(
+                    generate_gemini_text,
                     prompt=prompt,
                     context=msgs,
                     extra_parts=gemini_parts or None,
@@ -103,7 +122,19 @@ async def handle_chat_intent(
                 summarizer=_summarizer if stream_ok else None,
             )
 
-            if response and response.strip():
+            if _is_openai_outage(response) and "gemini" not in selected_model.lower():
+                # OpenAI backend is down (quota/429/etc). Don't surface the raw
+                # error or bounce between OpenAI tiers — answer with Gemini.
+                logger.warning(
+                    "OpenAI unavailable during chat (%.80r); falling back to Gemini",
+                    response,
+                )
+                with contextlib.suppress(Exception):
+                    await status_msg.edit(
+                        content="⚠️ OpenAI is unavailable right now — answering with **Gemini** instead…"
+                    )
+                await _do_chat_generation(model_name=GEMINI_FALLBACK_CHAT_MODEL)
+            elif response and response.strip():
                 response = apply_personality_overrides(user_id, intent="chat", text=response)
                 await send_or_edit_with_truncation(
                     response,
