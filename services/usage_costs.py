@@ -64,12 +64,24 @@ def _month_start_utc(now_utc: datetime, tz) -> datetime:
     return local_first.astimezone(timezone.utc)
 
 
+def _year_start_utc(now_utc: datetime, tz) -> datetime:
+    """Start of the current local (tz) year, expressed in UTC."""
+    local_first = now_utc.astimezone(tz).replace(
+        month=1, day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    return local_first.astimezone(timezone.utc)
+
+
 def _report_day_start_iso() -> str:
     return _day_start_utc(datetime.now(timezone.utc), REPORT_TZ).isoformat()
 
 
 def _report_month_start_iso() -> str:
     return _month_start_utc(datetime.now(timezone.utc), REPORT_TZ).isoformat()
+
+
+def _report_year_start_iso() -> str:
+    return _year_start_utc(datetime.now(timezone.utc), REPORT_TZ).isoformat()
 
 # ----------------------------
 # Schema
@@ -351,6 +363,13 @@ def today() -> Dict[str, Any]:
 
 def month_to_date() -> Dict[str, Any]:
     return _aggregate_where("ts_utc >= ?", (_report_month_start_iso(),))
+
+def year_to_date() -> Dict[str, Any]:
+    return _aggregate_where("ts_utc >= ?", (_report_year_start_iso(),))
+
+def all_time() -> Dict[str, Any]:
+    """All usage ever recorded in this database."""
+    return _aggregate_where("1=1", ())
 
 def today_breakdown(user_id: Optional[str] = None, limit: int = 12) -> list:
     """Per model+label rollup for today, most expensive first.

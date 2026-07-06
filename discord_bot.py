@@ -507,6 +507,8 @@ async def usage(ctx):
     mine = await asyncio.to_thread(usage_costs.today_for_user, uid)
     day = await asyncio.to_thread(usage_costs.today)
     month = await asyncio.to_thread(usage_costs.month_to_date)
+    year = await asyncio.to_thread(usage_costs.year_to_date)
+    total = await asyncio.to_thread(usage_costs.all_time)
     my_break = await asyncio.to_thread(usage_costs.today_breakdown, uid, 8)
 
     def _fmt_row(b):
@@ -527,6 +529,8 @@ async def usage(ctx):
         lines.extend(_fmt_row(b) for b in all_break)
 
     lines.append(f"**Month to date:** {month['calls']} calls, {month['total_tokens']:,} tokens, ${month['cost']:.2f}")
+    lines.append(f"**Year to date:** {year['calls']} calls, {year['total_tokens']:,} tokens, ${year['cost']:.2f}")
+    lines.append(f"**All time:** {total['calls']} calls, {total['total_tokens']:,} tokens, ${total['cost']:.2f}")
 
     if is_mod:
         top = await asyncio.to_thread(usage_costs.top_users_today, 5)
