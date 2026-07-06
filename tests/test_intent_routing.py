@@ -162,5 +162,38 @@ class LiveReplyToImageClassifierTests(unittest.TestCase):
                 self.assertEqual(self._classify(prompt), "generate_image")
 
 
+@unittest.skipUnless(
+    os.getenv("RUN_LIVE_INTENT_TESTS") == "1",
+    "live classifier test; set RUN_LIVE_INTENT_TESTS=1 to run",
+)
+class LiveWriteVsDepictTests(unittest.TestCase):
+    """Asking to WRITE text about a visual/horror subject must stay text, even
+    when the text-intent word is garbled ('fan function' for 'fanfiction').
+    Regression for 'one sentence doki doki fan function horror' -> image."""
+
+    def _classify(self, text: str) -> str:
+        from providers.openai_intents import classify_intent
+
+        return asyncio.run(classify_intent(text))
+
+    def test_write_requests_stay_text(self):
+        for prompt in (
+            "one sentence doki doki fan function horror",
+            "write one sentence of doki doki horror",
+            "a haiku about a burning city",
+            "give me a caption for a spooky doki doki scene",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertIn(self._classify(prompt), {"chat", "chat_light"})
+
+    def test_real_image_requests_still_route_to_image(self):
+        for prompt in (
+            "a moody picture of rain on neon streets",
+            "draw a doki doki character in horror style",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(self._classify(prompt), "generate_image")
+
+
 if __name__ == "__main__":
     unittest.main()
