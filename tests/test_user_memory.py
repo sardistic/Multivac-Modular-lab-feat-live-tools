@@ -134,6 +134,12 @@ class UsageCostsTests(unittest.TestCase):
         self.assertAlmostEqual(usage_costs.estimate_cost("gpt-5.5", usage), 1.25)
         self.assertEqual(usage_costs.estimate_cost("mystery-model", usage), 0.0)
 
+    def test_gpt_image_output_priced_at_32_per_million(self):
+        # gpt-image-1.5 image-output tokens bill at $32/M (not $40). A ~6,600
+        # token high-quality image should cost ~$0.21.
+        usage = {"prompt_tokens": 10, "completion_tokens": 6_600}
+        self.assertAlmostEqual(usage_costs.estimate_cost("gpt-image-1.5", usage), 0.21125, places=4)
+
     def test_migrates_old_schema_without_user_id(self):
         # Simulate a database created before the user_id column existed.
         import sqlite3
