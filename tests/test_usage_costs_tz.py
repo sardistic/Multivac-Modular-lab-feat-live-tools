@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from services.usage_costs import _day_start_utc, _month_start_utc
+from services.usage_costs import _day_start_utc, _month_start_utc, _year_start_utc
 
 EDT = timezone(timedelta(hours=-4))  # US Eastern in July, without needing tzdata
 
@@ -29,6 +29,12 @@ class ReportBoundaryTests(unittest.TestCase):
         now_utc = datetime(2026, 7, 1, 2, 0, tzinfo=timezone.utc)
         start = _month_start_utc(now_utc, EDT)
         self.assertEqual(start, datetime(2026, 6, 1, 4, 0, tzinfo=timezone.utc))
+
+    def test_year_boundary_uses_local_year(self):
+        # 02:00 UTC Jan 1 2027 == 9:00pm EST Dec 31 2026, still the 2026 year.
+        now_utc = datetime(2027, 1, 1, 2, 0, tzinfo=timezone.utc)
+        start = _year_start_utc(now_utc, EDT)
+        self.assertEqual(start, datetime(2026, 1, 1, 4, 0, tzinfo=timezone.utc))
 
     def test_utc_tz_matches_plain_utc_midnight(self):
         now_utc = datetime(2026, 7, 6, 15, 0, tzinfo=timezone.utc)
