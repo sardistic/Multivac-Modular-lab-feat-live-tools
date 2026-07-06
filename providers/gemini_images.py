@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import logging
+import os
 from io import BytesIO
 from typing import Optional
 
 from providers.gemini_client import PILImage, get_gemini_client, types
 
 logger = logging.getLogger("gemini_utils")
+
+# Output resolution for from-scratch generation. 1K and 2K cost the same on
+# Gemini 3 Pro Image ($0.134/img); 4K is ~$0.24/img (and 16MP PNGs risk
+# Discord's 10MB upload cap). 2K is the sweet spot for inline display — free
+# vs 1K, ~45% cheaper than 4K. Override with GEMINI_IMAGE_SIZE ("1K"/"2K"/"4K").
+GEMINI_IMAGE_SIZE = os.getenv("GEMINI_IMAGE_SIZE", "2K").upper()
 
 
 def generate_gemini_image(prompt: str, width: int = 1024, height: int = 1024) -> Optional[BytesIO]:
@@ -24,7 +31,7 @@ def generate_gemini_image(prompt: str, width: int = 1024, height: int = 1024) ->
     try:
         config = types.GenerateContentConfig(
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio=aspect_ratio, image_size="4K"),
+            image_config=types.ImageConfig(aspect_ratio=aspect_ratio, image_size=GEMINI_IMAGE_SIZE),
             safety_settings=[
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
@@ -33,7 +40,7 @@ def generate_gemini_image(prompt: str, width: int = 1024, height: int = 1024) ->
             ],
         )
         response = client.models.generate_content(model=model, contents=[prompt], config=config)
-        _record_gemini_image_cost(model, "image_generation")
+        _record_gemini_image_cost(model, "image_generation", image_size=GEMINI_IMAGE_SIZE)
         if response.parts:
             for part in response.parts:
                 if part.inline_data:
@@ -53,14 +60,18 @@ def generate_gemini_image(prompt: str, width: int = 1024, height: int = 1024) ->
     return None
 
 
-def _record_gemini_image_cost(model: str, label: str) -> None:
-    """Flat per-image ledger entry (GEMINI_IMAGE_COST_USD, default 0.13)."""
+def _record_gemini_image_cost(model: str, label: str, image_size: str = "2K") -> None:
+    """Per-image ledger entry priced by resolution: 4K is ~$0.24, 1K/2K ~$0.134
+    (Gemini 3 Pro Image). Edit/reference paths run at the default (1K/2K) tier.
+    Tier prices are overridable via GEMINI_IMAGE_COST_4K_USD / GEMINI_IMAGE_COST_USD."""
     try:
-        import os
-
         from services import usage_costs
 
-        usage_costs.record(model, None, float(os.getenv("GEMINI_IMAGE_COST_USD", "0.13")), label=label)
+        if str(image_size).upper() == "4K":
+            cost = float(os.getenv("GEMINI_IMAGE_COST_4K_USD", "0.24"))
+        else:
+            cost = float(os.getenv("GEMINI_IMAGE_COST_USD", "0.134"))
+        usage_costs.record(model, None, cost, label=label)
     except Exception:
         logger.warning("gemini image usage recording failed", exc_info=True)
 
