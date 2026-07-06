@@ -10,6 +10,7 @@
 # Env:
 #   USAGE_DB_PATH=/absolute/path/usage_costs.db   (default: ./usage_costs.db)
 #   USAGE_LOG_LEVEL=INFO|DEBUG|WARNING|ERROR       (optional)
+#   USAGE_TZ=America/New_York                       (report day/month boundary tz)
 
 from __future__ import annotations
 
@@ -22,6 +23,11 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - stdlib since 3.9
+    ZoneInfo = None
+
 # ----------------------------
 # Config & Logging
 # ----------------------------
@@ -30,6 +36,40 @@ DB_PATH = os.getenv("USAGE_DB_PATH", "./usage_costs.db")
 _log_level = os.getenv("USAGE_LOG_LEVEL", "WARNING").upper()
 logging.basicConfig(level=getattr(logging, _log_level, logging.WARNING))
 logger = logging.getLogger("usage_costs")
+
+# Reporting timezone for "today" / "month-to-date" boundaries. Rows are always
+# STORED in UTC; only the report windows roll over on the local calendar day so
+# an evening report (e.g. 10pm ET) doesn't read 0 just because it's already the
+# next day in UTC. Defaults to US Eastern; override with USAGE_TZ.
+_REPORT_TZ_NAME = os.getenv("USAGE_TZ", "America/New_York")
+if ZoneInfo is not None:
+    try:
+        REPORT_TZ: timezone | Any = ZoneInfo(_REPORT_TZ_NAME)
+    except Exception:
+        logger.warning("Unknown USAGE_TZ=%r; falling back to UTC", _REPORT_TZ_NAME)
+        REPORT_TZ = timezone.utc
+else:
+    REPORT_TZ = timezone.utc
+
+
+def _day_start_utc(now_utc: datetime, tz) -> datetime:
+    """Start of the current local (tz) day, expressed in UTC."""
+    local_midnight = now_utc.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    return local_midnight.astimezone(timezone.utc)
+
+
+def _month_start_utc(now_utc: datetime, tz) -> datetime:
+    """Start of the current local (tz) month, expressed in UTC."""
+    local_first = now_utc.astimezone(tz).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return local_first.astimezone(timezone.utc)
+
+
+def _report_day_start_iso() -> str:
+    return _day_start_utc(datetime.now(timezone.utc), REPORT_TZ).isoformat()
+
+
+def _report_month_start_iso() -> str:
+    return _month_start_utc(datetime.now(timezone.utc), REPORT_TZ).isoformat()
 
 # ----------------------------
 # Schema
@@ -307,22 +347,16 @@ def window_minutes(minutes: int = 60) -> Dict[str, Any]:
     return _aggregate_where("ts_utc >= ?", (since.replace(microsecond=0).isoformat(),))
 
 def today() -> Dict[str, Any]:
-    now = datetime.now(timezone.utc)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return _aggregate_where("ts_utc >= ?", (start.isoformat(),))
+    return _aggregate_where("ts_utc >= ?", (_report_day_start_iso(),))
 
 def month_to_date() -> Dict[str, Any]:
-    now = datetime.now(timezone.utc)
-    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    return _aggregate_where("ts_utc >= ?", (start.isoformat(),))
+    return _aggregate_where("ts_utc >= ?", (_report_month_start_iso(),))
 
 def today_breakdown(user_id: Optional[str] = None, limit: int = 12) -> list:
     """Per model+label rollup for today, most expensive first.
     user_id=None aggregates everyone."""
-    now = datetime.now(timezone.utc)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     where = "ts_utc >= ?"
-    args: tuple = (start.isoformat(),)
+    args: tuple = (_report_day_start_iso(),)
     if user_id is not None:
         where += " AND user_id = ?"
         args += (str(user_id),)
@@ -346,13 +380,9 @@ def today_breakdown(user_id: Optional[str] = None, limit: int = 12) -> list:
 
 
 def today_for_user(user_id: str) -> Dict[str, Any]:
-    now = datetime.now(timezone.utc)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return _aggregate_where("ts_utc >= ? AND user_id = ?", (start.isoformat(), str(user_id)))
+    return _aggregate_where("ts_utc >= ? AND user_id = ?", (_report_day_start_iso(), str(user_id)))
 
 def top_users_today(limit: int = 5) -> list:
-    now = datetime.now(timezone.utc)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     with _conn_rw() as c:
         rows = c.execute(
             """
@@ -361,7 +391,7 @@ def top_users_today(limit: int = 5) -> list:
             WHERE ts_utc >= ? AND user_id IS NOT NULL
             GROUP BY user_id ORDER BY SUM(cost_usd) DESC LIMIT ?
             """,
-            (start.isoformat(), int(limit)),
+            (_report_day_start_iso(), int(limit)),
         ).fetchall()
     return [
         {"user_id": r[0], "calls": r[1], "total_tokens": r[2], "cost": float(r[3])}
