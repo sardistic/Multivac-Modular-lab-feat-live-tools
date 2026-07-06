@@ -534,6 +534,12 @@ async def usage(ctx):
             lines.append("\n**Top spenders today:**")
             for t in top:
                 lines.append(f"<@{t['user_id']}>: {t['calls']} calls, ${t['cost']:.4f}")
+
+        top_month = await asyncio.to_thread(usage_costs.top_users_month, 5)
+        if top_month:
+            lines.append("\n**Top spenders this month:**")
+            for t in top_month:
+                lines.append(f"<@{t['user_id']}>: {t['calls']} calls, ${t['cost']:.2f}")
     await ctx.reply("\n".join(lines)[:1990])
 
 

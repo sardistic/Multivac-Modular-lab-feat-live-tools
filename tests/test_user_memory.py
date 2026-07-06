@@ -100,6 +100,11 @@ class UsageCostsTests(unittest.TestCase):
         top = usage_costs.top_users_today()
         self.assertEqual(top[0]["user_id"], "42")
 
+        # Month view ranks the same users (fresh records are within the month).
+        top_month = usage_costs.top_users_month()
+        self.assertEqual(top_month[0]["user_id"], "42")
+        self.assertEqual(top_month[0]["calls"], 1)
+
     def test_today_breakdown_groups_by_model_and_label(self):
         usage_costs.set_request_context(user_id="42")
         usage_costs.record("gpt-5.5", {"prompt_tokens": 100, "completion_tokens": 50}, 0.02, label="chat")
