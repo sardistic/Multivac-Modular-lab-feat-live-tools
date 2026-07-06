@@ -382,7 +382,7 @@ def today_breakdown(user_id: Optional[str] = None, limit: int = 12) -> list:
 def today_for_user(user_id: str) -> Dict[str, Any]:
     return _aggregate_where("ts_utc >= ? AND user_id = ?", (_report_day_start_iso(), str(user_id)))
 
-def top_users_today(limit: int = 5) -> list:
+def _top_users_since(since_iso: str, limit: int) -> list:
     with _conn_rw() as c:
         rows = c.execute(
             """
@@ -391,12 +391,21 @@ def top_users_today(limit: int = 5) -> list:
             WHERE ts_utc >= ? AND user_id IS NOT NULL
             GROUP BY user_id ORDER BY SUM(cost_usd) DESC LIMIT ?
             """,
-            (_report_day_start_iso(), int(limit)),
+            (since_iso, int(limit)),
         ).fetchall()
     return [
         {"user_id": r[0], "calls": r[1], "total_tokens": r[2], "cost": float(r[3])}
         for r in rows
     ]
+
+
+def top_users_today(limit: int = 5) -> list:
+    return _top_users_since(_report_day_start_iso(), limit)
+
+
+def top_users_month(limit: int = 5) -> list:
+    """Highest-spending users this local month (mod view)."""
+    return _top_users_since(_report_month_start_iso(), limit)
 
 # ----------------------------
 # CLI self-test (optional)
