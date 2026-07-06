@@ -539,7 +539,7 @@ async def usage(ctx):
         if top_month:
             lines.append("\n**Top spenders this month:**")
             for t in top_month:
-                lines.append(f"<@{t['user_id']}>: {t['calls']} calls, ${t['cost']:.2f}")
+                lines.append(f"<@{t['user_id']}>: {t['calls']} calls, ${t['cost']:.4f}")
     await ctx.reply("\n".join(lines)[:1990])
 
 
