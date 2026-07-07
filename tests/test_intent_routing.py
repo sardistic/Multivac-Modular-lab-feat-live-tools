@@ -195,5 +195,35 @@ class LiveWriteVsDepictTests(unittest.TestCase):
                 self.assertEqual(self._classify(prompt), "generate_image")
 
 
+@unittest.skipUnless(
+    os.getenv("RUN_LIVE_INTENT_TESTS") == "1",
+    "live classifier test; set RUN_LIVE_INTENT_TESTS=1 to run",
+)
+class LiveCodebaseQuestionTests(unittest.TestCase):
+    """Questions about the bot's own code/commands need the code-search tool +
+    reasoning, so they must route to 'chat' (full model), not 'chat_light'
+    (gpt-5.4-mini, which whiffed on the search and gave up)."""
+
+    def _classify(self, text: str) -> str:
+        from providers.openai_intents import classify_intent
+
+        return asyncio.run(classify_intent(text))
+
+    def test_codebase_questions_route_to_full_chat(self):
+        for prompt in (
+            "can you list the /commands added from the codebase",
+            "what commands do you have",
+            "how are you built",
+            "whats your latest commit",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(self._classify(prompt), "chat")
+
+    def test_trivial_one_liners_stay_light(self):
+        for prompt in ("lol", "whats up", "what is a liminal space"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(self._classify(prompt), "chat_light")
+
+
 if __name__ == "__main__":
     unittest.main()
