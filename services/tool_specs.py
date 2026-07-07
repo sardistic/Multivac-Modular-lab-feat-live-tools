@@ -127,10 +127,10 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "git_search_code",
-            "description": "Search my codebase for a pattern. Returns matching lines with file and line number.",
+            "description": "Search my codebase for a literal substring (case-insensitive). Returns matching lines with file and line number. Search SHORT distinctive substrings, not full guessed expressions — e.g. 'hybrid_command' not '@commands.hybrid_command', 'command(name=' not '@bot.tree.command'. An empty result means that exact substring isn't present; broaden or drop a prefix and retry before concluding something doesn't exist.",
             "parameters": {
                 "type": "object",
-                "properties": {"query": {"type": "string", "description": "Search query (case-insensitive)"}},
+                "properties": {"query": {"type": "string", "description": "Short literal substring to find (case-insensitive). Prefer distinctive fragments over full decorators/paths."}},
                 "required": ["query"],
             },
         },
