@@ -69,8 +69,12 @@ def _redact_secrets(text: str) -> str:
 
 # ---- Git Commands ----
 
-def _run_git(*args, max_output: int = 8000) -> str:
-    """Run a git command and return output (truncated if needed)."""
+def _run_git(*args, max_output: int = 8000, no_match_ok: bool = False) -> str:
+    """Run a git command and return output (truncated if needed).
+
+    no_match_ok: for `git grep`, exit code 1 means "no matches found" (not an
+    error, same as plain grep). With this set, code 1 returns empty output so a
+    zero-result search isn't mislabeled as a tool failure."""
     try:
         # Use -c safe.directory=* to avoid ownership errors in automated environments
         cmd = ["git", "-c", "safe.directory=*"] + list(args)
@@ -83,6 +87,8 @@ def _run_git(*args, max_output: int = 8000) -> str:
         )
         output = result.stdout or result.stderr or ""
         if result.returncode != 0:
+            if no_match_ok and result.returncode == 1:
+                return ""  # git grep: no matches, not a failure
             return f"[error: git command failed with code {result.returncode}: {output.strip()}]"
             
         if len(output) > max_output:
@@ -167,8 +173,8 @@ def search_code(query: str, max_results: int = 20) -> List[Dict[str, Any]]:
     # Escape special regex chars for literal search
     escaped = re.escape(query)
     
-    output = _run_git("grep", "-n", "-i", "--", escaped, max_output=10000)
-    
+    output = _run_git("grep", "-n", "-i", "--", escaped, max_output=10000, no_match_ok=True)
+
     results = []
     for line in output.strip().split("\n")[:max_results]:
         if ":" in line:
@@ -238,7 +244,7 @@ def search_history(query: str, max_results: int = 10) -> List[Dict[str, Any]]:
 
 
 def _grep_regex(pattern: str, max_results: int = 20) -> List[Dict[str, Any]]:
-    output = _run_git("grep", "-n", "-i", "-E", "--", pattern, max_output=12000)
+    output = _run_git("grep", "-n", "-i", "-E", "--", pattern, max_output=12000, no_match_ok=True)
     if output.startswith("[error:"):
         return [{"error": output}]
 
