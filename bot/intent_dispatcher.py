@@ -196,6 +196,7 @@ async def dispatch_intent(ctx: DispatchContext) -> bool:
             live_status_with_progress=ctx.live_status_with_progress,
             stream_ok=ctx.stream_ok,
             image_urls=ctx.image_urls,
+            ref_msg=ctx.ref_msg,
         )
         return True
 
