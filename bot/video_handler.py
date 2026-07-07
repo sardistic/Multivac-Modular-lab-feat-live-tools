@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+import re
 
 import discord
 
@@ -23,6 +24,24 @@ from services.database_utils import (
 )
 
 logger = logging.getLogger("discord_bot")
+
+_VIDEO_REPLY_PROMPT_MAX_CHARS = 1500
+
+
+def _compose_reply_aware_video_prompt(prompt: str, ref_msg=None) -> str:
+    """Fold a replied-to message's text into the video prompt. Without this,
+    'make this a video' in reply to a greentext generated an unrelated clip —
+    the reply content was never passed to Sora/Veo."""
+    base = (prompt or "").strip()
+    reply_text = (getattr(ref_msg, "content", "") or "").strip()
+    if not reply_text:
+        return base
+    reply_text = re.sub(r"\s+", " ", reply_text)
+    if len(reply_text) > _VIDEO_REPLY_PROMPT_MAX_CHARS:
+        reply_text = reply_text[:_VIDEO_REPLY_PROMPT_MAX_CHARS].rstrip() + "..."
+    if base:
+        return f"{base}\n\nBase the video on this content:\n{reply_text}"
+    return reply_text
 
 
 def _record_video_cost(provider: str, model: str, seconds: int) -> None:
@@ -242,11 +261,16 @@ class VideoConfirmationView(discord.ui.View):
         self.stop()
 
 
-async def handle_generate_video_intent(message, prompt: str, user_id, live_status_with_progress, stream_ok: bool, image_urls=None):
+async def handle_generate_video_intent(message, prompt: str, user_id, live_status_with_progress, stream_ok: bool, image_urls=None, ref_msg=None):
     image_data = None
     image_filename = None
     image_content_type = None
     base_fail_msg = "Generation failed."
+
+    # The text the video is actually generated from: user instruction + the
+    # replied-to message's content (so "make this a video" animates that post).
+    # remix/edit detection below stays on the raw instruction, not this.
+    effective_prompt = _compose_reply_aware_video_prompt(prompt, ref_msg)
 
     reference_upload = await _resolve_video_reference_upload(message, image_urls=image_urls)
     if reference_upload:
@@ -254,7 +278,7 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
         base_fail_msg = "Image-to-Video failed."
 
     include_veo = veo_is_available()
-    cost_msg = _build_video_cost_message(prompt, include_veo=include_veo)
+    cost_msg = _build_video_cost_message(effective_prompt, include_veo=include_veo)
     view = VideoConfirmationView(author_id=user_id, video_options=build_video_config_options(include_veo=include_veo))
     confirm_msg = await message.reply(cost_msg, view=view)
     await view.wait()
@@ -328,10 +352,10 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
     async def _generate_video_task():
         if provider == "sora":
             if is_remix and remix_target_id:
-                job = await remix_sora_video(remix_target_id, prompt)
+                job = await remix_sora_video(remix_target_id, effective_prompt)
             else:
                 job = await create_sora_job(
-                    prompt,
+                    effective_prompt,
                     model=selected_model,
                     size=None if image_data else "1280x720",
                     seconds=selected_seconds,
@@ -396,7 +420,7 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
             return f, None
 
         content, err = await generate_veo_video(
-            prompt,
+            effective_prompt,
             model=selected_model,
             seconds=selected_seconds,
             image_data=image_data,
@@ -431,7 +455,7 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
             final_msg = (
                 f"**Video generated** ({provider_label}, {selected_seconds}s)\n"
                 f"Est. Cost: ${estimated_cost:.2f} | Support: <https://ko-fi.com/sardistic/goal?g=32>\n"
-                f"Prompt: {prompt[:100]}..."
+                f"Prompt: {effective_prompt[:100]}..."
             )
             filename = "sora_video.mp4" if provider == "sora" else "veo_video.mp4"
             await status_msg.reply(file=discord.File(file_obj, filename=filename))
