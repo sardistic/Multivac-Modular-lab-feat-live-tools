@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import re
 from typing import List, Optional
 
 import discord
@@ -14,6 +15,26 @@ EXPAND_EMOJI = "🧾"
 COLLAPSE_EMOJI = "🔼"
 
 logger = logging.getLogger("discord_bot")
+
+_LIST_ITEM_PREFIX = r"(?:[-*+•]|\d+[.)])\s"
+_LIST_BLANK_BETWEEN = re.compile(
+    rf"(?m)^([ \t]*{_LIST_ITEM_PREFIX}.*)\n[ \t]*\n+(?=[ \t]*{_LIST_ITEM_PREFIX})"
+)
+
+
+def collapse_list_spacing(text: str) -> str:
+    """Collapse blank lines between consecutive list items to a single newline
+    so lists don't render double-spaced in Discord. Blank lines between prose
+    paragraphs (and between an intro line and a list) are preserved. gpt-5.5
+    likes to blank-line-separate list items; the chat system prompt asks it not
+    to, and this is the deterministic backstop for when it does anyway."""
+    if not text or "\n\n" not in text:
+        return text
+    prev = None
+    while prev != text:
+        prev = text
+        text = _LIST_BLANK_BETWEEN.sub(r"\1\n", text)
+    return text
 
 
 def _fit_discord_limit(text: str, reserve: int = 0) -> str:
@@ -126,6 +147,8 @@ async def send_or_edit_with_truncation(
 ):
     if not isinstance(full_text, str):
         full_text = str(full_text)
+
+    full_text = collapse_list_spacing(full_text)
 
     preview, did_trunc = make_preview(full_text, LINE_TRUNCATE_AT)
 
