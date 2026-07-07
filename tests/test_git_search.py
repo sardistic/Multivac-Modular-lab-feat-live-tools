@@ -1,6 +1,7 @@
 import os
 import subprocess
 import unittest
+import uuid
 
 from services import git_utils
 
@@ -26,7 +27,10 @@ class GitSearchNoMatchTests(unittest.TestCase):
         git_utils.REPO_PATH = self._old
 
     def test_no_match_returns_empty_not_error(self):
-        results = git_utils.search_code("ThisStringDefinitelyDoesNotExistAnywhere12345")
+        # Runtime-generated needle so this literal can't appear in the (tracked)
+        # test source and match itself via git grep.
+        needle = "nomatch" + uuid.uuid4().hex
+        results = git_utils.search_code(needle)
         self.assertEqual(results, [])
 
     def test_real_pattern_returns_matches(self):
