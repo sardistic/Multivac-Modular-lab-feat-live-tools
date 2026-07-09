@@ -30,6 +30,29 @@ class KeywordRoutingTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.assertEqual(resolve_keyword_intent(prompt, prompt, False), "generate_image")
 
+    def test_imagine_translate_describe_with_image_defers_to_classifier(self):
+        # "imagine a translation of this image" with an image present is a
+        # describe task, not generation — must fall through to the classifier.
+        describe_cases = [
+            "imagine a translation of this image to english",
+            "imagine what this image says",
+            "imagine a description of this picture",
+            "gemini imagine a translation of this to english",
+        ]
+        for prompt in describe_cases:
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(resolve_keyword_intent(prompt, prompt, True))
+        # …but the same words with NO image still generate (nothing to describe),
+        # and a real scene request with an image still generates.
+        self.assertEqual(
+            resolve_keyword_intent("imagine a translation of this image", "imagine a translation of this image", False),
+            "generate_image",
+        )
+        self.assertEqual(
+            resolve_keyword_intent("imagine a dragon on a cliff", "imagine a dragon on a cliff", True),
+            "generate_image",
+        )
+
     def test_everything_else_defers_to_classifier(self):
         cases = [
             ("gemini what is entropy", False),
