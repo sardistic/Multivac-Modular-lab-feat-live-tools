@@ -20,6 +20,16 @@ from bot.video_handler import handle_generate_video_intent
 from services.stock_utils import handle_stock_command
 from services.weather_utils import handle_weather_request
 
+# "imagine ..." normally means generate an image, but when an image is present
+# and the ask is to translate/describe/explain/read IT, "imagine" is used in its
+# plain-English sense ("imagine a translation of this image") — a describe task.
+_IMAGINE_DESCRIBE_RE = re.compile(
+    r"\b(?:translat\w*|describ\w*|descript\w*|explain\w*|caption\w*|transcri\w*|"
+    r"summar\w*|decipher\w*|read\w*|what\s+(?:does|do|is|it|this))\b",
+    re.IGNORECASE,
+)
+
+
 def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) -> Optional[str]:
     """Keywords decide the PROVIDER, the LLM classifier decides the INTENT.
 
@@ -39,6 +49,11 @@ def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) 
     # still chosen separately via wants_gemini.)
     without_provider = re.sub(r"^gemini[\s,:]+", "", lowered_prompt)
     if without_provider.startswith(("imagine ", "imagine:")):
+        # With an image present, "imagine a translation/description of this
+        # image" is a describe task, not a new generation — defer to the
+        # classifier (-> describe_image) rather than force-generating.
+        if has_attachments and _IMAGINE_DESCRIBE_RE.search(without_provider):
+            return None
         return "generate_image"
 
     return None
