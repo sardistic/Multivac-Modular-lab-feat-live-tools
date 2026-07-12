@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 class ProposalSupervisorStateTests(unittest.TestCase):
@@ -62,6 +63,42 @@ class ProposalSupervisorStateTests(unittest.TestCase):
                 "SELECT previous_release, previous_proposal_id FROM code_deployments"
             ).fetchone()
         self.assertEqual(tuple(row), ("/release/6", 6))
+
+    def test_failed_activation_restores_previous_release(self):
+        release = self.releases / "proposal-9-abc"
+        row = {
+            "id": 9,
+            "baseline_sha": "a" * 40,
+            "patch": "diff --git a/a.py b/a.py",
+        }
+        with (
+            mock.patch.object(self.supervisor, "proposal", return_value=row),
+            mock.patch.object(self.supervisor, "validate_again"),
+            mock.patch.object(
+                self.supervisor, "create_worktree", return_value=(release, "hash")
+            ),
+            mock.patch.object(self.supervisor, "test_release"),
+            mock.patch.object(self.supervisor, "restore_pristine_release"),
+            mock.patch.object(self.supervisor, "activate_release") as activate,
+            mock.patch.object(
+                self.supervisor,
+                "healthy",
+                side_effect=[(False, "new release failed"), (True, "baseline restored")],
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Health check failed"):
+                self.supervisor.deploy(9)
+
+        self.assertEqual(
+            activate.call_args_list,
+            [mock.call(release, 9), mock.call(self.base.resolve(), None)],
+        )
+        with self.supervisor.db_connect() as conn:
+            deployment = conn.execute(
+                "SELECT status, detail FROM code_deployments WHERE proposal_id=9"
+            ).fetchone()
+        self.assertEqual(deployment["status"], "failed")
+        self.assertIn("Health check failed", deployment["detail"])
 
 
 if __name__ == "__main__":
