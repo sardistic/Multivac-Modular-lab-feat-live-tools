@@ -68,6 +68,7 @@ class ProposalSupervisorStateTests(unittest.TestCase):
         release = self.releases / "proposal-9-abc"
         row = {
             "id": 9,
+            "owner_id": "owner-1",
             "baseline_sha": "a" * 40,
             "patch": "diff --git a/a.py b/a.py",
         }
@@ -79,7 +80,9 @@ class ProposalSupervisorStateTests(unittest.TestCase):
             ),
             mock.patch.object(self.supervisor, "test_release"),
             mock.patch.object(self.supervisor, "restore_pristine_release"),
+            mock.patch.object(self.supervisor, "sign_release", return_value="signature"),
             mock.patch.object(self.supervisor, "activate_release") as activate,
+            mock.patch.object(self.supervisor, "notify_owner"),
             mock.patch.object(
                 self.supervisor,
                 "healthy",

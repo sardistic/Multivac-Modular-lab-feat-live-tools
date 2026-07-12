@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -16,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +28,8 @@ STATE_PATH = BASE_DIR / ".multivac-release.json"
 OVERRIDE_PATH = BASE_DIR / "ops" / "docker-compose.release.yml"
 IMAGE_NAME = os.environ.get("MULTIVAC_TEST_IMAGE", "multivac-multivac")
 HEALTH_TIMEOUT = int(os.environ.get("MULTIVAC_HEALTH_TIMEOUT", "75"))
+SIGNING_KEY_PATH = Path(os.environ.get("MULTIVAC_SIGNING_KEY", "/etc/multivac-supervisor.key"))
+RELEASE_RETENTION = int(os.environ.get("MULTIVAC_RELEASE_RETENTION", "5"))
 
 
 def now_iso() -> str:
@@ -70,6 +74,9 @@ def initialize() -> None:
             );
             """
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(code_deployments)")}
+        if "manifest_signature" not in columns:
+            conn.execute("ALTER TABLE code_deployments ADD COLUMN manifest_signature TEXT")
 
 
 def read_state() -> dict:
@@ -144,7 +151,7 @@ def proposal(proposal_id: int) -> sqlite3.Row:
 def update_deployment(proposal_id: int, status: str, *, detail: str | None = None, **fields) -> None:
     allowed = {
         "release_path", "patch_sha256", "previous_release", "previous_proposal_id",
-        "activated_at", "finished_at",
+        "activated_at", "finished_at", "manifest_signature",
     }
     assignments = ["status=?", "detail=?"]
     values: list[object] = [status, detail]
@@ -217,6 +224,64 @@ def restore_pristine_release(row: sqlite3.Row, release: Path) -> None:
     patch_path.unlink()
 
 
+def sign_release(row: sqlite3.Row, patch_hash: str, release: Path) -> str:
+    if not SIGNING_KEY_PATH.is_file():
+        raise RuntimeError("Host release-signing key is missing")
+    key = SIGNING_KEY_PATH.read_bytes()
+    payload = f"{row['id']}\n{row['baseline_sha']}\n{patch_hash}\n{release}\n".encode()
+    signature = hmac.new(key, payload, hashlib.sha256).hexdigest()
+    (release / ".multivac-release.json").write_text(
+        json.dumps(
+            {
+                "proposal_id": row["id"],
+                "baseline_sha": row["baseline_sha"],
+                "patch_sha256": patch_hash,
+                "signature": signature,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return signature
+
+
+def _load_bot_token() -> str | None:
+    env_path = BASE_DIR / ".env"
+    if not env_path.is_file():
+        return None
+    for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if raw.startswith("DISCORD_TOKEN="):
+            return raw.split("=", 1)[1].strip().strip('"').strip("'") or None
+    return None
+
+
+def notify_owner(owner_id: str, message: str) -> None:
+    """Best-effort DM. Deployment and rollback never depend on notification."""
+    try:
+        token = _load_bot_token()
+        if not token:
+            return
+        headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+        request = urllib.request.Request(
+            "https://discord.com/api/v10/users/@me/channels",
+            data=json.dumps({"recipient_id": str(owner_id)}).encode(),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            channel_id = json.loads(response.read())["id"]
+        request = urllib.request.Request(
+            f"https://discord.com/api/v10/channels/{channel_id}/messages",
+            data=json.dumps({"content": message[:1900]}).encode(),
+            headers=headers,
+            method="POST",
+        )
+        urllib.request.urlopen(request, timeout=10).close()
+    except Exception as exc:
+        print(f"notification_failed: {type(exc).__name__}", file=sys.stderr)
+
+
 def healthy(timeout: int = HEALTH_TIMEOUT, *, log_since: str = "2m") -> tuple[bool, str]:
     deadline = time.monotonic() + timeout
     last = "container not ready"
@@ -283,7 +348,8 @@ def deploy(proposal_id: int) -> None:
         )
         test_release(release)
         restore_pristine_release(row, release)
-        update_deployment(proposal_id, "activating")
+        signature = sign_release(row, patch_hash, release)
+        update_deployment(proposal_id, "activating", manifest_signature=signature)
         activate_release(release, proposal_id)
         ok, detail = healthy()
         if not ok:
@@ -291,6 +357,8 @@ def deploy(proposal_id: int) -> None:
         update_deployment(
             proposal_id, "active", detail=detail, activated_at=now_iso(), finished_at=now_iso()
         )
+        notify_owner(row["owner_id"], f"✅ Multivac code proposal #{proposal_id} is active and healthy.")
+        prune_releases()
     except Exception as exc:
         detail = str(exc)[:3000]
         try:
@@ -298,10 +366,15 @@ def deploy(proposal_id: int) -> None:
             healthy(timeout=45)
         finally:
             update_deployment(proposal_id, "failed", detail=detail, finished_at=now_iso())
+            notify_owner(
+                row["owner_id"],
+                f"❌ Multivac proposal #{proposal_id} failed activation and was rolled back.\n{detail[:1200]}",
+            )
         raise
 
 
 def reconcile() -> None:
+    process_control_requests()
     with db_connect() as conn:
         rows = conn.execute(
             """
@@ -314,7 +387,7 @@ def reconcile() -> None:
         deploy(int(row[0]))
 
 
-def rollback() -> None:
+def rollback() -> int:
     state = read_state()
     proposal_id = state.get("proposal_id")
     if proposal_id is None:
@@ -332,6 +405,54 @@ def rollback() -> None:
     if not ok:
         raise RuntimeError(f"Rollback health check failed: {detail}")
     update_deployment(proposal_id, "rolled_back", detail=detail, finished_at=now_iso())
+    return int(proposal_id)
+
+
+def process_control_requests() -> None:
+    with db_connect() as conn:
+        requests = conn.execute(
+            """
+            SELECT id, proposal_id, owner_id FROM code_control_requests
+            WHERE action='rollback' AND status='pending' ORDER BY id
+            """
+        ).fetchall()
+    for request in requests:
+        try:
+            active_id = rollback()
+            if active_id != request["proposal_id"]:
+                raise RuntimeError("Active release changed before rollback was processed")
+            status, detail = "completed", "Previous release restored and healthy"
+            notify_owner(request["owner_id"], f"↩️ Multivac proposal #{active_id} was rolled back successfully.")
+        except Exception as exc:
+            status, detail = "failed", str(exc)[:2000]
+            notify_owner(request["owner_id"], f"❌ Rollback request failed: {detail[:1200]}")
+        with db_connect() as conn:
+            conn.execute(
+                """
+                UPDATE code_control_requests SET status=?, detail=?, finished_at=? WHERE id=?
+                """,
+                (status, detail, now_iso(), request["id"]),
+            )
+
+
+def prune_releases() -> None:
+    state = read_state()
+    active = Path(state["active_release"]).resolve()
+    with db_connect() as conn:
+        keep_rows = conn.execute(
+            """
+            SELECT release_path FROM code_deployments
+            WHERE status IN ('active', 'rolled_back') ORDER BY id DESC LIMIT ?
+            """,
+            (RELEASE_RETENTION,),
+        ).fetchall()
+    keep = {active, *(Path(row[0]).resolve() for row in keep_rows if row[0])}
+    for release in RELEASES_DIR.glob("proposal-*"):
+        resolved = release.resolve()
+        if resolved in keep or resolved.parent != RELEASES_DIR:
+            continue
+        run(["git", "worktree", "remove", "--force", str(resolved)], check=False)
+    run(["git", "worktree", "prune"], check=False)
 
 
 def status() -> None:

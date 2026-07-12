@@ -55,6 +55,9 @@ patch, restart the bot, or deploy anything.
 ### Owner commands
 
 - `/code_propose <request>` records a request against the current commit.
+- `/code_generate <id>` selects relevant allowed source at that commit, asks the
+  configured OpenAI coding model for a unified diff, applies policy checks, and
+  runs static validation. The generated diff is attached for human review.
 - `/code_patch <id> <attachment>` attaches a UTF-8 `.diff` or `.patch`.
 - `/code_validate <id>` runs policy, clean-apply, and Python syntax checks.
 - `/code_show <id>` shows request and review state.
@@ -62,6 +65,8 @@ patch, restart the bot, or deploy anything.
 - `/code_history [limit]` lists recent proposals.
 - `/code_approve <id>` records approval after successful validation.
 - `/code_reject <id>` records rejection.
+- `/code_deployment <id>` shows activation and health-check results.
+- `/code_rollback <id>` queues rollback through the separate host supervisor.
 
 These commands use Discord's application-owner check. Patches are capped at
 256 KB and 20 files. Binary patches, symlinks, submodules, traversal paths,
@@ -87,6 +92,14 @@ For each newly approved proposal, the supervisor:
 6. Waits for both Discord-ready and command-sync log markers.
 7. Automatically recreates the previous release if activation or health checks
    fail, recording the result in `code_deployments`.
+8. Signs the release manifest with a host-only HMAC key, retains the five most
+   recent releases, and sends the proposal owner a best-effort Discord DM with
+   activation, failure, or rollback results.
+
+The active bot runs as UID/GID 65532 with a read-only root filesystem and
+read-only release-code mount. Only `/tmp`, the three persistent SQLite files,
+and `bot.log` are writable. Git metadata and retained worktrees are mounted
+read-only so self-inspection remains available.
 
 Host operations:
 

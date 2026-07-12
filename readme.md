@@ -71,6 +71,11 @@ the `/code_*` commands. Patches are checked against their committed baseline in
 a disposable local snapshot. Approval records a review decision only; it never
 applies or executes the patch and never restarts the bot.
 
+`/code_generate <proposal_id>` can generate the unified diff from bounded,
+policy-allowed repository context. Generation never grants approval: the owner
+must inspect the attached diff and explicitly approve it. A separate Debian
+supervisor tests, signs, activates, monitors, reports, and rolls back releases.
+
 Examples:
 - no `OPENAI_API_KEY`: OpenAI chat and OpenAI image paths are unavailable
 - no `GEMINI_API_KEY`: Gemini chat and Gemini image paths are unavailable

@@ -385,6 +385,54 @@ class SQLiteStore:
         keys = ("id", "request", "baseline_sha", "status", "created_at", "updated_at")
         return [dict(zip(keys, row)) for row in rows]
 
+    def get_code_deployment(self, owner_id: str, proposal_id: int) -> dict | None:
+        with self.logs_conn() as conn:
+            try:
+                row = conn.execute(
+                    """
+                    SELECT d.proposal_id, d.status, d.release_path, d.patch_sha256,
+                           d.previous_release, d.created_at, d.activated_at,
+                           d.finished_at, d.detail
+                    FROM code_deployments d
+                    JOIN code_proposals p ON p.id=d.proposal_id
+                    WHERE d.proposal_id=? AND p.owner_id=?
+                    """,
+                    (int(proposal_id), str(owner_id)),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if not row:
+            return None
+        keys = (
+            "proposal_id", "status", "release_path", "patch_sha256",
+            "previous_release", "created_at", "activated_at", "finished_at", "detail",
+        )
+        return dict(zip(keys, row))
+
+    def request_code_rollback(self, owner_id: str, proposal_id: int) -> int:
+        now = datetime.utcnow().isoformat()
+        with self.logs_conn() as conn:
+            deployment = conn.execute(
+                """
+                SELECT d.status FROM code_deployments d
+                JOIN code_proposals p ON p.id=d.proposal_id
+                WHERE d.proposal_id=? AND p.owner_id=?
+                """,
+                (int(proposal_id), str(owner_id)),
+            ).fetchone()
+            if not deployment or deployment[0] != "active":
+                raise ValueError("Only your currently active deployment can be rolled back")
+            cur = conn.execute(
+                """
+                INSERT INTO code_control_requests
+                    (proposal_id, owner_id, action, status, created_at)
+                VALUES (?, ?, 'rollback', 'pending', ?)
+                """,
+                (int(proposal_id), str(owner_id), now),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
     def get_user_instruction(self, user_id: str) -> str | None:
         with self.logs_conn() as conn:
             row = conn.execute(
@@ -722,6 +770,19 @@ class SQLiteStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_code_proposals_owner
                     ON code_proposals (owner_id, id DESC);
+
+                CREATE TABLE IF NOT EXISTS code_control_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proposal_id INTEGER NOT NULL,
+                    owner_id TEXT NOT NULL,
+                    action TEXT NOT NULL CHECK(action IN ('rollback')),
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'completed', 'failed')),
+                    created_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    detail TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_code_control_pending
+                    ON code_control_requests (proposal_id, action) WHERE status='pending';
 
                 CREATE TABLE IF NOT EXISTS sora_usage (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

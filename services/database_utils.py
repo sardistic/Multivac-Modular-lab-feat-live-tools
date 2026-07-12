@@ -118,6 +118,14 @@ def list_code_proposals(owner_id: str, limit: int = 10) -> list[dict]:
     return store.list_code_proposals(owner_id, limit)
 
 
+def get_code_deployment(owner_id: str, proposal_id: int) -> dict | None:
+    return store.get_code_deployment(owner_id, proposal_id)
+
+
+def request_code_rollback(owner_id: str, proposal_id: int) -> int:
+    return store.request_code_rollback(owner_id, proposal_id)
+
+
 def add_user_fact(user_id: str, fact: str, category: str | None = None) -> int:
     return store.add_user_fact(user_id, fact, category)
 
