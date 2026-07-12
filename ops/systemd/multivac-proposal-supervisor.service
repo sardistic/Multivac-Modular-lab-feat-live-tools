@@ -7,7 +7,7 @@ Requires=docker.service
 Type=oneshot
 User=root
 WorkingDirectory=/srv/multivac
-ExecStart=/srv/multivac/venv/bin/python /srv/multivac/ops/proposal_supervisor.py reconcile
+ExecStart=/usr/bin/python3 /srv/multivac/ops/proposal_supervisor.py reconcile
 Nice=10
 
 [Install]
