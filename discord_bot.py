@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import io
 import logging
 import mimetypes
 import asyncio
@@ -40,6 +41,7 @@ from providers.openai_utils import (
 # Optional features (your existing utilities)
 from services.weather_utils import get_location_details, get_weather_data
 from services.database_utils import (
+    activate_behavior_change,
     get_message_expansion,
     get_channel_last_seen,
     set_channel_last_seen,
@@ -48,7 +50,18 @@ from services.database_utils import (
     list_user_facts,
     delete_user_facts_matching,
     get_user_profile,
+    get_behavior_change,
+    list_behavior_changes,
+    propose_behavior_change,
+    rollback_behavior_change,
+    create_code_proposal,
+    get_code_proposal,
+    list_code_proposals,
+    review_code_proposal,
+    set_code_proposal_patch,
+    set_code_proposal_validation,
 )
+from services.code_changes import MAX_PATCH_BYTES, get_baseline_sha, validate_patch
 from services import usage_costs
 from services.user_profile import maybe_refresh_profile
 from providers.claude_utils import ANTHROPIC_API_KEY
@@ -420,6 +433,242 @@ async def on_command_error(ctx, error):
 @bot.hybrid_command(name="ping", description="Check that the bot is alive.")
 async def ping(ctx):
     await ctx.reply("pong")
+
+
+def _behavior_change_summary(change: dict) -> str:
+    instruction = change.get("instruction") or "_(baseline behavior; no custom instruction)_"
+    if len(instruction) > 900:
+        instruction = instruction[:897] + "..."
+    parent = f" · parent `#{change['parent_id']}`" if change.get("parent_id") else ""
+    return (
+        f"**Behavior change `#{change['id']}`** · `{change['status']}`{parent}\n"
+        f"> {instruction}"
+    )
+
+
+@bot.hybrid_command(name="behavior_propose", description="Draft a personal behavior change without activating it.")
+async def behavior_propose(ctx, *, instruction: str):
+    """Create an auditable draft. Use --clear to propose returning to baseline."""
+    instruction = instruction.strip()
+    if instruction.lower() == "--clear":
+        instruction = ""
+    change_id = await asyncio.to_thread(
+        propose_behavior_change,
+        str(ctx.author.id),
+        instruction,
+        created_by=str(ctx.author.id),
+    )
+    change = await asyncio.to_thread(get_behavior_change, str(ctx.author.id), change_id)
+    await ctx.reply(
+        f"🧪 Drafted, but **not active**.\n{_behavior_change_summary(change)}\n"
+        f"Activate with `/behavior_activate {change_id}` or leave it as a draft."
+    )
+
+
+@bot.hybrid_command(name="behavior_show", description="Show one of your proposed behavior changes.")
+async def behavior_show(ctx, change_id: int):
+    change = await asyncio.to_thread(get_behavior_change, str(ctx.author.id), change_id)
+    if not change:
+        await ctx.reply("That behavior change does not exist in your personal history.")
+        return
+    await ctx.reply(_behavior_change_summary(change))
+
+
+@bot.hybrid_command(name="behavior_history", description="List your recent behavior changes and their states.")
+async def behavior_history(ctx, limit: int = 10):
+    changes = await asyncio.to_thread(list_behavior_changes, str(ctx.author.id), limit)
+    if not changes:
+        await ctx.reply("You have no versioned behavior changes yet.")
+        return
+    lines = ["🧾 **Your behavior-change history**"]
+    for change in changes:
+        preview = (change.get("instruction") or "baseline behavior").replace("\n", " ")
+        if len(preview) > 90:
+            preview = preview[:87] + "..."
+        lines.append(f"`#{change['id']}` **{change['status']}** — {preview}")
+    await ctx.reply("\n".join(lines)[:1990])
+
+
+@bot.hybrid_command(name="behavior_activate", description="Activate one of your drafted behavior changes.")
+async def behavior_activate(ctx, change_id: int):
+    try:
+        change = await asyncio.to_thread(
+            activate_behavior_change, str(ctx.author.id), change_id
+        )
+    except ValueError as exc:
+        await ctx.reply(f"❌ {exc}")
+        return
+    await ctx.reply(f"✅ Activated immediately.\n{_behavior_change_summary(change)}")
+
+
+@bot.hybrid_command(name="behavior_rollback", description="Roll back your active behavior change to its parent.")
+async def behavior_rollback(ctx):
+    restored = await asyncio.to_thread(rollback_behavior_change, str(ctx.author.id))
+    if restored:
+        await ctx.reply(f"↩️ Rolled back and restored:\n{_behavior_change_summary(restored)}")
+    else:
+        await ctx.reply("↩️ Rolled back to baseline behavior. No custom instruction is active.")
+
+
+def _code_proposal_summary(proposal: dict) -> str:
+    request = proposal["request"].replace("\n", " ")
+    if len(request) > 600:
+        request = request[:597] + "..."
+    validation = proposal.get("validation")
+    checks = "not run"
+    if validation:
+        checks = "passed" if validation.get("ok") else f"failed ({len(validation.get('errors', []))} errors)"
+    return (
+        f"**Code proposal `#{proposal['id']}`** · `{proposal['status']}`\n"
+        f"Baseline: `{proposal['baseline_sha'][:12]}` · validation: **{checks}**\n"
+        f"> {request}"
+    )
+
+
+@bot.hybrid_command(name="code_propose", description="Owner: create a reviewed code-change request.")
+@commands.is_owner()
+async def code_propose(ctx, *, request: str):
+    baseline = await asyncio.to_thread(get_baseline_sha)
+    proposal_id = await asyncio.to_thread(
+        create_code_proposal, str(ctx.author.id), request, baseline
+    )
+    proposal = await asyncio.to_thread(get_code_proposal, str(ctx.author.id), proposal_id)
+    await ctx.reply(
+        f"🧩 Created against the current committed baseline.\n{_code_proposal_summary(proposal)}\n"
+        "Attach a unified `.diff` or `.patch` with `/code_patch`."
+    )
+
+
+@bot.hybrid_command(name="code_patch", description="Owner: attach a unified diff to a code proposal.")
+@commands.is_owner()
+async def code_patch(ctx, proposal_id: int, patch_file: discord.Attachment):
+    if patch_file.size > MAX_PATCH_BYTES:
+        await ctx.reply(f"❌ Patch exceeds the {MAX_PATCH_BYTES:,}-byte limit.")
+        return
+    if not patch_file.filename.lower().endswith((".diff", ".patch")):
+        await ctx.reply("❌ Attach a `.diff` or `.patch` file.")
+        return
+    try:
+        patch = (await patch_file.read()).decode("utf-8")
+        proposal = await asyncio.to_thread(
+            set_code_proposal_patch, str(ctx.author.id), proposal_id, patch
+        )
+    except UnicodeDecodeError:
+        await ctx.reply("❌ Patch must be UTF-8 text.")
+        return
+    except ValueError as exc:
+        await ctx.reply(f"❌ {exc}")
+        return
+    await ctx.reply(
+        f"📎 Patch attached ({len(patch.encode('utf-8')):,} bytes).\n"
+        f"{_code_proposal_summary(proposal)}\nRun `/code_validate {proposal_id}` next."
+    )
+
+
+@bot.hybrid_command(name="code_validate", description="Owner: statically validate a proposal in a temporary snapshot.")
+@commands.is_owner()
+async def code_validate(ctx, proposal_id: int):
+    proposal = await asyncio.to_thread(get_code_proposal, str(ctx.author.id), proposal_id)
+    if not proposal or not proposal.get("patch"):
+        await ctx.reply("❌ Proposal not found or it has no attached patch.")
+        return
+    if ctx.interaction:
+        await ctx.defer()
+    report = await asyncio.to_thread(
+        validate_patch, proposal["baseline_sha"], proposal["patch"]
+    )
+    proposal = await asyncio.to_thread(
+        set_code_proposal_validation, str(ctx.author.id), proposal_id, report
+    )
+    lines = [_code_proposal_summary(proposal)]
+    lines.append("Files: " + (", ".join(report["files"]) or "none"))
+    if report["syntax_checked"]:
+        lines.append("Python syntax: " + ", ".join(report["syntax_checked"]))
+    lines.extend(f"❌ {error}" for error in report["errors"][:5])
+    lines.extend(f"⚠️ {warning}" for warning in report["warnings"][:5])
+    if report["ok"]:
+        lines.append("✅ Static validation passed. This patch has **not** been deployed or executed.")
+    await ctx.reply("\n".join(lines)[:1990])
+
+
+@bot.hybrid_command(name="code_show", description="Owner: show a code proposal and its review state.")
+@commands.is_owner()
+async def code_show(ctx, proposal_id: int):
+    proposal = await asyncio.to_thread(get_code_proposal, str(ctx.author.id), proposal_id)
+    if not proposal:
+        await ctx.reply("Code proposal not found.")
+        return
+    await ctx.reply(_code_proposal_summary(proposal))
+
+
+@bot.hybrid_command(name="code_diff", description="Owner: download the patch attached to a code proposal.")
+@commands.is_owner()
+async def code_diff(ctx, proposal_id: int):
+    proposal = await asyncio.to_thread(get_code_proposal, str(ctx.author.id), proposal_id)
+    if not proposal or not proposal.get("patch"):
+        await ctx.reply("Proposal not found or it has no attached patch.")
+        return
+    payload = io.BytesIO(proposal["patch"].encode("utf-8"))
+    await ctx.reply(
+        _code_proposal_summary(proposal),
+        file=discord.File(payload, filename=f"proposal-{proposal_id}.diff"),
+    )
+
+
+@bot.hybrid_command(name="code_history", description="Owner: list recent code proposals.")
+@commands.is_owner()
+async def code_history(ctx, limit: int = 10):
+    proposals = await asyncio.to_thread(list_code_proposals, str(ctx.author.id), limit)
+    if not proposals:
+        await ctx.reply("No code proposals have been recorded.")
+        return
+    lines = ["🧾 **Code proposal history**"]
+    for proposal in proposals:
+        preview = proposal["request"].replace("\n", " ")
+        if len(preview) > 90:
+            preview = preview[:87] + "..."
+        lines.append(
+            f"`#{proposal['id']}` **{proposal['status']}** · "
+            f"`{proposal['baseline_sha'][:8]}` — {preview}"
+        )
+    await ctx.reply("\n".join(lines)[:1990])
+
+
+@bot.hybrid_command(name="code_approve", description="Owner: approve a successfully validated code proposal.")
+@commands.is_owner()
+async def code_approve(ctx, proposal_id: int):
+    try:
+        proposal = await asyncio.to_thread(
+            review_code_proposal,
+            str(ctx.author.id),
+            proposal_id,
+            "approved",
+            reviewer_id=str(ctx.author.id),
+        )
+    except ValueError as exc:
+        await ctx.reply(f"❌ {exc}")
+        return
+    await ctx.reply(
+        f"✅ Review approval recorded. The patch is still **not deployed**.\n"
+        f"{_code_proposal_summary(proposal)}"
+    )
+
+
+@bot.hybrid_command(name="code_reject", description="Owner: reject a code proposal without deploying it.")
+@commands.is_owner()
+async def code_reject(ctx, proposal_id: int):
+    try:
+        proposal = await asyncio.to_thread(
+            review_code_proposal,
+            str(ctx.author.id),
+            proposal_id,
+            "rejected",
+            reviewer_id=str(ctx.author.id),
+        )
+    except ValueError as exc:
+        await ctx.reply(f"❌ {exc}")
+        return
+    await ctx.reply(f"🛑 Rejected.\n{_code_proposal_summary(proposal)}")
 
 @bot.hybrid_command(name="memory_fetch_more", description="Index recent channel messages into long-term memory (mods only).")
 @commands.has_permissions(manage_messages=True)

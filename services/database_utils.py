@@ -72,6 +72,52 @@ def get_user_instruction(user_id: str) -> str | None:
     return store.get_user_instruction(user_id)
 
 
+def propose_behavior_change(user_id: str, instruction: str, *, created_by: str | None = None) -> int:
+    return store.propose_behavior_change(user_id, instruction, created_by=created_by)
+
+
+def activate_behavior_change(user_id: str, change_id: int) -> dict:
+    return store.activate_behavior_change(user_id, change_id)
+
+
+def rollback_behavior_change(user_id: str) -> dict | None:
+    return store.rollback_behavior_change(user_id)
+
+
+def get_behavior_change(user_id: str, change_id: int) -> dict | None:
+    return store.get_behavior_change(user_id, change_id)
+
+
+def list_behavior_changes(user_id: str, limit: int = 10) -> list[dict]:
+    return store.list_behavior_changes(user_id, limit)
+
+
+def create_code_proposal(owner_id: str, request: str, baseline_sha: str) -> int:
+    return store.create_code_proposal(owner_id, request, baseline_sha)
+
+
+def set_code_proposal_patch(owner_id: str, proposal_id: int, patch: str) -> dict:
+    return store.set_code_proposal_patch(owner_id, proposal_id, patch)
+
+
+def set_code_proposal_validation(owner_id: str, proposal_id: int, report: dict) -> dict:
+    return store.set_code_proposal_validation(owner_id, proposal_id, report)
+
+
+def review_code_proposal(owner_id: str, proposal_id: int, decision: str, *, reviewer_id: str) -> dict:
+    return store.review_code_proposal(
+        owner_id, proposal_id, decision, reviewer_id=reviewer_id
+    )
+
+
+def get_code_proposal(owner_id: str, proposal_id: int) -> dict | None:
+    return store.get_code_proposal(owner_id, proposal_id)
+
+
+def list_code_proposals(owner_id: str, limit: int = 10) -> list[dict]:
+    return store.list_code_proposals(owner_id, limit)
+
+
 def add_user_fact(user_id: str, fact: str, category: str | None = None) -> int:
     return store.add_user_fact(user_id, fact, category)
 

@@ -42,6 +42,35 @@ Multivac is a modular Discord bot with multiple chat providers, image and video 
 
 The bot is designed to boot with partial configuration. Missing keys disable only the related feature.
 
+## Versioned Behavior Changes
+
+Users can draft and audit personal behavior changes without immediately changing
+the running bot:
+
+```text
+/behavior_propose Always answer in terse technical prose
+/behavior_show 1
+/behavior_activate 1
+/behavior_history
+/behavior_rollback
+```
+
+Use `/behavior_propose --clear` to draft a return to baseline behavior. Drafts
+are user-scoped and inert until activated. Activation updates the existing
+behavior-instruction projection, so all current chat/provider paths continue to
+apply the active version. Rollback restores the activated version's parent, or
+the local baseline when there is no parent.
+
+This first phase changes prompt-level behavior only. It does not permit users to
+edit Python, execute shell commands, restart the bot, or modify the audit system.
+See `docs/self_modification.md` for the local architecture and the proposed
+reviewed-code-change phase.
+
+The owner can also record and statically review executable-code proposals with
+the `/code_*` commands. Patches are checked against their committed baseline in
+a disposable local snapshot. Approval records a review decision only; it never
+applies or executes the patch and never restarts the bot.
+
 Examples:
 - no `OPENAI_API_KEY`: OpenAI chat and OpenAI image paths are unavailable
 - no `GEMINI_API_KEY`: Gemini chat and Gemini image paths are unavailable
