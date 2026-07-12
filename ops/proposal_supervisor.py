@@ -217,7 +217,7 @@ def restore_pristine_release(row: sqlite3.Row, release: Path) -> None:
     patch_path.unlink()
 
 
-def healthy(timeout: int = HEALTH_TIMEOUT) -> tuple[bool, str]:
+def healthy(timeout: int = HEALTH_TIMEOUT, *, log_since: str = "2m") -> tuple[bool, str]:
     deadline = time.monotonic() + timeout
     last = "container not ready"
     while time.monotonic() < deadline:
@@ -228,7 +228,10 @@ def healthy(timeout: int = HEALTH_TIMEOUT) -> tuple[bool, str]:
         if inspect.returncode == 0:
             last = inspect.stdout.strip()
             if last.startswith("true "):
-                logs = run_compose(Path(read_state()["active_release"]), "logs", "--since", "2m", "--no-color", "multivac")
+                logs = run_compose(
+                    Path(read_state()["active_release"]),
+                    "logs", "--since", log_since, "--no-color", "multivac",
+                )
                 if "Bot is online and ready!" in logs.stdout and "Synced" in logs.stdout:
                     return True, "Discord ready and commands synced"
         time.sleep(3)
@@ -333,7 +336,7 @@ def rollback() -> None:
 
 def status() -> None:
     state = read_state()
-    ok, detail = healthy(timeout=6)
+    ok, detail = healthy(timeout=6, log_since="24h")
     print(json.dumps({"state": state, "healthy": ok, "detail": detail}, indent=2))
 
 
