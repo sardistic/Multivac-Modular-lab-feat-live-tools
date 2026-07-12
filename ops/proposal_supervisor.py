@@ -23,7 +23,8 @@ from pathlib import Path
 
 BASE_DIR = Path(os.environ.get("MULTIVAC_BASE_DIR", "/srv/multivac")).resolve()
 RELEASES_DIR = Path(os.environ.get("MULTIVAC_RELEASES_DIR", "/srv/multivac-releases")).resolve()
-DB_PATH = BASE_DIR / "conversation_history.db"
+STATE_DIR = Path(os.environ.get("MULTIVAC_STATE_DIR", str(BASE_DIR))).resolve()
+DB_PATH = STATE_DIR / "conversation_history.db"
 STATE_PATH = BASE_DIR / ".multivac-release.json"
 OVERRIDE_PATH = BASE_DIR / "ops" / "docker-compose.release.yml"
 IMAGE_NAME = os.environ.get("MULTIVAC_TEST_IMAGE", "multivac-multivac")
@@ -52,6 +53,7 @@ def db_connect() -> sqlite3.Connection:
 
 def initialize() -> None:
     RELEASES_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
     with db_connect() as conn:
         conn.executescript(
             """
@@ -305,7 +307,7 @@ def healthy(timeout: int = HEALTH_TIMEOUT, *, log_since: str = "2m") -> tuple[bo
 
 def activate_release(release: Path, proposal_id: int | None) -> None:
     for filename in ("conversation_history.db", "user_locations.db", "usage_costs.db", "bot.log"):
-        path = BASE_DIR / filename
+        path = STATE_DIR / filename
         if not path.exists():
             path.touch()
     write_state(release, proposal_id)

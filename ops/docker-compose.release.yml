@@ -5,13 +5,14 @@ services:
     environment:
       - HOME=/tmp
       - PYTHONDONTWRITEBYTECODE=1
+      - MULTIVAC_STATE_DIR=/state
+      - USAGE_DB_PATH=/state/usage_costs.db
+    command: ["bash", "-c", "exec python main.py 2>&1 | tee /state/bot.log"]
     tmpfs:
       - /tmp:size=128m,mode=1777
     volumes:
       - ${MULTIVAC_APP_DIR:-.}:/app:ro
-      - ./conversation_history.db:/app/conversation_history.db
-      - ./user_locations.db:/app/user_locations.db
-      - ./usage_costs.db:/app/usage_costs.db
-      - ./bot.log:/app/bot.log
+      - ./state:/state
+      - ./state/bot.log:/app/bot.log
       - ./.git:/srv/multivac/.git:ro
       - /srv/multivac-releases:/srv/multivac-releases:ro
