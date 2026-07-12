@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -102,18 +103,287 @@ class SQLiteStore:
             conn.commit()
 
     def set_user_instruction(self, user_id: str, instruction: str) -> None:
+        change_id = self.propose_behavior_change(
+            user_id,
+            instruction,
+            created_by=user_id,
+            source="behavior_tool",
+        )
+        self.activate_behavior_change(user_id, change_id)
+
+    def _set_active_user_instruction(self, conn, user_id: str, instruction: str) -> None:
+        """Update the compatibility projection used by the chat hot path."""
+        if not instruction:
+            conn.execute("DELETE FROM user_instructions WHERE user_id=?", (str(user_id),))
+        else:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO user_instructions (user_id, instruction, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (str(user_id), instruction, datetime.utcnow().isoformat()),
+            )
+
+    def propose_behavior_change(
+        self,
+        user_id: str,
+        instruction: str,
+        *,
+        created_by: str | None = None,
+        source: str = "discord_command",
+    ) -> int:
+        now = datetime.utcnow().isoformat()
         with self.logs_conn() as conn:
-            if not instruction:
-                conn.execute("DELETE FROM user_instructions WHERE user_id=?", (str(user_id),))
-            else:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO user_instructions (user_id, instruction, updated_at)
-                    VALUES (?, ?, ?)
-                    """,
-                    (str(user_id), instruction, datetime.utcnow().isoformat()),
-                )
+            active = conn.execute(
+                """
+                SELECT id FROM behavior_changes
+                WHERE scope_type='user' AND scope_id=? AND status='active'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (str(user_id),),
+            ).fetchone()
+            cur = conn.execute(
+                """
+                INSERT INTO behavior_changes
+                    (scope_type, scope_id, instruction, status, parent_id,
+                     created_by, source, created_at)
+                VALUES ('user', ?, ?, 'draft', ?, ?, ?, ?)
+                """,
+                (
+                    str(user_id),
+                    instruction.strip(),
+                    active[0] if active else None,
+                    str(created_by or user_id),
+                    source,
+                    now,
+                ),
+            )
             conn.commit()
+            return int(cur.lastrowid)
+
+    def activate_behavior_change(self, user_id: str, change_id: int) -> dict:
+        now = datetime.utcnow().isoformat()
+        with self.logs_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT id, instruction, status FROM behavior_changes
+                WHERE id=? AND scope_type='user' AND scope_id=?
+                """,
+                (int(change_id), str(user_id)),
+            ).fetchone()
+            if not row:
+                raise ValueError("Behavior change not found for this user")
+            if row[2] == "rolled_back":
+                raise ValueError("A rolled-back change cannot be reactivated")
+
+            conn.execute(
+                """
+                UPDATE behavior_changes SET status='superseded'
+                WHERE scope_type='user' AND scope_id=? AND status='active' AND id<>?
+                """,
+                (str(user_id), int(change_id)),
+            )
+            conn.execute(
+                "UPDATE behavior_changes SET status='active', activated_at=? WHERE id=?",
+                (now, int(change_id)),
+            )
+            self._set_active_user_instruction(conn, str(user_id), row[1])
+            conn.commit()
+        return self.get_behavior_change(user_id, change_id)
+
+    def rollback_behavior_change(self, user_id: str) -> dict | None:
+        now = datetime.utcnow().isoformat()
+        with self.logs_conn() as conn:
+            current = conn.execute(
+                """
+                SELECT id, parent_id FROM behavior_changes
+                WHERE scope_type='user' AND scope_id=? AND status='active'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (str(user_id),),
+            ).fetchone()
+            if not current:
+                return None
+
+            conn.execute(
+                "UPDATE behavior_changes SET status='rolled_back', rolled_back_at=? WHERE id=?",
+                (now, current[0]),
+            )
+            restored = None
+            if current[1] is not None:
+                restored = conn.execute(
+                    """
+                    SELECT id, instruction FROM behavior_changes
+                    WHERE id=? AND scope_type='user' AND scope_id=?
+                    """,
+                    (current[1], str(user_id)),
+                ).fetchone()
+            if restored:
+                conn.execute(
+                    "UPDATE behavior_changes SET status='active', activated_at=? WHERE id=?",
+                    (now, restored[0]),
+                )
+                self._set_active_user_instruction(conn, str(user_id), restored[1])
+            else:
+                self._set_active_user_instruction(conn, str(user_id), "")
+            conn.commit()
+
+        return self.get_behavior_change(user_id, restored[0]) if restored else None
+
+    def get_behavior_change(self, user_id: str, change_id: int) -> dict | None:
+        with self.logs_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT id, instruction, status, parent_id, created_by, source,
+                       created_at, activated_at, rolled_back_at
+                FROM behavior_changes
+                WHERE id=? AND scope_type='user' AND scope_id=?
+                """,
+                (int(change_id), str(user_id)),
+            ).fetchone()
+        if not row:
+            return None
+        keys = (
+            "id", "instruction", "status", "parent_id", "created_by", "source",
+            "created_at", "activated_at", "rolled_back_at",
+        )
+        return dict(zip(keys, row))
+
+    def list_behavior_changes(self, user_id: str, limit: int = 10) -> list[dict]:
+        limit = max(1, min(int(limit), 50))
+        with self.logs_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, instruction, status, parent_id, created_by, source,
+                       created_at, activated_at, rolled_back_at
+                FROM behavior_changes
+                WHERE scope_type='user' AND scope_id=?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (str(user_id), limit),
+            ).fetchall()
+        keys = (
+            "id", "instruction", "status", "parent_id", "created_by", "source",
+            "created_at", "activated_at", "rolled_back_at",
+        )
+        return [dict(zip(keys, row)) for row in rows]
+
+    # ---- Owner-reviewed executable code proposals ----
+
+    def create_code_proposal(self, owner_id: str, request: str, baseline_sha: str) -> int:
+        request = request.strip()
+        if not request:
+            raise ValueError("Code-change request cannot be empty")
+        now = datetime.utcnow().isoformat()
+        with self.logs_conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO code_proposals
+                    (owner_id, request, baseline_sha, status, created_at, updated_at)
+                VALUES (?, ?, ?, 'draft', ?, ?)
+                """,
+                (str(owner_id), request, baseline_sha, now, now),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def set_code_proposal_patch(self, owner_id: str, proposal_id: int, patch: str) -> dict:
+        now = datetime.utcnow().isoformat()
+        with self.logs_conn() as conn:
+            cur = conn.execute(
+                """
+                UPDATE code_proposals
+                SET patch=?, status='patch_uploaded', validation_json=NULL,
+                    reviewed_by=NULL, reviewed_at=NULL, updated_at=?
+                WHERE id=? AND owner_id=? AND status NOT IN ('approved', 'rejected')
+                """,
+                (patch, now, int(proposal_id), str(owner_id)),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("Editable code proposal not found")
+            conn.commit()
+        return self.get_code_proposal(owner_id, proposal_id)
+
+    def set_code_proposal_validation(
+        self, owner_id: str, proposal_id: int, report: dict
+    ) -> dict:
+        now = datetime.utcnow().isoformat()
+        status = "reviewable" if report.get("ok") else "validation_failed"
+        with self.logs_conn() as conn:
+            cur = conn.execute(
+                """
+                UPDATE code_proposals
+                SET validation_json=?, status=?, updated_at=?
+                WHERE id=? AND owner_id=? AND status NOT IN ('approved', 'rejected')
+                """,
+                (json.dumps(report, sort_keys=True), status, now, int(proposal_id), str(owner_id)),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("Code proposal not found or already reviewed")
+            conn.commit()
+        return self.get_code_proposal(owner_id, proposal_id)
+
+    def review_code_proposal(
+        self, owner_id: str, proposal_id: int, decision: str, *, reviewer_id: str
+    ) -> dict:
+        if decision not in {"approved", "rejected"}:
+            raise ValueError("Decision must be approved or rejected")
+        now = datetime.utcnow().isoformat()
+        required_status = "reviewable" if decision == "approved" else None
+        with self.logs_conn() as conn:
+            row = conn.execute(
+                "SELECT status FROM code_proposals WHERE id=? AND owner_id=?",
+                (int(proposal_id), str(owner_id)),
+            ).fetchone()
+            if not row:
+                raise ValueError("Code proposal not found")
+            if required_status and row[0] != required_status:
+                raise ValueError("Only a successfully validated proposal can be approved")
+            if row[0] in {"approved", "rejected"}:
+                raise ValueError("Code proposal has already been reviewed")
+            conn.execute(
+                """
+                UPDATE code_proposals
+                SET status=?, reviewed_by=?, reviewed_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (decision, str(reviewer_id), now, now, int(proposal_id)),
+            )
+            conn.commit()
+        return self.get_code_proposal(owner_id, proposal_id)
+
+    def get_code_proposal(self, owner_id: str, proposal_id: int) -> dict | None:
+        with self.logs_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT id, owner_id, request, baseline_sha, patch, status,
+                       validation_json, created_at, updated_at, reviewed_by, reviewed_at
+                FROM code_proposals WHERE id=? AND owner_id=?
+                """,
+                (int(proposal_id), str(owner_id)),
+            ).fetchone()
+        if not row:
+            return None
+        keys = (
+            "id", "owner_id", "request", "baseline_sha", "patch", "status",
+            "validation", "created_at", "updated_at", "reviewed_by", "reviewed_at",
+        )
+        result = dict(zip(keys, row))
+        result["validation"] = json.loads(result["validation"]) if result["validation"] else None
+        return result
+
+    def list_code_proposals(self, owner_id: str, limit: int = 10) -> list[dict]:
+        limit = max(1, min(int(limit), 50))
+        with self.logs_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, request, baseline_sha, status, created_at, updated_at
+                FROM code_proposals WHERE owner_id=? ORDER BY id DESC LIMIT ?
+                """,
+                (str(owner_id), limit),
+            ).fetchall()
+        keys = ("id", "request", "baseline_sha", "status", "created_at", "updated_at")
+        return [dict(zip(keys, row)) for row in rows]
 
     def get_user_instruction(self, user_id: str) -> str | None:
         with self.logs_conn() as conn:
@@ -400,6 +670,58 @@ class SQLiteStore:
                     instruction TEXT,
                     updated_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS behavior_changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope_type TEXT NOT NULL CHECK(scope_type IN ('user', 'guild', 'global')),
+                    scope_id TEXT NOT NULL,
+                    instruction TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL CHECK(status IN ('draft', 'active', 'superseded', 'rolled_back')),
+                    parent_id INTEGER,
+                    created_by TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    activated_at TEXT,
+                    rolled_back_at TEXT,
+                    FOREIGN KEY(parent_id) REFERENCES behavior_changes(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_behavior_changes_scope
+                    ON behavior_changes (scope_type, scope_id, id DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_behavior_changes_one_active
+                    ON behavior_changes (scope_type, scope_id) WHERE status='active';
+
+                INSERT INTO behavior_changes
+                    (scope_type, scope_id, instruction, status, parent_id,
+                     created_by, source, created_at, activated_at)
+                SELECT 'user', ui.user_id, ui.instruction, 'active', NULL,
+                       ui.user_id, 'legacy_migration',
+                       COALESCE(ui.updated_at, datetime('now')),
+                       COALESCE(ui.updated_at, datetime('now'))
+                FROM user_instructions AS ui
+                WHERE COALESCE(ui.instruction, '') <> ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM behavior_changes AS bc
+                      WHERE bc.scope_type='user' AND bc.scope_id=ui.user_id
+                  );
+
+                CREATE TABLE IF NOT EXISTS code_proposals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_id TEXT NOT NULL,
+                    request TEXT NOT NULL,
+                    baseline_sha TEXT NOT NULL,
+                    patch TEXT,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'draft', 'patch_uploaded', 'validation_failed',
+                        'reviewable', 'approved', 'rejected'
+                    )),
+                    validation_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    reviewed_by TEXT,
+                    reviewed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_code_proposals_owner
+                    ON code_proposals (owner_id, id DESC);
 
                 CREATE TABLE IF NOT EXISTS sora_usage (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

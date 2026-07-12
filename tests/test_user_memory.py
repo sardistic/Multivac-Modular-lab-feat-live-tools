@@ -46,6 +46,108 @@ class UserMemoryStoreTests(unittest.TestCase):
         self.assertEqual(seen["last_intent"], "chat")
         self.assertEqual(seen["last_prompt"], "hello there")
 
+    def test_behavior_changes_are_drafts_until_activated(self):
+        change_id = self.store.propose_behavior_change("u1", "Always be concise")
+        change = self.store.get_behavior_change("u1", change_id)
+        self.assertEqual(change["status"], "draft")
+        self.assertIsNone(self.store.get_user_instruction("u1"))
+
+        active = self.store.activate_behavior_change("u1", change_id)
+        self.assertEqual(active["status"], "active")
+        self.assertEqual(self.store.get_user_instruction("u1"), "Always be concise")
+
+    def test_behavior_activation_and_rollback_restore_parent(self):
+        first = self.store.propose_behavior_change("u1", "Speak like a pirate")
+        self.store.activate_behavior_change("u1", first)
+        second = self.store.propose_behavior_change("u1", "Use terse technical prose")
+        self.store.activate_behavior_change("u1", second)
+
+        history = self.store.list_behavior_changes("u1")
+        self.assertEqual(history[0]["status"], "active")
+        self.assertEqual(history[1]["status"], "superseded")
+
+        restored = self.store.rollback_behavior_change("u1")
+        self.assertEqual(restored["id"], first)
+        self.assertEqual(restored["status"], "active")
+        self.assertEqual(self.store.get_user_instruction("u1"), "Speak like a pirate")
+        self.assertEqual(self.store.get_behavior_change("u1", second)["status"], "rolled_back")
+
+    def test_behavior_clear_version_rolls_back_to_prior_instruction(self):
+        self.store.set_user_instruction("u1", "Be cheerful")
+        self.store.set_user_instruction("u1", "")
+        self.assertIsNone(self.store.get_user_instruction("u1"))
+
+        restored = self.store.rollback_behavior_change("u1")
+        self.assertEqual(restored["instruction"], "Be cheerful")
+        self.assertEqual(self.store.get_user_instruction("u1"), "Be cheerful")
+
+    def test_behavior_changes_are_user_scoped(self):
+        change_id = self.store.propose_behavior_change("u1", "Private behavior")
+        self.assertIsNone(self.store.get_behavior_change("u2", change_id))
+        with self.assertRaises(ValueError):
+            self.store.activate_behavior_change("u2", change_id)
+
+    def test_existing_instruction_is_imported_as_active_version(self):
+        import sqlite3
+
+        legacy_dir = Path(self._tmp.name) / "legacy"
+        legacy_dir.mkdir()
+        conn = sqlite3.connect(legacy_dir / "conversation_history.db")
+        conn.execute(
+            "CREATE TABLE user_instructions (user_id TEXT PRIMARY KEY, instruction TEXT, updated_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO user_instructions VALUES (?, ?, ?)",
+            ("legacy-user", "Keep the old preference", "2026-01-01T00:00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = SQLiteStore(base_dir=legacy_dir)
+        history = migrated.list_behavior_changes("legacy-user")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["status"], "active")
+        self.assertEqual(history[0]["source"], "legacy_migration")
+
+    def test_code_proposal_review_lifecycle(self):
+        proposal_id = self.store.create_code_proposal(
+            "owner-1", "Add a harmless feature", "a" * 40
+        )
+        proposal = self.store.get_code_proposal("owner-1", proposal_id)
+        self.assertEqual(proposal["status"], "draft")
+        self.assertIsNone(self.store.get_code_proposal("owner-2", proposal_id))
+
+        proposal = self.store.set_code_proposal_patch(
+            "owner-1", proposal_id, "diff --git a/a.py b/a.py"
+        )
+        self.assertEqual(proposal["status"], "patch_uploaded")
+        with self.assertRaises(ValueError):
+            self.store.review_code_proposal(
+                "owner-1", proposal_id, "approved", reviewer_id="owner-1"
+            )
+
+        proposal = self.store.set_code_proposal_validation(
+            "owner-1", proposal_id, {"ok": True, "files": ["a.py"], "errors": []}
+        )
+        self.assertEqual(proposal["status"], "reviewable")
+        proposal = self.store.review_code_proposal(
+            "owner-1", proposal_id, "approved", reviewer_id="owner-1"
+        )
+        self.assertEqual(proposal["status"], "approved")
+        self.assertEqual(proposal["reviewed_by"], "owner-1")
+
+    def test_failed_code_proposal_can_be_rejected(self):
+        proposal_id = self.store.create_code_proposal("owner-1", "Bad patch", "b" * 40)
+        self.store.set_code_proposal_patch("owner-1", proposal_id, "broken")
+        proposal = self.store.set_code_proposal_validation(
+            "owner-1", proposal_id, {"ok": False, "files": [], "errors": ["bad"]}
+        )
+        self.assertEqual(proposal["status"], "validation_failed")
+        rejected = self.store.review_code_proposal(
+            "owner-1", proposal_id, "rejected", reviewer_id="owner-1"
+        )
+        self.assertEqual(rejected["status"], "rejected")
+
     def test_transcript_cache_roundtrip(self):
         self.assertIsNone(self.store.get_cached_transcript_summary("vid123"))
         self.store.set_cached_transcript_summary("vid123", "condensed notes")
