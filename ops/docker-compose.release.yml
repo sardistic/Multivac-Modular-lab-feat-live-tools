@@ -1,0 +1,8 @@
+services:
+  multivac:
+    volumes:
+      - ${MULTIVAC_APP_DIR:-.}:/app
+      - ./conversation_history.db:/app/conversation_history.db
+      - ./user_locations.db:/app/user_locations.db
+      - ./usage_costs.db:/app/usage_costs.db
+      - ./bot.log:/app/bot.log

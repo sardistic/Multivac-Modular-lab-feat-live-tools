@@ -68,17 +68,43 @@ These commands use Discord's application-owner check. Patches are capped at
 credentials, dependency manifests, startup files, Git metadata, and the
 self-modification/audit implementation are blocked.
 
-## Next phase: isolated execution and activation
+## Isolated execution and activation
 
-Before approved code can run, add:
+Approved proposals are activated by `ops/proposal_supervisor.py`, which runs on
+the Debian host as a separate systemd oneshot service and timer. The Discord
+process cannot call it directly.
 
-1. A separately privileged local supervisor outside the Discord bot process.
-2. Container or OS-level isolation with no production secrets and restricted
-   filesystem, network, CPU, memory, and time permissions.
-3. A system-owned regression suite that proposed patches cannot modify.
-4. Signed or hashed build artifacts tied to the approved proposal and SHA.
-5. Plugin/subprocess activation, health checks, automatic fallback, and explicit
-   rollback records.
+For each newly approved proposal, the supervisor:
+
+1. Revalidates the stored patch against its exact baseline SHA.
+2. Creates a detached worktree under `/srv/multivac-releases`.
+3. Runs the full suite in the existing bot image with networking disabled,
+   capabilities dropped, and CPU/memory/process limits.
+4. Resets the tested worktree and reapplies the stored patch, preventing test
+   execution from altering the artifact that will run.
+5. Switches only the bot container to that release while bind-mounting the
+   persistent SQLite files from `/srv/multivac`.
+6. Waits for both Discord-ready and command-sync log markers.
+7. Automatically recreates the previous release if activation or health checks
+   fail, recording the result in `code_deployments`.
+
+Host operations:
+
+```bash
+sudo systemctl status multivac-proposal-supervisor.timer
+sudo systemctl start multivac-proposal-supervisor.service
+sudo /srv/multivac/venv/bin/python ops/proposal_supervisor.py status
+sudo /srv/multivac/venv/bin/python ops/proposal_supervisor.py rollback
+```
+
+Remaining hardening opportunities:
+
+1. Sign release manifests with a host-only key rather than relying solely on the
+   recorded patch SHA-256.
+2. Move the protected regression tests outside the application repository for
+   an additional filesystem-level boundary.
+3. Run activated variants as an unprivileged container UID with a read-only code
+   mount and a dedicated writable log mount.
 
 The conversation model may describe or request a code change, but it must never
 generate, approve, deploy, and restart that change using one shared authority.
