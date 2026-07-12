@@ -1,0 +1,14 @@
+[Unit]
+Description=Deploy approved Multivac code proposals
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/srv/multivac
+ExecStart=/srv/multivac/venv/bin/python /srv/multivac/ops/proposal_supervisor.py reconcile
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

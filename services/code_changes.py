@@ -40,6 +40,8 @@ PROTECTED_PATTERNS = (
     "services/sqlite_store.py",
     "services/database_utils.py",
     "services/git_utils.py",
+    "ops/*",
+    "tests/*",
 )
 
 
