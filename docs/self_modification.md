@@ -97,8 +97,8 @@ For each newly approved proposal, the supervisor:
    activation, failure, or rollback results.
 
 The active bot runs as UID/GID 65532 with a read-only root filesystem and
-read-only release-code mount. Only `/tmp`, the three persistent SQLite files,
-and `bot.log` are writable. Git metadata and retained worktrees are mounted
+read-only release-code mount. Only `/tmp` and the dedicated `/state` mount are
+writable. Git metadata and retained worktrees are mounted
 read-only so self-inspection remains available.
 
 Host operations:

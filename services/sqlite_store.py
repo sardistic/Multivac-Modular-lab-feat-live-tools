@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -18,7 +19,10 @@ class DatabasePaths:
 
 class SQLiteStore:
     def __init__(self, base_dir: Path | None = None) -> None:
-        root = base_dir or Path(__file__).resolve().parent.parent
+        root = base_dir or Path(
+            os.environ.get("MULTIVAC_STATE_DIR", Path(__file__).resolve().parent.parent)
+        )
+        root.mkdir(parents=True, exist_ok=True)
         self.paths = DatabasePaths(
             logs_db=root / "conversation_history.db",
             locations_db=root / "user_locations.db",
