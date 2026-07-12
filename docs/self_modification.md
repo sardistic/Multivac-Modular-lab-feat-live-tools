@@ -93,8 +93,8 @@ Host operations:
 ```bash
 sudo systemctl status multivac-proposal-supervisor.timer
 sudo systemctl start multivac-proposal-supervisor.service
-sudo /srv/multivac/venv/bin/python ops/proposal_supervisor.py status
-sudo /srv/multivac/venv/bin/python ops/proposal_supervisor.py rollback
+sudo /usr/bin/python3 ops/proposal_supervisor.py status
+sudo /usr/bin/python3 ops/proposal_supervisor.py rollback
 ```
 
 Remaining hardening opportunities:
