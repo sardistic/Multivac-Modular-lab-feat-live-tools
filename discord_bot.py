@@ -56,12 +56,15 @@ from services.database_utils import (
     rollback_behavior_change,
     create_code_proposal,
     get_code_proposal,
+    get_code_deployment,
     list_code_proposals,
     review_code_proposal,
     set_code_proposal_patch,
     set_code_proposal_validation,
+    request_code_rollback,
 )
 from services.code_changes import MAX_PATCH_BYTES, get_baseline_sha, validate_patch
+from services.code_generator import generate_code_patch
 from services import usage_costs
 from services.user_profile import maybe_refresh_profile
 from providers.claude_utils import ANTHROPIC_API_KEY
@@ -565,6 +568,42 @@ async def code_patch(ctx, proposal_id: int, patch_file: discord.Attachment):
     )
 
 
+@bot.hybrid_command(name="code_generate", description="Owner: generate and validate a patch for a proposal.")
+@commands.is_owner()
+async def code_generate(ctx, proposal_id: int):
+    proposal = await asyncio.to_thread(get_code_proposal, str(ctx.author.id), proposal_id)
+    if not proposal or proposal["status"] in {"approved", "rejected"}:
+        await ctx.reply("❌ Editable code proposal not found.")
+        return
+    if ctx.interaction:
+        await ctx.defer()
+    try:
+        patch, generation = await generate_code_patch(
+            proposal["request"], proposal["baseline_sha"]
+        )
+        await asyncio.to_thread(
+            set_code_proposal_patch, str(ctx.author.id), proposal_id, patch
+        )
+        report = await asyncio.to_thread(
+            validate_patch, proposal["baseline_sha"], patch
+        )
+        report["generation"] = generation
+        proposal = await asyncio.to_thread(
+            set_code_proposal_validation, str(ctx.author.id), proposal_id, report
+        )
+    except (RuntimeError, ValueError) as exc:
+        await ctx.reply(f"❌ Patch generation failed: {str(exc)[:1200]}")
+        return
+    payload = io.BytesIO(patch.encode("utf-8"))
+    files = ", ".join(report["files"])
+    await ctx.reply(
+        f"🤖 Generated with `{generation['model']}` and statically validated.\n"
+        f"{_code_proposal_summary(proposal)}\nFiles: {files}\n"
+        f"Review the attached diff, then use `/code_approve {proposal_id}`.",
+        file=discord.File(payload, filename=f"proposal-{proposal_id}-generated.diff"),
+    )
+
+
 @bot.hybrid_command(name="code_validate", description="Owner: statically validate a proposal in a temporary snapshot.")
 @commands.is_owner()
 async def code_validate(ctx, proposal_id: int):
@@ -669,6 +708,39 @@ async def code_reject(ctx, proposal_id: int):
         await ctx.reply(f"❌ {exc}")
         return
     await ctx.reply(f"🛑 Rejected.\n{_code_proposal_summary(proposal)}")
+
+
+@bot.hybrid_command(name="code_deployment", description="Owner: show deployment and health-check results.")
+@commands.is_owner()
+async def code_deployment(ctx, proposal_id: int):
+    deployment = await asyncio.to_thread(
+        get_code_deployment, str(ctx.author.id), proposal_id
+    )
+    if not deployment:
+        await ctx.reply("No deployment record exists for that proposal yet.")
+        return
+    detail = deployment.get("detail") or "No detail recorded."
+    await ctx.reply(
+        f"🚦 **Deployment `#{proposal_id}`** · `{deployment['status']}`\n"
+        f"Release: `{deployment['release_path']}`\n"
+        f"Patch: `{(deployment.get('patch_sha256') or '')[:12]}`\n"
+        f"Detail: {detail[:900]}"
+    )
+
+
+@bot.hybrid_command(name="code_rollback", description="Owner: request rollback of the active code release.")
+@commands.is_owner()
+async def code_rollback(ctx, proposal_id: int):
+    try:
+        request_id = await asyncio.to_thread(
+            request_code_rollback, str(ctx.author.id), proposal_id
+        )
+    except ValueError as exc:
+        await ctx.reply(f"❌ {exc}")
+        return
+    await ctx.reply(
+        f"↩️ Rollback request `#{request_id}` queued. The host supervisor will process it within one minute."
+    )
 
 @bot.hybrid_command(name="memory_fetch_more", description="Index recent channel messages into long-term memory (mods only).")
 @commands.has_permissions(manage_messages=True)

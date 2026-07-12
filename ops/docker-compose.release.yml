@@ -1,8 +1,17 @@
 services:
   multivac:
+    user: "65532:65532"
+    read_only: true
+    environment:
+      - HOME=/tmp
+      - PYTHONDONTWRITEBYTECODE=1
+    tmpfs:
+      - /tmp:size=128m,mode=1777
     volumes:
-      - ${MULTIVAC_APP_DIR:-.}:/app
+      - ${MULTIVAC_APP_DIR:-.}:/app:ro
       - ./conversation_history.db:/app/conversation_history.db
       - ./user_locations.db:/app/user_locations.db
       - ./usage_costs.db:/app/usage_costs.db
       - ./bot.log:/app/bot.log
+      - ./.git:/srv/multivac/.git:ro
+      - /srv/multivac-releases:/srv/multivac-releases:ro

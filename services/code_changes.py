@@ -45,6 +45,11 @@ PROTECTED_PATTERNS = (
 )
 
 
+def is_protected_path(path: str) -> bool:
+    low = path.replace("\\", "/").lower()
+    return any(fnmatch.fnmatch(low, pattern.lower()) for pattern in PROTECTED_PATTERNS)
+
+
 def get_baseline_sha() -> str:
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -122,7 +127,7 @@ def inspect_patch(patch: str) -> dict[str, Any]:
 
     for path in sorted(paths):
         low = path.lower()
-        if any(fnmatch.fnmatch(low, pattern.lower()) for pattern in PROTECTED_PATTERNS):
+        if is_protected_path(path):
             errors.append(f"Protected path cannot be changed: {path}")
         if low.startswith(("archive/", "scripts/")):
             warnings.append(f"Review executable or archived path carefully: {path}")
