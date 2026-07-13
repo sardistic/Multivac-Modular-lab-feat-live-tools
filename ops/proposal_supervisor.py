@@ -141,7 +141,8 @@ def proposal(proposal_id: int) -> sqlite3.Row:
     with db_connect() as conn:
         row = conn.execute(
             """
-            SELECT id, public_id, owner_id, request, baseline_sha, patch, status, validation_json
+            SELECT id, public_id, owner_id, request, baseline_sha, patch, status, validation_json,
+                   approval_channel_id, approval_message_id
             FROM code_proposals WHERE id=?
             """,
             (proposal_id,),
@@ -340,6 +341,70 @@ def notify_owner(owner_id: str, message: str) -> None:
         print(f"notification_failed: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
+_DEPLOYMENT_STEPS = (
+    "Owner approval recorded",
+    "Patch revalidated against the current baseline",
+    "Isolated release workspace prepared",
+    "Networkless test suite passed",
+    "Audited Git commit created",
+    "Release manifest signed",
+    "Release activated on the Toughbook",
+    "Discord health check passed",
+    "Canonical Git branch promoted",
+    "Deployment active and healthy",
+)
+
+
+def edit_approval_progress(
+    row: sqlite3.Row, completed: int, current: str | None = None, failure: str | None = None
+) -> None:
+    """Best-effort edit of the original approval response with full live progress."""
+    try:
+        with db_connect() as conn:
+            target = conn.execute(
+                "SELECT approval_channel_id, approval_message_id FROM code_proposals WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+        if not target or not target[0] or not target[1]:
+            return
+        token = _load_bot_token()
+        if not token:
+            return
+        lines = [
+            f"✅ Approved proposal `{proposal_name(row, row['id'])}`.",
+            "",
+            "**Deployment progress**",
+        ]
+        for index, step in enumerate(_DEPLOYMENT_STEPS):
+            if failure and index == completed:
+                icon = "❌"
+            elif index < completed:
+                icon = "✅"
+            elif index == completed and current:
+                icon = "⏳"
+            else:
+                icon = "▫️"
+            lines.append(f"{icon} {step}")
+        if current and not failure:
+            lines.extend(("", f"Current: **{current}**"))
+        if failure:
+            lines.extend(("", "**Deployment failed safely; the previous release was restored.**", failure[:700]))
+        headers = {
+            "Authorization": f"Bot {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "DiscordBot (https://github.com/sardistic/Multivac-Refactored, 1.0)",
+        }
+        request = urllib.request.Request(
+            f"https://discord.com/api/v10/channels/{target[0]}/messages/{target[1]}",
+            data=json.dumps({"content": "\n".join(lines)[:1990]}).encode(),
+            headers=headers,
+            method="PATCH",
+        )
+        urllib.request.urlopen(request, timeout=10).close()
+    except Exception as exc:
+        print(f"progress_edit_failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
 def healthy(timeout: int = HEALTH_TIMEOUT, *, log_since: str = "2m") -> tuple[bool, str]:
     deadline = time.monotonic() + timeout
     last = "container not ready"
@@ -403,26 +468,44 @@ def deploy(proposal_id: int) -> None:
 
     previous = Path(previous_state["active_release"])
     release = None
+    completed_steps = 1
     try:
+        edit_approval_progress(row, completed_steps, "Revalidating the approved patch")
         require_current_baseline(row)
         validate_again(row)
+        completed_steps = 2
+        edit_approval_progress(row, completed_steps, "Preparing an isolated release workspace")
         release, patch_hash = create_worktree(row)
+        completed_steps = 3
         update_deployment(
             proposal_id, "testing", release_path=str(release), patch_sha256=patch_hash
         )
+        edit_approval_progress(row, completed_steps, "Running the networkless test suite")
         test_release(release)
+        completed_steps = 4
+        edit_approval_progress(row, completed_steps, "Creating the audited Git commit")
         restore_pristine_release(row, release)
         release_commit = commit_release(row, release)
+        completed_steps = 5
+        edit_approval_progress(row, completed_steps, "Signing the release manifest")
         signature = sign_release(row, patch_hash, release)
+        completed_steps = 6
         update_deployment(proposal_id, "activating", manifest_signature=signature)
+        edit_approval_progress(row, completed_steps, "Activating the release on the Toughbook")
         activate_release(release, proposal_id)
+        completed_steps = 7
+        edit_approval_progress(row, completed_steps, "Waiting for Discord readiness and command sync")
         ok, detail = healthy()
         if not ok:
             raise RuntimeError(f"Health check failed: {detail}")
+        completed_steps = 8
+        edit_approval_progress(row, completed_steps, "Promoting the canonical Git branch")
         promote_release(release_commit)
+        completed_steps = 10
         update_deployment(
             proposal_id, "active", detail=detail, activated_at=now_iso(), finished_at=now_iso()
         )
+        edit_approval_progress(row, completed_steps)
         public_name = proposal_name(row, proposal_id)
         notify_owner(row["owner_id"], f"✅ Multivac code proposal {public_name} is active and healthy.")
         prune_releases()
@@ -433,6 +516,7 @@ def deploy(proposal_id: int) -> None:
             healthy(timeout=45)
         finally:
             update_deployment(proposal_id, "failed", detail=detail, finished_at=now_iso())
+            edit_approval_progress(row, completed_steps, failure=detail)
             notify_owner(
                 row["owner_id"],
                 f"❌ Multivac proposal {proposal_name(row, proposal_id)} failed activation and was rolled back.\n{detail[:1200]}",

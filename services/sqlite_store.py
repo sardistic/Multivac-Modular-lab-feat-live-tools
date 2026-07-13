@@ -408,6 +408,22 @@ class SQLiteStore:
             conn.commit()
         return self.get_code_proposal(row[0], proposal_id)
 
+    def set_code_proposal_approval_message(
+        self, proposal_id: int, channel_id: str, message_id: str
+    ) -> None:
+        with self.logs_conn() as conn:
+            cur = conn.execute(
+                """
+                UPDATE code_proposals
+                SET approval_channel_id=?, approval_message_id=?
+                WHERE id=? AND status='approved'
+                """,
+                (str(channel_id), str(message_id), int(proposal_id)),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("Approved code proposal not found")
+            conn.commit()
+
     def get_code_proposal(self, owner_id: str, proposal_id: int) -> dict | None:
         with self.logs_conn() as conn:
             row = conn.execute(
@@ -863,7 +879,9 @@ class SQLiteStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     reviewed_by TEXT,
-                    reviewed_at TEXT
+                    reviewed_at TEXT,
+                    approval_channel_id TEXT,
+                    approval_message_id TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_code_proposals_owner
                     ON code_proposals (owner_id, id DESC);
@@ -933,6 +951,10 @@ class SQLiteStore:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(code_proposals)")}
             if "public_id" not in columns:
                 conn.execute("ALTER TABLE code_proposals ADD COLUMN public_id TEXT")
+            if "approval_channel_id" not in columns:
+                conn.execute("ALTER TABLE code_proposals ADD COLUMN approval_channel_id TEXT")
+            if "approval_message_id" not in columns:
+                conn.execute("ALTER TABLE code_proposals ADD COLUMN approval_message_id TEXT")
             for row in conn.execute("SELECT id FROM code_proposals WHERE public_id IS NULL"):
                 conn.execute(
                     "UPDATE code_proposals SET public_id=? WHERE id=?",

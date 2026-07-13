@@ -74,6 +74,7 @@ class ProposalSupervisorStateTests(unittest.TestCase):
         }
         with (
             mock.patch.object(self.supervisor, "proposal", return_value=row),
+            mock.patch.object(self.supervisor, "edit_approval_progress"),
             mock.patch.object(self.supervisor, "require_current_baseline"),
             mock.patch.object(self.supervisor, "validate_again"),
             mock.patch.object(

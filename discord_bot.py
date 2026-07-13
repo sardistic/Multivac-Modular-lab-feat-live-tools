@@ -64,6 +64,7 @@ from services.database_utils import (
     review_any_code_proposal,
     set_code_proposal_patch,
     set_code_proposal_validation,
+    set_code_proposal_approval_message,
     request_code_rollback,
     request_any_code_rollback,
 )
@@ -652,9 +653,18 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
             await message.reply(f"I couldn't approve that proposal: {exc}")
             return
         proposal_name = proposal.get("public_id") or str(proposal_id)
-        await message.reply(
+        approval_message = await message.reply(
             f"✅ Approved proposal `{proposal_name}`. The separate host supervisor will test and deploy it; I'll DM you the result.\n"
-            f"{_code_proposal_summary(proposal)}"
+            f"{_code_proposal_summary(proposal)}\n\n"
+            "**Deployment progress**\n"
+            "✅ Owner approval recorded\n"
+            "⏳ Waiting for the host supervisor"
+        )
+        await asyncio.to_thread(
+            set_code_proposal_approval_message,
+            proposal_id,
+            str(approval_message.channel.id),
+            str(approval_message.id),
         )
         return
 
@@ -869,7 +879,7 @@ async def code_history(ctx, limit: int = 10):
         if len(preview) > 90:
             preview = preview[:87] + "..."
         lines.append(
-            f"`#{proposal['id']}` **{proposal['status']}** · "
+            f"`{proposal.get('public_id') or proposal['id']}` **{proposal['status']}** · "
             f"`{proposal['baseline_sha'][:8]}` — {preview}"
         )
     await ctx.reply("\n".join(lines)[:1990])
@@ -889,9 +899,18 @@ async def code_approve(ctx, proposal_id: int):
     except ValueError as exc:
         await ctx.reply(f"❌ {exc}")
         return
-    await ctx.reply(
-        f"✅ Review approval recorded. The patch is still **not deployed**.\n"
-        f"{_code_proposal_summary(proposal)}"
+    approval_message = await ctx.reply(
+        f"✅ Approved proposal `{proposal.get('public_id') or proposal_id}`.\n"
+        f"{_code_proposal_summary(proposal)}\n\n"
+        "**Deployment progress**\n"
+        "✅ Owner approval recorded\n"
+        "⏳ Waiting for the host supervisor"
+    )
+    await asyncio.to_thread(
+        set_code_proposal_approval_message,
+        proposal_id,
+        str(approval_message.channel.id),
+        str(approval_message.id),
     )
 
 

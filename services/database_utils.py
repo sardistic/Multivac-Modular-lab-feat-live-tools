@@ -116,6 +116,12 @@ def review_any_code_proposal(proposal_id: int, decision: str, *, reviewer_id: st
     )
 
 
+def set_code_proposal_approval_message(
+    proposal_id: int, channel_id: str, message_id: str
+) -> None:
+    store.set_code_proposal_approval_message(proposal_id, channel_id, message_id)
+
+
 def get_code_proposal(owner_id: str, proposal_id: int) -> dict | None:
     return store.get_code_proposal(owner_id, proposal_id)
 
