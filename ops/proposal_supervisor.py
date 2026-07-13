@@ -180,6 +180,14 @@ def update_deployment(proposal_id: int, status: str, *, detail: str | None = Non
         )
 
 
+def refresh_dashboard() -> None:
+    """Publish terminal deployment state immediately; the timer remains a fallback."""
+    run(
+        ["systemctl", "start", "--no-block", "multivac-dashboard.service"],
+        check=False,
+    )
+
+
 def create_worktree(row: sqlite3.Row) -> tuple[Path, str]:
     patch = row["patch"]
     patch_hash = hashlib.sha256(patch.encode("utf-8")).hexdigest()
@@ -507,6 +515,7 @@ def deploy(proposal_id: int) -> None:
         update_deployment(
             proposal_id, "active", detail=detail, activated_at=now_iso(), finished_at=now_iso()
         )
+        refresh_dashboard()
         edit_approval_progress(row, completed_steps)
         public_name = proposal_name(row, proposal_id)
         notify_owner(
@@ -521,6 +530,7 @@ def deploy(proposal_id: int) -> None:
             healthy(timeout=45)
         finally:
             update_deployment(proposal_id, "failed", detail=detail, finished_at=now_iso())
+            refresh_dashboard()
             edit_approval_progress(row, completed_steps, failure=detail)
             notify_owner(
                 row["owner_id"],
@@ -562,6 +572,7 @@ def rollback() -> int:
     if not ok:
         raise RuntimeError(f"Rollback health check failed: {detail}")
     update_deployment(proposal_id, "rolled_back", detail=detail, finished_at=now_iso())
+    refresh_dashboard()
     return int(proposal_id)
 
 
