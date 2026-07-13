@@ -528,7 +528,147 @@ def _code_proposal_summary(proposal: dict) -> str:
     )
 
 
-@bot.hybrid_command(name="code_propose", description="Owner: create a reviewed code-change request.")
+def _proposal_id_from_text(text: str) -> int | None:
+    match = re.search(r"(?:proposal\s*)?#?(\d+)\b", text or "", re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=None) -> None:
+    """Conversational front-end for the audited code-change pipeline."""
+    if not await bot.is_owner(message.author):
+        await message.reply("I can discuss my code with anyone, but only my owner can change or deploy it.")
+        return
+
+    owner_id = str(message.author.id)
+    proposal_id = _proposal_id_from_text(prompt)
+    proposals = await asyncio.to_thread(list_code_proposals, owner_id, 30)
+
+    def latest_with_status(*statuses):
+        return next((p for p in proposals if p["status"] in statuses), None)
+
+    if intent == "code_change":
+        request = re.sub(r"^/code_propose\s*", "", prompt or "", flags=re.IGNORECASE).strip()
+        if not request:
+            await message.reply("Tell me what you want changed in my code.")
+            return
+        baseline = await asyncio.to_thread(get_baseline_sha)
+        proposal_id = await asyncio.to_thread(
+            create_code_proposal, owner_id, request, baseline
+        )
+        if status_msg is not None:
+            with contextlib.suppress(Exception):
+                await status_msg.edit(content=f"[🧩 Proposal #{proposal_id}] Selecting relevant source and generating a patch…")
+        try:
+            patch, generation = await generate_code_patch(request, baseline)
+            await asyncio.to_thread(set_code_proposal_patch, owner_id, proposal_id, patch)
+            report = await asyncio.to_thread(validate_patch, baseline, patch)
+            report["generation"] = generation
+            proposal = await asyncio.to_thread(
+                set_code_proposal_validation, owner_id, proposal_id, report
+            )
+        except (RuntimeError, ValueError) as exc:
+            await message.reply(
+                f"I recorded proposal `#{proposal_id}`, but patch generation failed: {str(exc)[:1200]}"
+            )
+            return
+        payload = io.BytesIO(patch.encode("utf-8"))
+        await message.reply(
+            f"🧩 **Proposal `#{proposal_id}` is ready for review.**\n"
+            f"{_code_proposal_summary(proposal)}\n"
+            f"Files: {', '.join(report['files'])}\n"
+            f"Reply naturally with **approve this change**, **reject it**, or ask **what is its status?**",
+            file=discord.File(payload, filename=f"proposal-{proposal_id}.diff"),
+        )
+        return
+
+    if proposal_id is None:
+        if intent == "code_approve":
+            selected = latest_with_status("reviewable")
+        elif intent == "code_reject":
+            selected = latest_with_status("draft", "patch_uploaded", "validation_failed", "reviewable")
+        else:
+            selected = proposals[0] if proposals else None
+        proposal_id = selected["id"] if selected else None
+    if proposal_id is None:
+        await message.reply("I couldn't find one of your code proposals to act on.")
+        return
+
+    if intent == "code_approve":
+        try:
+            proposal = await asyncio.to_thread(
+                review_code_proposal,
+                owner_id,
+                proposal_id,
+                "approved",
+                reviewer_id=owner_id,
+            )
+        except ValueError as exc:
+            await message.reply(f"I couldn't approve proposal `#{proposal_id}`: {exc}")
+            return
+        await message.reply(
+            f"✅ Approved proposal `#{proposal_id}`. The separate host supervisor will test and deploy it; I'll DM you the result.\n"
+            f"{_code_proposal_summary(proposal)}"
+        )
+        return
+
+    if intent == "code_reject":
+        try:
+            proposal = await asyncio.to_thread(
+                review_code_proposal,
+                owner_id,
+                proposal_id,
+                "rejected",
+                reviewer_id=owner_id,
+            )
+        except ValueError as exc:
+            await message.reply(f"I couldn't reject proposal `#{proposal_id}`: {exc}")
+            return
+        await message.reply(f"🛑 Rejected proposal `#{proposal_id}`. No code was deployed.")
+        return
+
+    if intent == "code_rollback":
+        if _proposal_id_from_text(prompt) is None:
+            active = None
+            for candidate in proposals:
+                deployment = await asyncio.to_thread(
+                    get_code_deployment, owner_id, candidate["id"]
+                )
+                if deployment and deployment["status"] == "active":
+                    active = candidate
+                    break
+            proposal_id = active["id"] if active else None
+        if proposal_id is None:
+            await message.reply("You don't currently have an active code release to roll back.")
+            return
+        try:
+            request_id = await asyncio.to_thread(
+                request_code_rollback, owner_id, proposal_id
+            )
+        except ValueError as exc:
+            await message.reply(f"I couldn't queue that rollback: {exc}")
+            return
+        await message.reply(
+            f"↩️ Rollback request `#{request_id}` queued for proposal `#{proposal_id}`. I'll DM you when the previous release is healthy."
+        )
+        return
+
+    proposal = await asyncio.to_thread(get_code_proposal, owner_id, proposal_id)
+    if not proposal:
+        await message.reply(f"I couldn't find proposal `#{proposal_id}`.")
+        return
+    deployment = await asyncio.to_thread(get_code_deployment, owner_id, proposal_id)
+    if not deployment:
+        await message.reply(
+            f"{_code_proposal_summary(proposal)}\nIt has no deployment record yet."
+        )
+        return
+    await message.reply(
+        f"{_code_proposal_summary(proposal)}\n"
+        f"Deployment: **{deployment['status']}** — {(deployment.get('detail') or 'in progress')[:900]}"
+    )
+
+
+@bot.hybrid_command(name="code_propose", description="Owner: create a reviewed code-change request.", with_app_command=False)
 @commands.is_owner()
 async def code_propose(ctx, *, request: str):
     baseline = await asyncio.to_thread(get_baseline_sha)
@@ -542,7 +682,7 @@ async def code_propose(ctx, *, request: str):
     )
 
 
-@bot.hybrid_command(name="code_patch", description="Owner: attach a unified diff to a code proposal.")
+@bot.hybrid_command(name="code_patch", description="Owner: attach a unified diff to a code proposal.", with_app_command=False)
 @commands.is_owner()
 async def code_patch(ctx, proposal_id: int, patch_file: discord.Attachment):
     if patch_file.size > MAX_PATCH_BYTES:
@@ -568,7 +708,7 @@ async def code_patch(ctx, proposal_id: int, patch_file: discord.Attachment):
     )
 
 
-@bot.hybrid_command(name="code_generate", description="Owner: generate and validate a patch for a proposal.")
+@bot.hybrid_command(name="code_generate", description="Owner: generate and validate a patch for a proposal.", with_app_command=False)
 @commands.is_owner()
 async def code_generate(ctx, proposal_id: int):
     proposal = await asyncio.to_thread(get_code_proposal, str(ctx.author.id), proposal_id)
@@ -604,7 +744,7 @@ async def code_generate(ctx, proposal_id: int):
     )
 
 
-@bot.hybrid_command(name="code_validate", description="Owner: statically validate a proposal in a temporary snapshot.")
+@bot.hybrid_command(name="code_validate", description="Owner: statically validate a proposal in a temporary snapshot.", with_app_command=False)
 @commands.is_owner()
 async def code_validate(ctx, proposal_id: int):
     proposal = await asyncio.to_thread(get_code_proposal, str(ctx.author.id), proposal_id)
@@ -630,7 +770,7 @@ async def code_validate(ctx, proposal_id: int):
     await ctx.reply("\n".join(lines)[:1990])
 
 
-@bot.hybrid_command(name="code_show", description="Owner: show a code proposal and its review state.")
+@bot.hybrid_command(name="code_show", description="Owner: show a code proposal and its review state.", with_app_command=False)
 @commands.is_owner()
 async def code_show(ctx, proposal_id: int):
     proposal = await asyncio.to_thread(get_code_proposal, str(ctx.author.id), proposal_id)
@@ -640,7 +780,7 @@ async def code_show(ctx, proposal_id: int):
     await ctx.reply(_code_proposal_summary(proposal))
 
 
-@bot.hybrid_command(name="code_diff", description="Owner: download the patch attached to a code proposal.")
+@bot.hybrid_command(name="code_diff", description="Owner: download the patch attached to a code proposal.", with_app_command=False)
 @commands.is_owner()
 async def code_diff(ctx, proposal_id: int):
     proposal = await asyncio.to_thread(get_code_proposal, str(ctx.author.id), proposal_id)
@@ -654,7 +794,7 @@ async def code_diff(ctx, proposal_id: int):
     )
 
 
-@bot.hybrid_command(name="code_history", description="Owner: list recent code proposals.")
+@bot.hybrid_command(name="code_history", description="Owner: list recent code proposals.", with_app_command=False)
 @commands.is_owner()
 async def code_history(ctx, limit: int = 10):
     proposals = await asyncio.to_thread(list_code_proposals, str(ctx.author.id), limit)
@@ -673,7 +813,7 @@ async def code_history(ctx, limit: int = 10):
     await ctx.reply("\n".join(lines)[:1990])
 
 
-@bot.hybrid_command(name="code_approve", description="Owner: approve a successfully validated code proposal.")
+@bot.hybrid_command(name="code_approve", description="Owner: approve a successfully validated code proposal.", with_app_command=False)
 @commands.is_owner()
 async def code_approve(ctx, proposal_id: int):
     try:
@@ -693,7 +833,7 @@ async def code_approve(ctx, proposal_id: int):
     )
 
 
-@bot.hybrid_command(name="code_reject", description="Owner: reject a code proposal without deploying it.")
+@bot.hybrid_command(name="code_reject", description="Owner: reject a code proposal without deploying it.", with_app_command=False)
 @commands.is_owner()
 async def code_reject(ctx, proposal_id: int):
     try:
@@ -710,7 +850,7 @@ async def code_reject(ctx, proposal_id: int):
     await ctx.reply(f"🛑 Rejected.\n{_code_proposal_summary(proposal)}")
 
 
-@bot.hybrid_command(name="code_deployment", description="Owner: show deployment and health-check results.")
+@bot.hybrid_command(name="code_deployment", description="Owner: show deployment and health-check results.", with_app_command=False)
 @commands.is_owner()
 async def code_deployment(ctx, proposal_id: int):
     deployment = await asyncio.to_thread(
@@ -728,7 +868,7 @@ async def code_deployment(ctx, proposal_id: int):
     )
 
 
-@bot.hybrid_command(name="code_rollback", description="Owner: request rollback of the active code release.")
+@bot.hybrid_command(name="code_rollback", description="Owner: request rollback of the active code release.", with_app_command=False)
 @commands.is_owner()
 async def code_rollback(ctx, proposal_id: int):
     try:
@@ -1041,8 +1181,13 @@ async def on_message(message: discord.Message):
     general_url_match = re.search(r"https?://[^\s]+", message.content)
 
     try:
-        await dispatch_intent(
-            DispatchContext(
+        if intent in {
+            "code_change", "code_approve", "code_reject", "code_status", "code_rollback"
+        }:
+            await _natural_code_proposal(message, intent, prompt, preflight_status)
+        else:
+            await dispatch_intent(
+                DispatchContext(
                 intent=intent,
                 message=message,
                 prompt=prompt,
@@ -1061,8 +1206,8 @@ async def on_message(message: discord.Message):
                 send_or_edit_with_truncation=send_or_edit_with_truncation,
                 prompt_for_image_selection=prompt_for_image_selection,
                 moderation_view_factory=ModerationFallbackView,
+                )
             )
-        )
 
     except Exception as e:
         logger.exception("Critical error in on_message dispatch")

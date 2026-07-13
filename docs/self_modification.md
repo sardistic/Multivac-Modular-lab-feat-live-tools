@@ -52,7 +52,24 @@ Python files without importing or executing them. The temporary directory is
 discarded afterward. Approval is an audit decision only: it does not apply the
 patch, restart the bot, or deploy anything.
 
-### Owner commands
+### Natural-language owner workflow
+
+The primary interface is ordinary mention/reply conversation. Requests to
+change the bot's own implementation are classified as `code_change`; questions
+about how the code works remain normal chat. The owner can say things such as:
+
+```text
+@Multivac change your readme to add a deployment note
+@Multivac approve this code change
+@Multivac what is the status of that change?
+@Multivac roll back that deployment
+```
+
+Multivac infers the latest applicable proposal when no proposal number is
+given. Code-management commands are excluded from Discord's slash-command
+registry; their handlers remain only as an emergency text-admin fallback.
+
+### Administrative fallback
 
 - `/code_propose <request>` records a request against the current commit.
 - `/code_generate <id>` selects relevant allowed source at that commit, asks the

@@ -70,6 +70,33 @@ class KeywordRoutingTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.assertIsNone(resolve_keyword_intent(prompt, prompt, has_attachments))
 
+    def test_natural_code_change_requests_route_to_audited_pipeline(self):
+        cases = [
+            "/code_propose Add a sentence to your readme",
+            "change your code so responses are more compact",
+            "modify the bot's routing to recognize this intent",
+            "add a command to your implementation for diagnostics",
+        ]
+        for prompt in cases:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(resolve_keyword_intent(prompt, prompt, False), "code_change")
+
+    def test_natural_code_control_routes(self):
+        cases = {
+            "approve this code change": "code_approve",
+            "reject proposal 4": "code_reject",
+            "status of the code change": "code_status",
+            "roll back that deployment": "code_rollback",
+        }
+        for prompt, expected in cases.items():
+            with self.subTest(prompt=prompt):
+                self.assertEqual(resolve_keyword_intent(prompt, prompt, False), expected)
+
+    def test_code_questions_remain_chat_classifier_work(self):
+        for prompt in ["how does your code work?", "show me your routing code"]:
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(resolve_keyword_intent(prompt, prompt, False))
+
 
 class ProviderSelectionTests(unittest.TestCase):
     def test_wants_gemini(self):
