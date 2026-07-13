@@ -12,17 +12,19 @@ from threading import RLock
 from typing import Iterator
 
 
-_PROPOSAL_WORDS = (
-    "amber", "apple", "badger", "banana", "birch", "cedar", "cherry", "cobalt",
-    "comet", "coral", "falcon", "fern", "fox", "ginger", "hazel", "heron",
-    "indigo", "juniper", "kiwi", "lantern", "lemon", "maple", "mango", "mint",
-    "otter", "peach", "pepper", "plum", "raven", "river", "robin", "saffron",
-    "spruce", "tiger", "violet", "walnut", "willow", "wren",
+_PROPOSAL_ADJECTIVES = (
+    "amber", "brisk", "cobalt", "coral", "gentle", "golden", "indigo", "lively",
+    "lunar", "quiet", "silver", "solar", "velvet", "violet", "warm", "wild",
 )
-_PROPOSAL_NUMBERS = (
-    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
-    "seventeen", "eighteen", "nineteen", "twenty",
+_PROPOSAL_NOUNS = (
+    "badger", "birch", "cedar", "comet", "falcon", "fern", "fox", "harbor",
+    "heron", "juniper", "kiwi", "lantern", "maple", "mango", "otter", "peach",
+    "pepper", "plum", "raven", "river", "robin", "saffron", "spruce", "willow",
+    "wren", "zephyr",
+)
+_PROPOSAL_MOTIONS = (
+    "bloom", "drift", "echo", "glide", "orbit", "ripple", "roam", "spark",
+    "trail", "turn", "wake", "wander",
 )
 
 
@@ -291,7 +293,19 @@ class SQLiteStore:
 
     def _new_proposal_public_id(self, conn: sqlite3.Connection) -> str:
         for _ in range(100):
-            value = f"{secrets.choice(_PROPOSAL_WORDS)}-{secrets.choice(_PROPOSAL_NUMBERS)}"
+            adjective = secrets.choice(_PROPOSAL_ADJECTIVES)
+            noun = secrets.choice(_PROPOSAL_NOUNS)
+            motion = secrets.choice(_PROPOSAL_MOTIONS)
+            other_noun = secrets.choice(_PROPOSAL_NOUNS)
+            if other_noun == noun:
+                other_noun = _PROPOSAL_NOUNS[(_PROPOSAL_NOUNS.index(noun) + 1) % len(_PROPOSAL_NOUNS)]
+            patterns = (
+                f"{adjective}-{noun}",
+                f"{noun}-{motion}",
+                f"{noun}-{other_noun}",
+                f"{adjective}-{noun}-{motion}",
+            )
+            value = secrets.choice(patterns)
             if not conn.execute(
                 "SELECT 1 FROM code_proposals WHERE public_id=?", (value,)
             ).fetchone():

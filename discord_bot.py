@@ -536,7 +536,11 @@ def _code_proposal_summary(proposal: dict) -> str:
 
 
 def _proposal_id_from_text(text: str) -> int | str | None:
-    passphrase = re.search(r"\b([a-z]+-(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty))\b", text or "", re.IGNORECASE)
+    passphrase = re.search(
+        r"\b([a-z][a-z0-9]*(?:-[a-z][a-z0-9]*){1,2})\b",
+        text or "",
+        re.IGNORECASE,
+    )
     if passphrase:
         return passphrase.group(1).lower()
     match = re.search(r"(?:proposal\s*)?#?(\d+)\b", text or "", re.IGNORECASE)
