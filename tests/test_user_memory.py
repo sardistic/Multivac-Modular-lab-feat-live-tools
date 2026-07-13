@@ -161,6 +161,13 @@ class UserMemoryStoreTests(unittest.TestCase):
         self.assertEqual(approved["owner_id"], "user-2")
         self.assertEqual(approved["reviewed_by"], "app-owner")
         self.assertEqual(approved["status"], "approved")
+        self.store.set_code_proposal_approval_message(proposal_id, "channel-1", "message-1")
+        with self.store.logs_conn() as conn:
+            target = conn.execute(
+                "SELECT approval_channel_id, approval_message_id FROM code_proposals WHERE id=?",
+                (proposal_id,),
+            ).fetchone()
+        self.assertEqual(target, ("channel-1", "message-1"))
 
     def test_global_proposal_list_keeps_requester_identity(self):
         self.store.create_code_proposal("user-a", "First", "a" * 40)
