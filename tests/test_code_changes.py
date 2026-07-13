@@ -30,6 +30,18 @@ class CodeChangePolicyTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertTrue(any("Protected path" in error for error in report["errors"]))
 
+    def test_public_dashboard_cannot_be_changed_by_proposals(self):
+        patch = """diff --git a/dashboard/app.js b/dashboard/app.js
+--- a/dashboard/app.js
++++ b/dashboard/app.js
+@@ -1 +1 @@
+-safe
++unsafe
+"""
+        report = inspect_patch(patch)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("dashboard/app.js" in error for error in report["errors"]))
+
     def test_traversal_and_binary_patches_are_rejected(self):
         patch = """diff --git a/../outside b/../outside
 GIT binary patch

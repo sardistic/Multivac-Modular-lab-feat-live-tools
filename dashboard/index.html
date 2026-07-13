@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Multivac Change Ledger</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <p class="eyebrow">AUDITED SELF-MODIFICATION</p>
+        <h1>Multivac Change Ledger</h1>
+        <p class="lede">A sanitized public record of proposed, reviewed, deployed, rejected, and rolled-back changes.</p>
+      </div>
+      <div class="system-state">
+        <span class="pulse"></span>
+        <div><small>BASELINE</small><strong id="baseline">loading</strong></div>
+      </div>
+    </header>
+
+    <section class="metrics" id="metrics" aria-label="Change totals"></section>
+
+    <section class="controls">
+      <div class="filters" id="filters"></div>
+      <label class="search"><span>⌕</span><input id="search" type="search" placeholder="Search summaries or files"></label>
+    </section>
+
+    <main>
+      <div class="section-head">
+        <h2>Change history</h2>
+        <span id="updated">Loading ledger…</span>
+      </div>
+      <div id="changes" class="change-list" aria-live="polite"></div>
+      <div id="empty" class="empty" hidden>No changes match this view.</div>
+    </main>
+
+    <footer>
+      <span>Requester identities, raw prompts, raw diffs, paths, URLs, and error traces are excluded.</span>
+      <a href="https://github.com/sardistic/Multivac-Refactored">Source repository ↗</a>
+    </footer>
+  </div>
+  <script src="app.js" defer></script>
+</body>
+</html>
