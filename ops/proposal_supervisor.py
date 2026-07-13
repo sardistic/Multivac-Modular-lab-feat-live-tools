@@ -269,7 +269,11 @@ def notify_owner(owner_id: str, message: str) -> None:
         token = _load_bot_token()
         if not token:
             return
-        headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bot {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "DiscordBot (https://github.com/sardistic/Multivac-Refactored, 1.0)",
+        }
         request = urllib.request.Request(
             "https://discord.com/api/v10/users/@me/channels",
             data=json.dumps({"recipient_id": str(owner_id)}).encode(),
@@ -321,6 +325,11 @@ def activate_release(release: Path, proposal_id: int | None) -> None:
         path = STATE_DIR / filename
         if not path.exists():
             path.touch()
+        # Compose mounts each persistent file beneath the read-only /app bind.
+        # The mountpoint must already exist in a freshly-created Git worktree.
+        mountpoint = release / filename
+        if not mountpoint.exists():
+            mountpoint.touch()
     write_state(release, proposal_id)
     run_compose(release, "up", "-d", "--no-deps", "--force-recreate", "multivac", timeout=180)
 
