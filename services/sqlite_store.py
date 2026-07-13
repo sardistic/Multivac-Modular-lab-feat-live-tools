@@ -356,6 +356,33 @@ class SQLiteStore:
             conn.commit()
         return self.get_code_proposal(owner_id, proposal_id)
 
+    def review_any_code_proposal(
+        self, proposal_id: int, decision: str, *, reviewer_id: str
+    ) -> dict:
+        if decision not in {"approved", "rejected"}:
+            raise ValueError("Decision must be approved or rejected")
+        now = datetime.utcnow().isoformat()
+        with self.logs_conn() as conn:
+            row = conn.execute(
+                "SELECT owner_id, status FROM code_proposals WHERE id=?",
+                (int(proposal_id),),
+            ).fetchone()
+            if not row:
+                raise ValueError("Code proposal not found")
+            if decision == "approved" and row[1] != "reviewable":
+                raise ValueError("Only a successfully validated proposal can be approved")
+            if row[1] in {"approved", "rejected"}:
+                raise ValueError("Code proposal has already been reviewed")
+            conn.execute(
+                """
+                UPDATE code_proposals
+                SET status=?, reviewed_by=?, reviewed_at=?, updated_at=? WHERE id=?
+                """,
+                (decision, str(reviewer_id), now, now, int(proposal_id)),
+            )
+            conn.commit()
+        return self.get_code_proposal(row[0], proposal_id)
+
     def get_code_proposal(self, owner_id: str, proposal_id: int) -> dict | None:
         with self.logs_conn() as conn:
             row = conn.execute(
@@ -376,6 +403,13 @@ class SQLiteStore:
         result["validation"] = json.loads(result["validation"]) if result["validation"] else None
         return result
 
+    def get_any_code_proposal(self, proposal_id: int) -> dict | None:
+        with self.logs_conn() as conn:
+            row = conn.execute(
+                "SELECT owner_id FROM code_proposals WHERE id=?", (int(proposal_id),)
+            ).fetchone()
+        return self.get_code_proposal(row[0], proposal_id) if row else None
+
     def list_code_proposals(self, owner_id: str, limit: int = 10) -> list[dict]:
         limit = max(1, min(int(limit), 50))
         with self.logs_conn() as conn:
@@ -387,6 +421,19 @@ class SQLiteStore:
                 (str(owner_id), limit),
             ).fetchall()
         keys = ("id", "request", "baseline_sha", "status", "created_at", "updated_at")
+        return [dict(zip(keys, row)) for row in rows]
+
+    def list_all_code_proposals(self, limit: int = 20) -> list[dict]:
+        limit = max(1, min(int(limit), 100))
+        with self.logs_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, owner_id, request, baseline_sha, status, created_at, updated_at
+                FROM code_proposals ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        keys = ("id", "owner_id", "request", "baseline_sha", "status", "created_at", "updated_at")
         return [dict(zip(keys, row)) for row in rows]
 
     def get_code_deployment(self, owner_id: str, proposal_id: int) -> dict | None:
@@ -433,6 +480,26 @@ class SQLiteStore:
                 VALUES (?, ?, 'rollback', 'pending', ?)
                 """,
                 (int(proposal_id), str(owner_id), now),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def request_any_code_rollback(self, reviewer_id: str, proposal_id: int) -> int:
+        now = datetime.utcnow().isoformat()
+        with self.logs_conn() as conn:
+            deployment = conn.execute(
+                "SELECT status FROM code_deployments WHERE proposal_id=?",
+                (int(proposal_id),),
+            ).fetchone()
+            if not deployment or deployment[0] != "active":
+                raise ValueError("Only the currently active deployment can be rolled back")
+            cur = conn.execute(
+                """
+                INSERT INTO code_control_requests
+                    (proposal_id, owner_id, action, status, created_at)
+                VALUES (?, ?, 'rollback', 'pending', ?)
+                """,
+                (int(proposal_id), str(reviewer_id), now),
             )
             conn.commit()
             return int(cur.lastrowid)
