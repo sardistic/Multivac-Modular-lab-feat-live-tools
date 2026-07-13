@@ -1,23 +1,23 @@
 {
-  "baseline": "085bd676e3c0",
-  "generated_at": "2026-07-13T01:27:47.074656+00:00",
+  "baseline": "d551d9cd8fd6",
+  "generated_at": "2026-07-13T01:32:34.850015+00:00",
   "proposals": [
     {
-      "activated_at": null,
+      "activated_at": "2026-07-13T01:29:03.722933+00:00",
       "baseline": "085bd676e3c0",
       "created_at": "2026-07-13T01:26:49.477244",
-      "deployment_result": null,
-      "deployment_status": null,
+      "deployment_result": "Healthy",
+      "deployment_status": "active",
       "files": [
         "bot/image_handler.py"
       ],
-      "finished_at": null,
+      "finished_at": "2026-07-13T01:29:03.722946+00:00",
       "id": "kiwi-nine",
-      "patch": null,
-      "reviewed_at": null,
-      "status": "reviewable",
+      "patch": "ebef98088e6f",
+      "reviewed_at": "2026-07-13T01:27:47.206149",
+      "status": "approved",
       "summary": "edit your general system prompt to respond like a culture mind",
-      "updated_at": "2026-07-13T01:27:03.210990"
+      "updated_at": "2026-07-13T01:27:47.206149"
     },
     {
       "activated_at": "2026-07-13T01:06:41.547544+00:00",
