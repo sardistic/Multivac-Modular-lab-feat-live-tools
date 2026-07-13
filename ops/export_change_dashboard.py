@@ -63,6 +63,10 @@ def coarse_result(status: str | None, detail: str | None) -> str | None:
 def export_snapshot(db_path: Path, base_dir: Path = BASE_DIR) -> dict:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    proposal_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(code_proposals)")
+    }
+    public_id_field = "p.public_id" if "public_id" in proposal_columns else "NULL AS public_id"
     deployment_table = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_deployments'"
     ).fetchone()
@@ -76,7 +80,7 @@ def export_snapshot(db_path: Path, base_dir: Path = BASE_DIR) -> dict:
     )
     rows = conn.execute(
         f"""
-        SELECT p.id, p.request, p.baseline_sha, p.status, p.validation_json,
+        SELECT p.id, {public_id_field}, p.request, p.baseline_sha, p.status, p.validation_json,
                p.created_at, p.updated_at, p.reviewed_at, {deployment_fields}
         FROM code_proposals p {deployment_join}
         ORDER BY p.id DESC
@@ -86,7 +90,7 @@ def export_snapshot(db_path: Path, base_dir: Path = BASE_DIR) -> dict:
     for row in rows:
         proposals.append(
             {
-                "id": row["id"],
+                "id": row["public_id"] or f"legacy-{row['id']}",
                 "summary": sanitize_summary(row["request"]),
                 "status": row["status"],
                 "files": safe_files(row["validation_json"]),

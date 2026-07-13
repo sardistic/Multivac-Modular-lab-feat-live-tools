@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -9,6 +10,20 @@ from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from typing import Iterator
+
+
+_PROPOSAL_WORDS = (
+    "amber", "apple", "badger", "banana", "birch", "cedar", "cherry", "cobalt",
+    "comet", "coral", "falcon", "fern", "fox", "ginger", "hazel", "heron",
+    "indigo", "juniper", "kiwi", "lantern", "lemon", "maple", "mango", "mint",
+    "otter", "peach", "pepper", "plum", "raven", "river", "robin", "saffron",
+    "spruce", "tiger", "violet", "walnut", "willow", "wren",
+)
+_PROPOSAL_NUMBERS = (
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen", "twenty",
+)
 
 
 @dataclass(frozen=True)
@@ -274,19 +289,29 @@ class SQLiteStore:
 
     # ---- Owner-reviewed executable code proposals ----
 
+    def _new_proposal_public_id(self, conn: sqlite3.Connection) -> str:
+        for _ in range(100):
+            value = f"{secrets.choice(_PROPOSAL_WORDS)}-{secrets.choice(_PROPOSAL_NUMBERS)}"
+            if not conn.execute(
+                "SELECT 1 FROM code_proposals WHERE public_id=?", (value,)
+            ).fetchone():
+                return value
+        raise RuntimeError("Could not allocate a unique proposal passphrase")
+
     def create_code_proposal(self, owner_id: str, request: str, baseline_sha: str) -> int:
         request = request.strip()
         if not request:
             raise ValueError("Code-change request cannot be empty")
         now = datetime.utcnow().isoformat()
         with self.logs_conn() as conn:
+            public_id = self._new_proposal_public_id(conn)
             cur = conn.execute(
                 """
                 INSERT INTO code_proposals
-                    (owner_id, request, baseline_sha, status, created_at, updated_at)
-                VALUES (?, ?, ?, 'draft', ?, ?)
+                    (owner_id, public_id, request, baseline_sha, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'draft', ?, ?)
                 """,
-                (str(owner_id), request, baseline_sha, now, now),
+                (str(owner_id), public_id, request, baseline_sha, now, now),
             )
             conn.commit()
             return int(cur.lastrowid)
@@ -387,7 +412,7 @@ class SQLiteStore:
         with self.logs_conn() as conn:
             row = conn.execute(
                 """
-                SELECT id, owner_id, request, baseline_sha, patch, status,
+                SELECT id, public_id, owner_id, request, baseline_sha, patch, status,
                        validation_json, created_at, updated_at, reviewed_by, reviewed_at
                 FROM code_proposals WHERE id=? AND owner_id=?
                 """,
@@ -396,7 +421,7 @@ class SQLiteStore:
         if not row:
             return None
         keys = (
-            "id", "owner_id", "request", "baseline_sha", "patch", "status",
+            "id", "public_id", "owner_id", "request", "baseline_sha", "patch", "status",
             "validation", "created_at", "updated_at", "reviewed_by", "reviewed_at",
         )
         result = dict(zip(keys, row))
@@ -415,12 +440,12 @@ class SQLiteStore:
         with self.logs_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT id, request, baseline_sha, status, created_at, updated_at
+                SELECT id, public_id, request, baseline_sha, status, created_at, updated_at
                 FROM code_proposals WHERE owner_id=? ORDER BY id DESC LIMIT ?
                 """,
                 (str(owner_id), limit),
             ).fetchall()
-        keys = ("id", "request", "baseline_sha", "status", "created_at", "updated_at")
+        keys = ("id", "public_id", "request", "baseline_sha", "status", "created_at", "updated_at")
         return [dict(zip(keys, row)) for row in rows]
 
     def list_all_code_proposals(self, limit: int = 20) -> list[dict]:
@@ -428,12 +453,12 @@ class SQLiteStore:
         with self.logs_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT id, owner_id, request, baseline_sha, status, created_at, updated_at
+                SELECT id, public_id, owner_id, request, baseline_sha, status, created_at, updated_at
                 FROM code_proposals ORDER BY id DESC LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
-        keys = ("id", "owner_id", "request", "baseline_sha", "status", "created_at", "updated_at")
+        keys = ("id", "public_id", "owner_id", "request", "baseline_sha", "status", "created_at", "updated_at")
         return [dict(zip(keys, row)) for row in rows]
 
     def get_code_deployment(self, owner_id: str, proposal_id: int) -> dict | None:
@@ -825,6 +850,7 @@ class SQLiteStore:
 
                 CREATE TABLE IF NOT EXISTS code_proposals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    public_id TEXT UNIQUE,
                     owner_id TEXT NOT NULL,
                     request TEXT NOT NULL,
                     baseline_sha TEXT NOT NULL,
@@ -903,6 +929,17 @@ class SQLiteStore:
                     created_at TEXT
                 );
                 """
+            )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(code_proposals)")}
+            if "public_id" not in columns:
+                conn.execute("ALTER TABLE code_proposals ADD COLUMN public_id TEXT")
+            for row in conn.execute("SELECT id FROM code_proposals WHERE public_id IS NULL"):
+                conn.execute(
+                    "UPDATE code_proposals SET public_id=? WHERE id=?",
+                    (self._new_proposal_public_id(conn), row[0]),
+                )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_code_proposals_public_id ON code_proposals(public_id)"
             )
             conn.commit()
 

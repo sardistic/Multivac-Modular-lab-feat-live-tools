@@ -115,6 +115,7 @@ class UserMemoryStoreTests(unittest.TestCase):
         )
         proposal = self.store.get_code_proposal("owner-1", proposal_id)
         self.assertEqual(proposal["status"], "draft")
+        self.assertRegex(proposal["public_id"], r"^[a-z]+-[a-z]+$")
         self.assertIsNone(self.store.get_code_proposal("owner-2", proposal_id))
 
         proposal = self.store.set_code_proposal_patch(

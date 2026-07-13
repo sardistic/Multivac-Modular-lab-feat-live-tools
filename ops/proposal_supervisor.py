@@ -35,6 +35,12 @@ RELEASE_RETENTION = int(os.environ.get("MULTIVAC_RELEASE_RETENTION", "5"))
 CANONICAL_BRANCH = os.environ.get("MULTIVAC_CANONICAL_BRANCH", "main")
 
 
+def proposal_name(row, fallback: int | str) -> str:
+    if isinstance(row, dict):
+        return str(row.get("public_id") or fallback)
+    return str(row["public_id"] or fallback) if "public_id" in row.keys() else str(fallback)
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -135,7 +141,7 @@ def proposal(proposal_id: int) -> sqlite3.Row:
     with db_connect() as conn:
         row = conn.execute(
             """
-            SELECT id, owner_id, request, baseline_sha, patch, status, validation_json
+            SELECT id, public_id, owner_id, request, baseline_sha, patch, status, validation_json
             FROM code_proposals WHERE id=?
             """,
             (proposal_id,),
@@ -207,7 +213,7 @@ def commit_release(row: sqlite3.Row, release: Path) -> str:
         [
             "git", "-c", "user.name=Multivac Release Supervisor",
             "-c", "user.email=multivac@localhost", "commit",
-            "-m", f"Apply approved proposal #{row['id']}",
+            "-m", f"Apply approved proposal {proposal_name(row, row['id'])}",
         ],
         cwd=release,
     )
@@ -417,7 +423,8 @@ def deploy(proposal_id: int) -> None:
         update_deployment(
             proposal_id, "active", detail=detail, activated_at=now_iso(), finished_at=now_iso()
         )
-        notify_owner(row["owner_id"], f"✅ Multivac code proposal #{proposal_id} is active and healthy.")
+        public_name = proposal_name(row, proposal_id)
+        notify_owner(row["owner_id"], f"✅ Multivac code proposal {public_name} is active and healthy.")
         prune_releases()
     except Exception as exc:
         detail = str(exc)[:3000]
@@ -428,7 +435,7 @@ def deploy(proposal_id: int) -> None:
             update_deployment(proposal_id, "failed", detail=detail, finished_at=now_iso())
             notify_owner(
                 row["owner_id"],
-                f"❌ Multivac proposal #{proposal_id} failed activation and was rolled back.\n{detail[:1200]}",
+                f"❌ Multivac proposal {proposal_name(row, proposal_id)} failed activation and was rolled back.\n{detail[:1200]}",
             )
         raise
 

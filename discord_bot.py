@@ -526,13 +526,16 @@ def _code_proposal_summary(proposal: dict) -> str:
     if validation:
         checks = "passed" if validation.get("ok") else f"failed ({len(validation.get('errors', []))} errors)"
     return (
-        f"**Code proposal `#{proposal['id']}`** · `{proposal['status']}`\n"
+        f"**Code proposal `{proposal.get('public_id') or proposal['id']}`** · `{proposal['status']}`\n"
         f"Baseline: `{proposal['baseline_sha'][:12]}` · validation: **{checks}**\n"
         f"> {request}"
     )
 
 
-def _proposal_id_from_text(text: str) -> int | None:
+def _proposal_id_from_text(text: str) -> int | str | None:
+    passphrase = re.search(r"\b([a-z]+-(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty))\b", text or "", re.IGNORECASE)
+    if passphrase:
+        return passphrase.group(1).lower()
     match = re.search(r"(?:proposal\s*)?#?(\d+)\b", text or "", re.IGNORECASE)
     return int(match.group(1)) if match else None
 
@@ -541,14 +544,19 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
     """Conversational front-end for the audited code-change pipeline."""
     is_app_owner = await bot.is_owner(message.author)
     requester_id = str(message.author.id)
-    proposal_id = _proposal_id_from_text(prompt)
-    if proposal_id is None and ref_msg is not None:
-        proposal_id = _proposal_id_from_text(getattr(ref_msg, "content", ""))
+    proposal_ref = _proposal_id_from_text(prompt)
+    if proposal_ref is None and ref_msg is not None:
+        proposal_ref = _proposal_id_from_text(getattr(ref_msg, "content", ""))
     proposals = await asyncio.to_thread(list_code_proposals, requester_id, 30)
     review_pool = (
         await asyncio.to_thread(list_all_code_proposals, 50)
         if is_app_owner else proposals
     )
+    if isinstance(proposal_ref, str):
+        referenced = next((p for p in review_pool if p.get("public_id") == proposal_ref), None)
+        proposal_id = referenced["id"] if referenced else None
+    else:
+        proposal_id = proposal_ref
 
     def latest_with_status(*statuses):
         return next((p for p in review_pool if p["status"] in statuses), None)
@@ -564,16 +572,18 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
         )
         if open_proposal:
             await message.reply(
-                f"You already have open proposal `#{open_proposal['id']}`. Wait for review before proposing another change."
+                f"You already have open proposal `{open_proposal.get('public_id') or open_proposal['id']}`. Wait for review before proposing another change."
             )
             return
         baseline = await asyncio.to_thread(get_baseline_sha)
         proposal_id = await asyncio.to_thread(
             create_code_proposal, requester_id, request, baseline
         )
+        proposal = await asyncio.to_thread(get_code_proposal, requester_id, proposal_id)
+        proposal_name = proposal.get("public_id") or str(proposal_id)
         if status_msg is not None:
             with contextlib.suppress(Exception):
-                await status_msg.edit(content=f"[🧩 Proposal #{proposal_id}] Selecting relevant source and generating a patch…")
+                await status_msg.edit(content=f"[🧩 Proposal {proposal_name}] Selecting relevant source and generating a patch…")
         try:
             patch, generation = await generate_code_patch(request, baseline)
             await asyncio.to_thread(set_code_proposal_patch, requester_id, proposal_id, patch)
@@ -591,26 +601,26 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
                     reviewer_id="generation-failure",
                 )
             await message.reply(
-                f"I recorded proposal `#{proposal_id}`, but patch generation failed: {str(exc)[:1200]}"
+                f"I recorded proposal `{proposal_name}`, but patch generation failed: {str(exc)[:1200]}"
             )
             return
         payload = io.BytesIO(patch.encode("utf-8"))
         if not report["ok"]:
             errors = "; ".join(report.get("errors") or ["Unknown validation error"])
             await message.reply(
-                f"⚠️ I recorded proposal `#{proposal_id}`, but it is **not ready for review** because validation failed.\n"
+                f"⚠️ I recorded proposal `{proposal_name}`, but it is **not ready for review** because validation failed.\n"
                 f"{_code_proposal_summary(proposal)}\n"
                 f"Reason: {errors[:1200]}\n"
                 "You can submit a corrected proposal.",
-                file=discord.File(payload, filename=f"proposal-{proposal_id}-failed.diff"),
+                file=discord.File(payload, filename=f"proposal-{proposal_name}-failed.diff"),
             )
             return
         await message.reply(
-            f"🧩 **Proposal `#{proposal_id}` is ready for review.**\n"
+            f"🧩 **Proposal `{proposal_name}` is ready for review.**\n"
             f"{_code_proposal_summary(proposal)}\n"
             f"Files: {', '.join(report['files'])}\n"
             f"The bot owner can reply naturally with **approve this change** or **reject it**. You can ask **what is its status?**",
-            file=discord.File(payload, filename=f"proposal-{proposal_id}.diff"),
+            file=discord.File(payload, filename=f"proposal-{proposal_name}.diff"),
         )
         return
 
@@ -639,10 +649,11 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
                 reviewer_id=requester_id,
             )
         except ValueError as exc:
-            await message.reply(f"I couldn't approve proposal `#{proposal_id}`: {exc}")
+            await message.reply(f"I couldn't approve that proposal: {exc}")
             return
+        proposal_name = proposal.get("public_id") or str(proposal_id)
         await message.reply(
-            f"✅ Approved proposal `#{proposal_id}`. The separate host supervisor will test and deploy it; I'll DM you the result.\n"
+            f"✅ Approved proposal `{proposal_name}`. The separate host supervisor will test and deploy it; I'll DM you the result.\n"
             f"{_code_proposal_summary(proposal)}"
         )
         return
@@ -656,13 +667,13 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
                 reviewer_id=requester_id,
             )
         except ValueError as exc:
-            await message.reply(f"I couldn't reject proposal `#{proposal_id}`: {exc}")
+            await message.reply(f"I couldn't reject that proposal: {exc}")
             return
-        await message.reply(f"🛑 Rejected proposal `#{proposal_id}`. No code was deployed.")
+        await message.reply(f"🛑 Rejected proposal `{proposal.get('public_id') or proposal_id}`. No code was deployed.")
         return
 
     if intent == "code_rollback":
-        if _proposal_id_from_text(prompt) is None:
+        if proposal_ref is None:
             active = None
             for candidate in review_pool:
                 deployment = await asyncio.to_thread(
@@ -682,8 +693,10 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
         except ValueError as exc:
             await message.reply(f"I couldn't queue that rollback: {exc}")
             return
+        rollback_proposal = next((p for p in review_pool if p["id"] == proposal_id), None)
+        rollback_name = rollback_proposal.get("public_id") if rollback_proposal else str(proposal_id)
         await message.reply(
-            f"↩️ Rollback request `#{request_id}` queued for proposal `#{proposal_id}`. I'll DM you when the previous release is healthy."
+            f"↩️ Rollback queued for proposal `{rollback_name}`. I'll DM you when the previous release is healthy."
         )
         return
 
@@ -693,7 +706,7 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
         else await asyncio.to_thread(get_code_proposal, requester_id, proposal_id)
     )
     if not proposal:
-        await message.reply(f"I couldn't find proposal `#{proposal_id}`.")
+        await message.reply("I couldn't find that proposal.")
         return
     deployment = await asyncio.to_thread(
         get_code_deployment, proposal["owner_id"], proposal_id
