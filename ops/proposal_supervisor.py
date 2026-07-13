@@ -204,6 +204,10 @@ def test_release(release: Path) -> None:
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
             "--memory", "768m", "--cpus", "2", "--pids-limit", "256",
             "-e", "OPENSEARCH_ENABLED=false",
+            # A linked worktree's .git file points back into the baseline
+            # checkout. Mount only that metadata read-only so Git-based policy
+            # tests can resolve and archive the recorded commit.
+            "-v", f"{BASE_DIR / '.git'}:{BASE_DIR / '.git'}:ro",
             "-v", f"{release}:/app", "-w", "/app",
             "--entrypoint", "python", IMAGE_NAME,
             "-m", "unittest", "discover", "-s", "tests",
