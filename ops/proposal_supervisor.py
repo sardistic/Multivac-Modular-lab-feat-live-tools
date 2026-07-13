@@ -349,7 +349,7 @@ _DEPLOYMENT_STEPS = (
     "Networkless test suite passed",
     "Audited Git commit created",
     "Release manifest signed",
-    "Release activated on the Toughbook",
+    "Release activated on the host",
     "Discord health check passed",
     "Canonical Git branch promoted",
     "Deployment active and healthy",
@@ -493,7 +493,7 @@ def deploy(proposal_id: int) -> None:
         signature = sign_release(row, patch_hash, release)
         completed_steps = 6
         update_deployment(proposal_id, "activating", manifest_signature=signature)
-        edit_approval_progress(row, completed_steps, "Activating the release on the Toughbook")
+        edit_approval_progress(row, completed_steps, "Activating the release on the host")
         activate_release(release, proposal_id)
         completed_steps = 7
         edit_approval_progress(row, completed_steps, "Waiting for Discord readiness and command sync")
