@@ -7,6 +7,9 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
       - MULTIVAC_STATE_DIR=/state
       - USAGE_DB_PATH=/state/usage_costs.db
+      - GIT_CONFIG_COUNT=1
+      - GIT_CONFIG_KEY_0=safe.directory
+      - GIT_CONFIG_VALUE_0=/app
     command: ["bash", "-c", "exec python main.py 2>&1 | tee /state/bot.log"]
     tmpfs:
       - /tmp:size=128m,mode=1777
