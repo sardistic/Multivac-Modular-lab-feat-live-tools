@@ -42,6 +42,7 @@ PROTECTED_PATTERNS = (
     "services/git_utils.py",
     "ops/*",
     "tests/*",
+    "dashboard/*",
 )
 
 
