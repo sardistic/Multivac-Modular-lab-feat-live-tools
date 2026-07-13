@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -182,7 +183,7 @@ def create_worktree(row: sqlite3.Row) -> tuple[Path, str]:
     run(["git", "worktree", "add", "--detach", str(release), row["baseline_sha"]], timeout=60)
     patch_path = release / ".proposal.patch"
     patch_path.write_bytes(patch.replace("\r\n", "\n").encode("utf-8"))
-    run(["git", "apply", "--whitespace=error", str(patch_path)], cwd=release)
+    run(["git", "apply", "--recount", "--whitespace=error", str(patch_path)], cwd=release)
     patch_path.unlink()
     return release, patch_hash
 
@@ -222,7 +223,7 @@ def restore_pristine_release(row: sqlite3.Row, release: Path) -> None:
     run(["git", "clean", "-fdx"], cwd=resolved)
     patch_path = resolved / ".proposal.patch"
     patch_path.write_bytes(row["patch"].replace("\r\n", "\n").encode("utf-8"))
-    run(["git", "apply", "--whitespace=error", str(patch_path)], cwd=resolved)
+    run(["git", "apply", "--recount", "--whitespace=error", str(patch_path)], cwd=resolved)
     patch_path.unlink()
 
 
@@ -280,8 +281,14 @@ def notify_owner(owner_id: str, message: str) -> None:
             method="POST",
         )
         urllib.request.urlopen(request, timeout=10).close()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(500).decode("utf-8", errors="replace")
+        print(
+            f"notification_failed: HTTP {exc.code} {exc.reason}: {detail}",
+            file=sys.stderr,
+        )
     except Exception as exc:
-        print(f"notification_failed: {type(exc).__name__}", file=sys.stderr)
+        print(f"notification_failed: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def healthy(timeout: int = HEALTH_TIMEOUT, *, log_since: str = "2m") -> tuple[bool, str]:
