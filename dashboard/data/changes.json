@@ -1,7 +1,24 @@
 {
-  "baseline": "50431ce77905",
-  "generated_at": "2026-07-13T01:04:34.700900+00:00",
+  "baseline": "011c9e77f0b9",
+  "generated_at": "2026-07-13T01:09:44.725949+00:00",
   "proposals": [
+    {
+      "activated_at": "2026-07-13T01:06:41.547544+00:00",
+      "baseline": "50431ce77905",
+      "created_at": "2026-07-13T01:05:08.886750",
+      "deployment_result": "Healthy",
+      "deployment_status": "active",
+      "files": [
+        "readme.md"
+      ],
+      "finished_at": "2026-07-13T01:06:41.547570+00:00",
+      "id": 4,
+      "patch": "00f8c0ec6cce",
+      "reviewed_at": "2026-07-13T01:05:29.572774",
+      "status": "approved",
+      "summary": "change the readme to add a smile face at the bottom",
+      "updated_at": "2026-07-13T01:05:29.572774"
+    },
     {
       "activated_at": "2026-07-13T00:58:23.269780+00:00",
       "baseline": "04aed31f5cd4",
