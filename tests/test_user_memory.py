@@ -148,6 +148,26 @@ class UserMemoryStoreTests(unittest.TestCase):
         )
         self.assertEqual(rejected["status"], "rejected")
 
+    def test_privileged_reviewer_can_approve_another_users_proposal(self):
+        proposal_id = self.store.create_code_proposal("user-2", "Community change", "c" * 40)
+        self.store.set_code_proposal_patch("user-2", proposal_id, "diff --git a/a.py b/a.py")
+        self.store.set_code_proposal_validation(
+            "user-2", proposal_id, {"ok": True, "files": ["a.py"], "errors": []}
+        )
+        approved = self.store.review_any_code_proposal(
+            proposal_id, "approved", reviewer_id="app-owner"
+        )
+        self.assertEqual(approved["owner_id"], "user-2")
+        self.assertEqual(approved["reviewed_by"], "app-owner")
+        self.assertEqual(approved["status"], "approved")
+
+    def test_global_proposal_list_keeps_requester_identity(self):
+        self.store.create_code_proposal("user-a", "First", "a" * 40)
+        newest = self.store.create_code_proposal("user-b", "Second", "b" * 40)
+        rows = self.store.list_all_code_proposals()
+        self.assertEqual(rows[0]["id"], newest)
+        self.assertEqual(rows[0]["owner_id"], "user-b")
+
     def test_transcript_cache_roundtrip(self):
         self.assertIsNone(self.store.get_cached_transcript_summary("vid123"))
         self.store.set_cached_transcript_summary("vid123", "condensed notes")

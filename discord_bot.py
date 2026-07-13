@@ -56,12 +56,16 @@ from services.database_utils import (
     rollback_behavior_change,
     create_code_proposal,
     get_code_proposal,
+    get_any_code_proposal,
     get_code_deployment,
     list_code_proposals,
+    list_all_code_proposals,
     review_code_proposal,
+    review_any_code_proposal,
     set_code_proposal_patch,
     set_code_proposal_validation,
     request_code_rollback,
+    request_any_code_rollback,
 )
 from services.code_changes import MAX_PATCH_BYTES, get_baseline_sha, validate_patch
 from services.code_generator import generate_code_patch
@@ -533,40 +537,59 @@ def _proposal_id_from_text(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=None) -> None:
+async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=None, ref_msg=None) -> None:
     """Conversational front-end for the audited code-change pipeline."""
-    if not await bot.is_owner(message.author):
-        await message.reply("I can discuss my code with anyone, but only my owner can change or deploy it.")
-        return
-
-    owner_id = str(message.author.id)
+    is_app_owner = await bot.is_owner(message.author)
+    requester_id = str(message.author.id)
     proposal_id = _proposal_id_from_text(prompt)
-    proposals = await asyncio.to_thread(list_code_proposals, owner_id, 30)
+    if proposal_id is None and ref_msg is not None:
+        proposal_id = _proposal_id_from_text(getattr(ref_msg, "content", ""))
+    proposals = await asyncio.to_thread(list_code_proposals, requester_id, 30)
+    review_pool = (
+        await asyncio.to_thread(list_all_code_proposals, 50)
+        if is_app_owner else proposals
+    )
 
     def latest_with_status(*statuses):
-        return next((p for p in proposals if p["status"] in statuses), None)
+        return next((p for p in review_pool if p["status"] in statuses), None)
 
     if intent == "code_change":
         request = re.sub(r"^/code_propose\s*", "", prompt or "", flags=re.IGNORECASE).strip()
         if not request:
             await message.reply("Tell me what you want changed in my code.")
             return
+        open_proposal = next(
+            (p for p in proposals if p["status"] in {"draft", "patch_uploaded", "reviewable"}),
+            None,
+        )
+        if open_proposal:
+            await message.reply(
+                f"You already have open proposal `#{open_proposal['id']}`. Wait for review before proposing another change."
+            )
+            return
         baseline = await asyncio.to_thread(get_baseline_sha)
         proposal_id = await asyncio.to_thread(
-            create_code_proposal, owner_id, request, baseline
+            create_code_proposal, requester_id, request, baseline
         )
         if status_msg is not None:
             with contextlib.suppress(Exception):
                 await status_msg.edit(content=f"[🧩 Proposal #{proposal_id}] Selecting relevant source and generating a patch…")
         try:
             patch, generation = await generate_code_patch(request, baseline)
-            await asyncio.to_thread(set_code_proposal_patch, owner_id, proposal_id, patch)
+            await asyncio.to_thread(set_code_proposal_patch, requester_id, proposal_id, patch)
             report = await asyncio.to_thread(validate_patch, baseline, patch)
             report["generation"] = generation
             proposal = await asyncio.to_thread(
-                set_code_proposal_validation, owner_id, proposal_id, report
+                set_code_proposal_validation, requester_id, proposal_id, report
             )
         except (RuntimeError, ValueError) as exc:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(
+                    review_any_code_proposal,
+                    proposal_id,
+                    "rejected",
+                    reviewer_id="generation-failure",
+                )
             await message.reply(
                 f"I recorded proposal `#{proposal_id}`, but patch generation failed: {str(exc)[:1200]}"
             )
@@ -576,7 +599,7 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
             f"🧩 **Proposal `#{proposal_id}` is ready for review.**\n"
             f"{_code_proposal_summary(proposal)}\n"
             f"Files: {', '.join(report['files'])}\n"
-            f"Reply naturally with **approve this change**, **reject it**, or ask **what is its status?**",
+            f"The bot owner can reply naturally with **approve this change** or **reject it**. You can ask **what is its status?**",
             file=discord.File(payload, filename=f"proposal-{proposal_id}.diff"),
         )
         return
@@ -587,20 +610,23 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
         elif intent == "code_reject":
             selected = latest_with_status("draft", "patch_uploaded", "validation_failed", "reviewable")
         else:
-            selected = proposals[0] if proposals else None
+            selected = review_pool[0] if review_pool else None
         proposal_id = selected["id"] if selected else None
     if proposal_id is None:
         await message.reply("I couldn't find one of your code proposals to act on.")
         return
 
+    if intent in {"code_approve", "code_reject", "code_rollback"} and not is_app_owner:
+        await message.reply("Anyone can propose a code change, but only my owner can approve, reject, deploy, or roll one back.")
+        return
+
     if intent == "code_approve":
         try:
             proposal = await asyncio.to_thread(
-                review_code_proposal,
-                owner_id,
+                review_any_code_proposal,
                 proposal_id,
                 "approved",
-                reviewer_id=owner_id,
+                reviewer_id=requester_id,
             )
         except ValueError as exc:
             await message.reply(f"I couldn't approve proposal `#{proposal_id}`: {exc}")
@@ -614,11 +640,10 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
     if intent == "code_reject":
         try:
             proposal = await asyncio.to_thread(
-                review_code_proposal,
-                owner_id,
+                review_any_code_proposal,
                 proposal_id,
                 "rejected",
-                reviewer_id=owner_id,
+                reviewer_id=requester_id,
             )
         except ValueError as exc:
             await message.reply(f"I couldn't reject proposal `#{proposal_id}`: {exc}")
@@ -629,9 +654,9 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
     if intent == "code_rollback":
         if _proposal_id_from_text(prompt) is None:
             active = None
-            for candidate in proposals:
+            for candidate in review_pool:
                 deployment = await asyncio.to_thread(
-                    get_code_deployment, owner_id, candidate["id"]
+                    get_code_deployment, candidate["owner_id"], candidate["id"]
                 )
                 if deployment and deployment["status"] == "active":
                     active = candidate
@@ -642,7 +667,7 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
             return
         try:
             request_id = await asyncio.to_thread(
-                request_code_rollback, owner_id, proposal_id
+                request_any_code_rollback, requester_id, proposal_id
             )
         except ValueError as exc:
             await message.reply(f"I couldn't queue that rollback: {exc}")
@@ -652,11 +677,17 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
         )
         return
 
-    proposal = await asyncio.to_thread(get_code_proposal, owner_id, proposal_id)
+    proposal = (
+        await asyncio.to_thread(get_any_code_proposal, proposal_id)
+        if is_app_owner
+        else await asyncio.to_thread(get_code_proposal, requester_id, proposal_id)
+    )
     if not proposal:
         await message.reply(f"I couldn't find proposal `#{proposal_id}`.")
         return
-    deployment = await asyncio.to_thread(get_code_deployment, owner_id, proposal_id)
+    deployment = await asyncio.to_thread(
+        get_code_deployment, proposal["owner_id"], proposal_id
+    )
     if not deployment:
         await message.reply(
             f"{_code_proposal_summary(proposal)}\nIt has no deployment record yet."
@@ -1184,7 +1215,9 @@ async def on_message(message: discord.Message):
         if intent in {
             "code_change", "code_approve", "code_reject", "code_status", "code_rollback"
         }:
-            await _natural_code_proposal(message, intent, prompt, preflight_status)
+            await _natural_code_proposal(
+                message, intent, prompt, preflight_status, ref_msg=ref_msg
+            )
         else:
             await dispatch_intent(
                 DispatchContext(

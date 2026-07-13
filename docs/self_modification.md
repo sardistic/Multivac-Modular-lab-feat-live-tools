@@ -56,7 +56,10 @@ patch, restart the bot, or deploy anything.
 
 The primary interface is ordinary mention/reply conversation. Requests to
 change the bot's own implementation are classified as `code_change`; questions
-about how the code works remain normal chat. The owner can say things such as:
+about how the code works remain normal chat. Any Discord user may submit and
+generate one open proposal at a time. Only the Discord application owner may
+approve, reject, deploy, or roll back proposals. A proposer may inspect their
+own proposal status. For example:
 
 ```text
 @Multivac change your readme to add a deployment note

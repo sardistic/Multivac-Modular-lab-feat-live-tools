@@ -110,12 +110,26 @@ def review_code_proposal(owner_id: str, proposal_id: int, decision: str, *, revi
     )
 
 
+def review_any_code_proposal(proposal_id: int, decision: str, *, reviewer_id: str) -> dict:
+    return store.review_any_code_proposal(
+        proposal_id, decision, reviewer_id=reviewer_id
+    )
+
+
 def get_code_proposal(owner_id: str, proposal_id: int) -> dict | None:
     return store.get_code_proposal(owner_id, proposal_id)
 
 
+def get_any_code_proposal(proposal_id: int) -> dict | None:
+    return store.get_any_code_proposal(proposal_id)
+
+
 def list_code_proposals(owner_id: str, limit: int = 10) -> list[dict]:
     return store.list_code_proposals(owner_id, limit)
+
+
+def list_all_code_proposals(limit: int = 20) -> list[dict]:
+    return store.list_all_code_proposals(limit)
 
 
 def get_code_deployment(owner_id: str, proposal_id: int) -> dict | None:
@@ -124,6 +138,10 @@ def get_code_deployment(owner_id: str, proposal_id: int) -> dict | None:
 
 def request_code_rollback(owner_id: str, proposal_id: int) -> int:
     return store.request_code_rollback(owner_id, proposal_id)
+
+
+def request_any_code_rollback(reviewer_id: str, proposal_id: int) -> int:
+    return store.request_any_code_rollback(reviewer_id, proposal_id)
 
 
 def add_user_fact(user_id: str, fact: str, category: str | None = None) -> int:
