@@ -33,6 +33,7 @@ HEALTH_TIMEOUT = int(os.environ.get("MULTIVAC_HEALTH_TIMEOUT", "75"))
 SIGNING_KEY_PATH = Path(os.environ.get("MULTIVAC_SIGNING_KEY", "/etc/multivac-supervisor.key"))
 RELEASE_RETENTION = int(os.environ.get("MULTIVAC_RELEASE_RETENTION", "5"))
 CANONICAL_BRANCH = os.environ.get("MULTIVAC_CANONICAL_BRANCH", "main")
+CHANGE_DASHBOARD_URL = "https://sardistic.github.io/Multivac-Refactored/"
 
 
 def proposal_name(row, fallback: int | str) -> str:
@@ -389,6 +390,7 @@ def edit_approval_progress(
             lines.extend(("", f"Current: **{current}**"))
         if failure:
             lines.extend(("", "**Deployment failed safely; the previous release was restored.**", failure[:700]))
+        lines.extend(("", f"Track public status: {CHANGE_DASHBOARD_URL}"))
         headers = {
             "Authorization": f"Bot {token}",
             "Content-Type": "application/json",
@@ -507,7 +509,10 @@ def deploy(proposal_id: int) -> None:
         )
         edit_approval_progress(row, completed_steps)
         public_name = proposal_name(row, proposal_id)
-        notify_owner(row["owner_id"], f"✅ Multivac code proposal {public_name} is active and healthy.")
+        notify_owner(
+            row["owner_id"],
+            f"✅ Multivac code proposal {public_name} is active and healthy.\n{CHANGE_DASHBOARD_URL}",
+        )
         prune_releases()
     except Exception as exc:
         detail = str(exc)[:3000]
@@ -519,7 +524,8 @@ def deploy(proposal_id: int) -> None:
             edit_approval_progress(row, completed_steps, failure=detail)
             notify_owner(
                 row["owner_id"],
-                f"❌ Multivac proposal {proposal_name(row, proposal_id)} failed activation and was rolled back.\n{detail[:1200]}",
+                f"❌ Multivac proposal {proposal_name(row, proposal_id)} failed activation and was rolled back.\n"
+                f"{detail[:1200]}\n{CHANGE_DASHBOARD_URL}",
             )
         raise
 

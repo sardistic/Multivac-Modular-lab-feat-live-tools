@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
+CHANGE_DASHBOARD_URL = "https://sardistic.github.io/Multivac-Refactored/"
+
 # IMPORTANT: importing config mirrors GCE metadata → os.environ for all keys
 # Importing GOOGLE_* here ensures that side-effect runs even if this file
 # doesn't directly use the variables. (We also log simple configured yes/no checks.)
@@ -612,7 +614,7 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
                 f"⚠️ I recorded proposal `{proposal_name}`, but it is **not ready for review** because validation failed.\n"
                 f"{_code_proposal_summary(proposal)}\n"
                 f"Reason: {errors[:1200]}\n"
-                "You can submit a corrected proposal.",
+                f"You can submit a corrected proposal. Track public status: {CHANGE_DASHBOARD_URL}",
                 file=discord.File(payload, filename=f"proposal-{proposal_name}-failed.diff"),
             )
             return
@@ -620,7 +622,8 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
             f"🧩 **Proposal `{proposal_name}` is ready for review.**\n"
             f"{_code_proposal_summary(proposal)}\n"
             f"Files: {', '.join(report['files'])}\n"
-            f"The bot owner can reply naturally with **approve this change** or **reject it**. You can ask **what is its status?**",
+            f"The bot owner can reply naturally with **approve this change** or **reject it**. You can ask **what is its status?**\n"
+            f"Track public status: {CHANGE_DASHBOARD_URL}",
             file=discord.File(payload, filename=f"proposal-{proposal_name}.diff"),
         )
         return
@@ -658,7 +661,7 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
             f"{_code_proposal_summary(proposal)}\n\n"
             "**Deployment progress**\n"
             "✅ Owner approval recorded\n"
-            "⏳ Waiting for the host supervisor"
+            f"⏳ Waiting for the host supervisor\n\nTrack public status: {CHANGE_DASHBOARD_URL}"
         )
         await asyncio.to_thread(
             set_code_proposal_approval_message,
@@ -728,7 +731,8 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
         return
     await message.reply(
         f"{_code_proposal_summary(proposal)}\n"
-        f"Deployment: **{deployment['status']}** — {(deployment.get('detail') or 'in progress')[:900]}"
+        f"Deployment: **{deployment['status']}** — {(deployment.get('detail') or 'in progress')[:900]}\n"
+        f"Track public status: {CHANGE_DASHBOARD_URL}"
     )
 
 
@@ -904,7 +908,7 @@ async def code_approve(ctx, proposal_id: int):
         f"{_code_proposal_summary(proposal)}\n\n"
         "**Deployment progress**\n"
         "✅ Owner approval recorded\n"
-        "⏳ Waiting for the host supervisor"
+        f"⏳ Waiting for the host supervisor\n\nTrack public status: {CHANGE_DASHBOARD_URL}"
     )
     await asyncio.to_thread(
         set_code_proposal_approval_message,
