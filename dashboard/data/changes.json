@@ -1,7 +1,24 @@
 {
-  "baseline": "2e2b128043e1",
-  "generated_at": "2026-07-13T01:52:34.682229+00:00",
+  "baseline": "cb5326a9ee34",
+  "generated_at": "2026-07-13T01:56:04.087901+00:00",
   "proposals": [
+    {
+      "activated_at": "2026-07-13T01:56:03.453277+00:00",
+      "baseline": "2e2b128043e1",
+      "created_at": "2026-07-13T01:53:21.933772",
+      "deployment_result": "Healthy",
+      "deployment_status": "active",
+      "files": [
+        "bot/chat_context.py"
+      ],
+      "finished_at": "2026-07-13T01:56:03.453291+00:00",
+      "id": "saffron-seven",
+      "patch": "443464bc5dbe",
+      "reviewed_at": "2026-07-13T01:54:38.074856",
+      "status": "approved",
+      "summary": "edit the general system prompt to speak like a culture series mind",
+      "updated_at": "2026-07-13T01:54:38.074856"
+    },
     {
       "activated_at": "2026-07-13T01:29:03.722933+00:00",
       "baseline": "085bd676e3c0",
