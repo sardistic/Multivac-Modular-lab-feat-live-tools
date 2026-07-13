@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -32,14 +33,19 @@ def _request_terms(request: str) -> set[str]:
     }
 
 
-def select_code_context(request: str, baseline: str) -> list[tuple[str, str]]:
+def _candidate_paths(baseline: str) -> list[str]:
     tracked = _git_at(baseline, "ls-tree", "-r", "--name-only", baseline).splitlines()
-    candidates = [
+    return [
         path for path in tracked
         if PurePosixPath(path).suffix in {".py", ".md", ".toml", ".yml", ".yaml"}
         and not is_protected_path(path)
         and not path.startswith(("archive/", "dev/"))
     ]
+
+
+def select_code_context(request: str, baseline: str) -> list[tuple[str, str]]:
+    """Lexical fallback used only when model-driven repository planning fails."""
+    candidates = _candidate_paths(baseline)
     terms = _request_terms(request)
     ranked: list[tuple[int, str, str]] = []
     for path in candidates:
@@ -67,6 +73,87 @@ def select_code_context(request: str, baseline: str) -> list[tuple[str, str]]:
     return selected
 
 
+def _architecture_index(baseline: str, candidates: list[str]) -> str:
+    """Build a compact, request-independent map of ownership and call-path clues."""
+    blocks = []
+    used = 0
+    structural = re.compile(
+        r"^\s*(?:class |def |async def |from |import )|"
+        r"system|prompt|persona|personality|context|message|handler|dispatch|provider",
+        re.IGNORECASE,
+    )
+    for path in candidates:
+        try:
+            content = _git_at(baseline, "show", f"{baseline}:{path}", max_chars=25_000)
+        except RuntimeError:
+            continue
+        clues = [
+            f"{number}: {line.strip()}"
+            for number, line in enumerate(content.splitlines(), 1)
+            if structural.search(line)
+        ][:35]
+        block = f"[{path}]\n" + "\n".join(clues)
+        if used + len(block) > 45_000:
+            break
+        blocks.append(block)
+        used += len(block)
+    return "\n\n".join(blocks)
+
+
+async def plan_code_context(request: str, baseline: str) -> tuple[list[tuple[str, str]], dict]:
+    candidates = _candidate_paths(baseline)
+    repo_map = "\n".join(candidates)
+    architecture = _architecture_index(baseline, candidates)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are planning repository scope for a code change. Reason about architecture, "
+                "ownership, call paths, and the user's intended breadth; do not select files merely "
+                "because they repeat request words. Distinguish a global behavior owner from a local "
+                "handler that happens to contain similar prose. Return only JSON with keys files "
+                "(an ordered array of 1-14 exact paths), rationale, and scope_check. Include the source "
+                "owners and their important consumers when the request is cross-cutting."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"REQUEST: {request}\nBASELINE: {baseline}\n\n"
+                f"ALLOWED REPOSITORY MAP:\n{repo_map}\n\n"
+                f"ARCHITECTURE INDEX:\n{architecture}"
+            ),
+        },
+    ]
+    response = await generate_openai_messages_response_with_tools(
+        messages, tools=[], model=CODE_MODEL, max_tokens=2500, temperature=0.1
+    )
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip(), flags=re.IGNORECASE)
+    plan = json.loads(cleaned)
+    requested_paths = plan.get("files")
+    if not isinstance(requested_paths, list):
+        raise ValueError("Repository planner returned no file list")
+    allowed = set(candidates)
+    selected = []
+    used = 0
+    for raw_path in requested_paths[:MAX_FILES]:
+        path = str(raw_path)
+        if path not in allowed or any(existing == path for existing, _ in selected):
+            continue
+        content = _git_at(baseline, "show", f"{baseline}:{path}", max_chars=25_000)
+        if selected and used + len(content) + len(path) > MAX_CONTEXT_CHARS:
+            continue
+        selected.append((path, content))
+        used += len(content) + len(path)
+    if not selected:
+        raise ValueError("Repository planner selected no policy-allowed files")
+    return selected, {
+        "selection": "model_planner",
+        "rationale": str(plan.get("rationale") or "")[:1000],
+        "scope_check": str(plan.get("scope_check") or "")[:1000],
+    }
+
+
 def extract_unified_diff(text: str) -> str:
     text = (text or "").strip()
     fenced = re.search(r"```(?:diff|patch)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
@@ -85,7 +172,11 @@ def extract_unified_diff(text: str) -> str:
 
 
 async def generate_code_patch(request: str, baseline: str) -> tuple[str, dict]:
-    context = select_code_context(request, baseline)
+    try:
+        context, planning = await plan_code_context(request, baseline)
+    except (RuntimeError, ValueError, json.JSONDecodeError):
+        context = select_code_context(request, baseline)
+        planning = {"selection": "lexical_fallback"}
     if not context:
         raise RuntimeError("No policy-allowed source context was found")
     source = "\n\n".join(
@@ -106,7 +197,8 @@ async def generate_code_patch(request: str, baseline: str) -> tuple[str, dict]:
         {
             "role": "user",
             "content": (
-                f"BASELINE SHA: {baseline}\nREQUEST: {request}\n\n"
+                f"BASELINE SHA: {baseline}\nREQUEST: {request}\n"
+                f"REPOSITORY SCOPE PLAN: {planning}\n\n"
                 f"AVAILABLE SOURCE FILES:\n{source}"
             ),
         },
@@ -125,4 +217,5 @@ async def generate_code_patch(request: str, baseline: str) -> tuple[str, dict]:
         "model": CODE_MODEL,
         "context_files": [path for path, _ in context],
         "context_chars": sum(len(content) for _, content in context),
+        **planning,
     }
