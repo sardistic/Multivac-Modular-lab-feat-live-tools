@@ -6,9 +6,13 @@ Multivac is a modular Discord bot with multiple chat providers, image and video 
 
 - Discord mention and reply based chat
 - OpenAI, Gemini, and Claude chat routing
-- Image generation, image editing, and image description
-- Sora video generation and remix flow
-- Weather, stock, URL summarization, search, and repo inspection tools
+- Gemini text, image, multimodal chat, code execution, Google Search, and reference-image flows
+- Image generation, image editing, image description, and multimodal file analysis
+- Sora and Veo video generation, including image-to-video references and Sora remix flow
+- Reply-aware video prompts that can turn a replied-to message into the generation brief
+- Weather, stock, URL summarization, web search, YouTube transcript, and repo inspection tools
+- User facts, saved behavioral instructions, user-awareness profiles, and time-passage context
+- Owner diagnostic helpers for redacted bot log reads and tool listing
 - Optional Elasticsearch/OpenSearch backed memory and timeline recall
 
 ## Current Layout
@@ -38,9 +42,49 @@ Multivac is a modular Discord bot with multiple chat providers, image and video 
 - `assets/`
   Static project assets.
 
-## Runtime Behavior
+## Runtime Behavior and Tool Functions
 
 The bot is designed to boot with partial configuration. Missing keys disable only the related feature.
+When tool-calling is available, current callable functions include:
+
+- `web_search`
+  Search the web through the configured search backend.
+- `get_weather`
+  Resolve current or ranged weather requests.
+- `get_stock_quote`
+  Fetch a real-time stock quote.
+- `summarize_url`
+  Fetch a URL, extract the main text, and return a condensed summary payload.
+- `get_youtube_transcript`
+  Fetch a transcript for supported YouTube URLs.
+- `search_memory`
+  Search scoped OpenSearch-backed conversation memory, with temporal recall support.
+- `remember_fact` / `forget_fact`
+  Store or remove user-scoped remembered facts.
+- `update_behavioral_instruction`
+  Update the user's active behavior instruction projection.
+- `generate_sora_video`
+  Queue a Sora video job from a prompt, optionally using available image inputs.
+- `read_own_logs`
+  Owner diagnostic helper that reads recent bot logs with credential-like values redacted.
+- `list_available_tools`
+  Return the active tool names and descriptions.
+- `git_recent_commits`
+  List recent repository commits.
+- `git_commit_diff`
+  Read a commit diff by SHA.
+- `git_read_file`
+  Read a repository file.
+- `git_search_code`
+  Search repository code.
+- `git_search_history`
+  Search repository history.
+- `git_file_list`
+  List repository files.
+- `git_find_api_calls`
+  Find provider API call sites.
+- `git_repo_info`
+  Return repository metadata.
 
 ## Versioned Behavior Changes
 
@@ -82,6 +126,8 @@ Examples:
 - no `ANTHROPIC_API_KEY`: Claude path is unavailable
 - no `STABILITY_KEY`: Stability image backend is unavailable
 - no `GOOGLE_API_KEY` or `GOOGLE_CSE_ID`: Google CSE search is unavailable
+- no `OPENWEATHER_API_KEY`: weather lookup and weather-widget flows are unavailable
+- no `GEMINI_API_KEY`: Veo video paths are unavailable
 - no OpenSearch server: memory auto-disables and the bot continues running
 
 To disable memory explicitly:
