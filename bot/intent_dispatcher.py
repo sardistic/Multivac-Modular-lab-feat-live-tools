@@ -29,6 +29,18 @@ _IMAGINE_DESCRIBE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CODE_CONTROL_RE = {
+    "code_approve": re.compile(r"\b(?:approve|accept|ship|deploy)\b.*\b(?:proposal|patch|code change|change)\b", re.I),
+    "code_reject": re.compile(r"\b(?:reject|cancel|discard|drop)\b.*\b(?:proposal|patch|code change|change)\b", re.I),
+    "code_status": re.compile(r"\b(?:status|progress|deployed|deployment|what happened)\b.*\b(?:proposal|patch|code change|change)\b", re.I),
+    "code_rollback": re.compile(r"\b(?:rollback|roll back|undo|revert)\b.*\b(?:proposal|patch|code change|change|deployment)\b", re.I),
+}
+_CODE_CHANGE_RE = re.compile(
+    r"(?:^/code_propose\b|\b(?:change|modify|edit|rewrite|refactor|add|remove|fix)\b.{0,80}"
+    r"\b(?:your|the bot(?:'s)?)\s+(?:code|source|implementation|structure|routing|readme|command|response))",
+    re.I,
+)
+
 
 def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) -> Optional[str]:
     """Keywords decide the PROVIDER, the LLM classifier decides the INTENT.
@@ -40,6 +52,12 @@ def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) 
     (wants_gemini)."""
     lowered_raw = raw_prompt.lower().strip()
     lowered_prompt = prompt.lower().strip()
+
+    for intent, pattern in _CODE_CONTROL_RE.items():
+        if pattern.search(prompt or raw_prompt):
+            return intent
+    if _CODE_CHANGE_RE.search(prompt or raw_prompt):
+        return "code_change"
 
     if lowered_prompt.startswith("claude") or lowered_raw.startswith("claude"):
         return "claude_chat"

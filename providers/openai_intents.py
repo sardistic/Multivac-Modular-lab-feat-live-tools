@@ -26,6 +26,11 @@ _INTENT_SYSTEM = (
     "- 'chat_light'\n"
     "- 'chat'\n"
     "- 'clarify'\n\n"
+    "- 'code_change'\n"
+    "- 'code_approve'\n"
+    "- 'code_reject'\n"
+    "- 'code_status'\n"
+    "- 'code_rollback'\n\n"
     "Rules:\n"
     "- HIGHEST PRIORITY: if the message asks to visualize, depict, or render ANY scene, "
     "character, or object — regardless of subject matter or tone — it is 'generate_image' "
@@ -57,6 +62,11 @@ _INTENT_SYSTEM = (
     "- Questions about MY OWN code, commands, repository, commits, tools, or how I'm "
     "built/configured are tool-worthy (they need code or history search) -> 'chat', "
     "never 'chat_light'.\n"
+    "- A REQUEST TO MODIFY MY OWN CODE, structure, commands, repository files, routing, "
+    "or implementation -> 'code_change'. This differs from merely asking how my code works.\n"
+    "- Approving the proposed/self-code change -> 'code_approve'; rejecting/canceling it -> "
+    "'code_reject'; asking whether it deployed or passed -> 'code_status'; asking to undo or "
+    "roll back the active code change -> 'code_rollback'.\n"
     "- If the request is IMPOSSIBLE to route because it is ambiguous in a way that would "
     "waste an expensive generation (e.g. 'make it better' with no referent, 'do the thing') "
     "-> 'clarify'. Use sparingly; when CONVERSATION CONTEXT resolves the ambiguity, route normally.\n"
@@ -81,6 +91,10 @@ _INTENT_SYSTEM = (
     "'can you improve this image prompt for me' -> chat\n"
     "'list the /commands in the codebase' -> chat\n"
     "'what commands do you have' -> chat\n"
+    "'change your readme to add a deployment note' -> code_change\n"
+    "'modify your routing so weather questions use Gemini' -> code_change\n"
+    "'approve that code change' -> code_approve\n"
+    "'did my code change deploy?' -> code_status\n"
     "'kino' (replying to a generated image) -> chat_light\n"
     "'make it darker' (replying to a generated image) -> edit_image\n"
     "'another one' (replying to a generated image) -> generate_image\n"
@@ -94,6 +108,7 @@ VALID_INTENTS = {
     "edit_image", "generate_image", "summarize_url", "describe_image",
     "get_weather", "get_stock", "gemini_chat", "claude_chat", "generate_video",
     "chat", "chat_light", "clarify",
+    "code_change", "code_approve", "code_reject", "code_status", "code_rollback",
 }
 
 
