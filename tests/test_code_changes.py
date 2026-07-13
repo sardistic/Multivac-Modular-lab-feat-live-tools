@@ -57,6 +57,17 @@ literal 0
         self.assertTrue(report["ok"], report["errors"])
         self.assertEqual(report["baseline_sha"], get_baseline_sha())
 
+    def test_validation_recounts_incorrect_llm_hunk_totals(self):
+        patch = """diff --git a/docs/validator-recount.txt b/docs/validator-recount.txt
+new file mode 100644
+--- /dev/null
++++ b/docs/validator-recount.txt
+@@ -0,0 +1,9 @@
++Git should recount this one-line hunk.
+"""
+        report = validate_patch(get_baseline_sha(), patch)
+        self.assertTrue(report["ok"], report["errors"])
+
 
 if __name__ == "__main__":
     unittest.main()

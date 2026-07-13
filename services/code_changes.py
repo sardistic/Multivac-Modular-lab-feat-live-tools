@@ -178,7 +178,10 @@ def validate_patch(baseline_sha: str, patch: str) -> dict[str, Any]:
             bundle.extractall(snapshot, filter="data")
 
         applied = subprocess.run(
-            ["git", "apply", "--whitespace=error", str(patch_path)],
+            # LLMs occasionally miscount the old/new line totals in an otherwise
+            # valid hunk header. Git can safely recompute those totals while still
+            # rejecting bad context, malformed patches, and whitespace errors.
+            ["git", "apply", "--recount", "--whitespace=error", str(patch_path)],
             cwd=snapshot,
             capture_output=True,
             text=True,

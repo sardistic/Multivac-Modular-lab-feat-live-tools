@@ -595,6 +595,16 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
             )
             return
         payload = io.BytesIO(patch.encode("utf-8"))
+        if not report["ok"]:
+            errors = "; ".join(report.get("errors") or ["Unknown validation error"])
+            await message.reply(
+                f"⚠️ I recorded proposal `#{proposal_id}`, but it is **not ready for review** because validation failed.\n"
+                f"{_code_proposal_summary(proposal)}\n"
+                f"Reason: {errors[:1200]}\n"
+                "You can submit a corrected proposal.",
+                file=discord.File(payload, filename=f"proposal-{proposal_id}-failed.diff"),
+            )
+            return
         await message.reply(
             f"🧩 **Proposal `#{proposal_id}` is ready for review.**\n"
             f"{_code_proposal_summary(proposal)}\n"
@@ -767,6 +777,14 @@ async def code_generate(ctx, proposal_id: int):
         return
     payload = io.BytesIO(patch.encode("utf-8"))
     files = ", ".join(report["files"])
+    if not report["ok"]:
+        errors = "; ".join(report.get("errors") or ["Unknown validation error"])
+        await ctx.reply(
+            f"⚠️ Generated with `{generation['model']}`, but validation failed.\n"
+            f"{_code_proposal_summary(proposal)}\nReason: {errors[:1200]}",
+            file=discord.File(payload, filename=f"proposal-{proposal_id}-failed.diff"),
+        )
+        return
     await ctx.reply(
         f"🤖 Generated with `{generation['model']}` and statically validated.\n"
         f"{_code_proposal_summary(proposal)}\nFiles: {files}\n"
