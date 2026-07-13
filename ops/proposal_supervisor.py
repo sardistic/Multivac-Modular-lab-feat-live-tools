@@ -32,6 +32,7 @@ IMAGE_NAME = os.environ.get("MULTIVAC_TEST_IMAGE", "multivac-multivac")
 HEALTH_TIMEOUT = int(os.environ.get("MULTIVAC_HEALTH_TIMEOUT", "75"))
 SIGNING_KEY_PATH = Path(os.environ.get("MULTIVAC_SIGNING_KEY", "/etc/multivac-supervisor.key"))
 RELEASE_RETENTION = int(os.environ.get("MULTIVAC_RELEASE_RETENTION", "5"))
+CANONICAL_BRANCH = os.environ.get("MULTIVAC_CANONICAL_BRANCH", "main")
 
 
 def now_iso() -> str:
@@ -186,6 +187,40 @@ def create_worktree(row: sqlite3.Row) -> tuple[Path, str]:
     run(["git", "apply", "--recount", "--whitespace=error", str(patch_path)], cwd=release)
     patch_path.unlink()
     return release, patch_hash
+
+
+def require_current_baseline(row: sqlite3.Row) -> None:
+    current = run(["git", "rev-parse", "HEAD"], cwd=BASE_DIR).stdout.strip().lower()
+    if current != row["baseline_sha"].lower():
+        raise RuntimeError(
+            f"Proposal baseline {row['baseline_sha'][:12]} is stale; current baseline is {current[:12]}. "
+            "Generate a new proposal against the current code."
+        )
+
+
+def commit_release(row: sqlite3.Row, release: Path) -> str:
+    run(["git", "add", "--all"], cwd=release)
+    staged = run(["git", "diff", "--cached", "--quiet"], cwd=release, check=False)
+    if staged.returncode == 0:
+        raise RuntimeError("Approved proposal produced no changes to commit")
+    run(
+        [
+            "git", "-c", "user.name=Multivac Release Supervisor",
+            "-c", "user.email=multivac@localhost", "commit",
+            "-m", f"Apply approved proposal #{row['id']}",
+        ],
+        cwd=release,
+    )
+    return run(["git", "rev-parse", "HEAD"], cwd=release).stdout.strip()
+
+
+def promote_release(commit_sha: str) -> None:
+    run(
+        ["git", "push", "origin", f"{commit_sha}:refs/heads/{CANONICAL_BRANCH}"],
+        cwd=BASE_DIR,
+        timeout=90,
+    )
+    run(["git", "merge", "--ff-only", commit_sha], cwd=BASE_DIR, timeout=60)
 
 
 def validate_again(row: sqlite3.Row) -> None:
@@ -363,6 +398,7 @@ def deploy(proposal_id: int) -> None:
     previous = Path(previous_state["active_release"])
     release = None
     try:
+        require_current_baseline(row)
         validate_again(row)
         release, patch_hash = create_worktree(row)
         update_deployment(
@@ -370,12 +406,14 @@ def deploy(proposal_id: int) -> None:
         )
         test_release(release)
         restore_pristine_release(row, release)
+        release_commit = commit_release(row, release)
         signature = sign_release(row, patch_hash, release)
         update_deployment(proposal_id, "activating", manifest_signature=signature)
         activate_release(release, proposal_id)
         ok, detail = healthy()
         if not ok:
             raise RuntimeError(f"Health check failed: {detail}")
+        promote_release(release_commit)
         update_deployment(
             proposal_id, "active", detail=detail, activated_at=now_iso(), finished_at=now_iso()
         )

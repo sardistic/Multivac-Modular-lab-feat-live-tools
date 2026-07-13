@@ -74,12 +74,15 @@ class ProposalSupervisorStateTests(unittest.TestCase):
         }
         with (
             mock.patch.object(self.supervisor, "proposal", return_value=row),
+            mock.patch.object(self.supervisor, "require_current_baseline"),
             mock.patch.object(self.supervisor, "validate_again"),
             mock.patch.object(
                 self.supervisor, "create_worktree", return_value=(release, "hash")
             ),
             mock.patch.object(self.supervisor, "test_release"),
             mock.patch.object(self.supervisor, "restore_pristine_release"),
+            mock.patch.object(self.supervisor, "commit_release", return_value="b" * 40),
+            mock.patch.object(self.supervisor, "promote_release"),
             mock.patch.object(self.supervisor, "sign_release", return_value="signature"),
             mock.patch.object(self.supervisor, "activate_release") as activate,
             mock.patch.object(self.supervisor, "notify_owner"),
