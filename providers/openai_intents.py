@@ -118,7 +118,22 @@ def _keyword_fallback_intent(text: str) -> str:
     is an explicit 'gemini ...' prefix — that request plainly wants Gemini, so
     send it to gemini_chat rather than to 'chat', which would just hit the same
     dead OpenAI backend. Everything else defaults to 'chat'."""
-    if (text or "").strip().lower().startswith("gemini"):
+    lowered = (text or "").strip().lower()
+    # Operation beats provider. This fallback is intentionally narrow: it
+    # recognizes explicit creation language but does not mistake questions or
+    # summarization requests about an existing video for generation requests.
+    video_request = re.search(
+        r"(?:\b(?:generate|create|make|render)\s+(?:me\s+)?(?:an?\s+)?(?:\w+[ -]+){0,3}"
+        r"(?:video|clip|movie|animation)\b|"
+        r"\b(?:make|turn|convert)\s+(?:this|that|it|the\s+(?:image|photo|picture))\s+"
+        r"(?:into|to|as)\s+(?:an?\s+)?(?:video|clip|movie|animation)\b|"
+        r"\banimate\s+(?:this|that|it|the\s+(?:image|photo|picture))\b|"
+        r"\b(?:image|photo|picture)\s*[- ]?to[- ]?video\b)",
+        lowered,
+    )
+    if video_request:
+        return "generate_video"
+    if lowered.startswith("gemini"):
         return "gemini_chat"
     return "chat"
 

@@ -41,6 +41,21 @@ _CODE_CHANGE_RE = re.compile(
     re.I,
 )
 
+# Keep explicit video-generation requests working even when the LLM intent
+# classifier is unavailable. Provider names are deliberately irrelevant here:
+# "gemini make this into a video" describes an operation first and a backend
+# second. This only matches creation language, so requests such as "summarize
+# this video" still fall through to the contextual classifier.
+_VIDEO_GENERATION_RE = re.compile(
+    r"(?:\b(?:generate|create|make|render)\s+(?:me\s+)?(?:an?\s+)?(?:\w+[ -]+){0,3}"
+    r"(?:video|clip|movie|animation)\b|"
+    r"\b(?:make|turn|convert)\s+(?:this|that|it|the\s+(?:image|photo|picture))\s+"
+    r"(?:into|to|as)\s+(?:an?\s+)?(?:video|clip|movie|animation)\b|"
+    r"\banimate\s+(?:this|that|it|the\s+(?:image|photo|picture))\b|"
+    r"\b(?:image|photo|picture)\s*[- ]?to[- ]?video\b)",
+    re.I,
+)
+
 
 def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) -> Optional[str]:
     """Keywords decide the PROVIDER, the LLM classifier decides the INTENT.
@@ -58,6 +73,9 @@ def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) 
             return intent
     if _CODE_CHANGE_RE.search(prompt or raw_prompt):
         return "code_change"
+
+    if _VIDEO_GENERATION_RE.search(prompt or raw_prompt):
+        return "generate_video"
 
     if lowered_prompt.startswith("claude") or lowered_raw.startswith("claude"):
         return "claude_chat"

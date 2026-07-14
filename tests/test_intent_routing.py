@@ -53,15 +53,31 @@ class KeywordRoutingTests(unittest.TestCase):
             "generate_image",
         )
 
-    def test_everything_else_defers_to_classifier(self):
+    def test_explicit_video_generation_is_deterministic(self):
+        cases = [
+            ("gemini make this into a video, he laughs smugly", True),
+            ("generate a video of a cat", False),
+            ("create me a short cinematic clip", False),
+            ("animate this", True),
+            ("turn the image into an animation", True),
+            ("image-to-video: rain starts falling", True),
+        ]
+        for prompt, has_attachments in cases:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(
+                    resolve_keyword_intent(prompt, prompt, has_attachments),
+                    "generate_video",
+                )
+
+    def test_non_generation_requests_still_defer_to_classifier(self):
         cases = [
             ("gemini what is entropy", False),
             ("gemini generate an image of a liminal rose", False),
-            ("gemini make this a video", True),
             ("gemini edit this image", True),
             ("generate imagine of liminal rose", False),
             ("make me a picture of a dog", False),
-            ("generate a video of a cat", False),
+            ("summarize this video", True),
+            ("what is happening in this video?", True),
             ("what's the weather", False),
             ("imagines are weird", False),  # not the command word
             ("", False),
@@ -130,6 +146,16 @@ class ClassifierOutageFallbackTests(unittest.TestCase):
 
         self.assertEqual(_keyword_fallback_intent("gemini tell me a joke"), "gemini_chat")
         self.assertEqual(_keyword_fallback_intent("  GEMINI what's up"), "gemini_chat")
+
+    def test_keyword_fallback_prioritizes_video_operation(self):
+        from providers.openai_intents import _keyword_fallback_intent
+
+        self.assertEqual(
+            _keyword_fallback_intent('gemini make this into a video, he says "just watch the youtube"'),
+            "generate_video",
+        )
+        self.assertEqual(_keyword_fallback_intent("animate this"), "generate_video")
+        self.assertEqual(_keyword_fallback_intent("summarize this video"), "chat")
 
     def test_keyword_fallback_defaults_to_chat(self):
         from providers.openai_intents import _keyword_fallback_intent
