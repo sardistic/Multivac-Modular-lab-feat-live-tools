@@ -8,6 +8,11 @@ logger = logging.getLogger("discord_bot")
 
 CLAUDE_MODEL = ANTHROPIC_MODEL
 
+
+def _supports_temperature(model: str) -> bool:
+    """Fable/Mythos 5 use always-on adaptive thinking and reject temperature."""
+    return not model.startswith(("claude-fable-5", "claude-mythos-5"))
+
 async def generate_claude_response(
     messages: List[Dict[str, Any]], 
     model: str | None = None,
@@ -89,8 +94,9 @@ async def generate_claude_response(
             "model": selected_model,
             "max_tokens": max_tokens,
             "messages": sanitized_messages,
-            "temperature": temperature,
         }
+        if _supports_temperature(selected_model):
+            kwargs["temperature"] = temperature
         
         if system_prompt:
             kwargs["system"] = system_prompt
