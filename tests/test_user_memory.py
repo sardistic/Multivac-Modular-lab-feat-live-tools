@@ -262,6 +262,8 @@ class UsageCostsTests(unittest.TestCase):
     def test_estimate_cost_known_and_unknown_models(self):
         usage = {"prompt_tokens": 1_000_000, "completion_tokens": 0}
         self.assertAlmostEqual(usage_costs.estimate_cost("gpt-5.5", usage), 1.25)
+        self.assertAlmostEqual(usage_costs.estimate_cost("gpt-5.6-terra", usage), 2.50)
+        self.assertAlmostEqual(usage_costs.estimate_cost("gpt-5.6-sol", usage), 5.00)
         self.assertEqual(usage_costs.estimate_cost("mystery-model", usage), 0.0)
 
     def test_gpt_image_output_priced_at_32_per_million(self):

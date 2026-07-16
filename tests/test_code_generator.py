@@ -1,9 +1,14 @@
 import unittest
 
-from services.code_generator import extract_unified_diff
+from providers.openai_client import OPENAI_CHAT_MODEL
+from services.code_generator import CODE_MODEL, extract_unified_diff
 
 
 class CodeGeneratorOutputTests(unittest.TestCase):
+    def test_code_generation_uses_gpt_56_sol(self):
+        self.assertEqual(OPENAI_CHAT_MODEL, "gpt-5.6-terra")
+        self.assertEqual(CODE_MODEL, "gpt-5.6-sol")
+
     def test_extracts_fenced_unified_diff(self):
         text = """Here is the patch:
 ```diff
