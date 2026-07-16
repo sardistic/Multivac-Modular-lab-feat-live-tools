@@ -94,6 +94,8 @@ class KeywordRoutingTests(unittest.TestCase):
         cases = [
             "/code_propose Add a sentence to your readme",
             "change your code so responses are more compact",
+            "claude edit the codebase so responses are more compact",
+            "fable refactor the repository to simplify routing",
             "modify the bot's routing to recognize this intent",
             "add a command to your implementation for diagnostics",
         ]
