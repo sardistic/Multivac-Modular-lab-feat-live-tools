@@ -146,12 +146,34 @@ def get_duration_estimate(intent: str) -> int:
         "edit_image": 40,
         "summarize_url": 10,
         "describe_image": 8,
+        "chat_tiny": 2,
+        "chat_light": 3,
+        "chat_standard": 4,
         "chat": 6,
-        "chat_light": 4,
+        "chat_deep": 10,
         "clarify": 3,
         "get_weather": 5,
         "get_stock": 5,
     }.get(intent, 12)
+
+
+def chat_model_for_intent(intent: str) -> str:
+    from providers.openai_client import (
+        OPENAI_CHAT_MODEL,
+        OPENAI_DEEP_MODEL,
+        OPENAI_LIGHT_MODEL,
+        OPENAI_STANDARD_MODEL,
+        OPENAI_TINY_MODEL,
+    )
+
+    return {
+        "chat_tiny": OPENAI_TINY_MODEL,
+        "chat_light": OPENAI_LIGHT_MODEL,
+        "chat_standard": OPENAI_STANDARD_MODEL,
+        "chat": OPENAI_CHAT_MODEL,
+        "chat_deep": OPENAI_DEEP_MODEL,
+        "clarify": OPENAI_LIGHT_MODEL,
+    }.get(intent, OPENAI_CHAT_MODEL)
 
 
 @dataclass
@@ -292,8 +314,6 @@ async def dispatch_intent(ctx: DispatchContext) -> bool:
     # after the bot offered something), otherwise ask one short question.
     # A blind clarifying question without history made the bot forget its own
     # previous offer.
-    from providers.openai_client import OPENAI_LIGHT_MODEL as _light_model
-
     await handle_chat_intent(
         message=message,
         prompt=ctx.prompt,
@@ -308,7 +328,7 @@ async def dispatch_intent(ctx: DispatchContext) -> bool:
         live_status_with_progress=ctx.live_status_with_progress,
         send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
         moderation_view_factory=ctx.moderation_view_factory,
-        default_model=_light_model if ctx.intent == "chat_light" else None,
+        default_model=chat_model_for_intent(ctx.intent),
         clarify_hint=(ctx.intent == "clarify"),
     )
     return True

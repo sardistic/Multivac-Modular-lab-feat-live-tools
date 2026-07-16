@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from providers.openai_client import OPENAI_CHAT_MODEL
+from bot.intent_dispatcher import chat_model_for_intent
 from services import code_generator
 from services.code_generator import (
     CODE_MODEL,
@@ -15,6 +16,13 @@ class CodeGeneratorOutputTests(unittest.TestCase):
     def test_code_generation_uses_gpt_56_sol(self):
         self.assertEqual(OPENAI_CHAT_MODEL, "gpt-5.6-terra")
         self.assertEqual(CODE_MODEL, "gpt-5.6-sol")
+
+    def test_five_tier_chat_model_gradient(self):
+        self.assertEqual(chat_model_for_intent("chat_tiny"), "gpt-5.4-nano")
+        self.assertEqual(chat_model_for_intent("chat_light"), "gpt-5.4-mini")
+        self.assertEqual(chat_model_for_intent("chat_standard"), "gpt-5.6-luna")
+        self.assertEqual(chat_model_for_intent("chat"), "gpt-5.6-terra")
+        self.assertEqual(chat_model_for_intent("chat_deep"), "gpt-5.6-sol")
 
     def test_explicit_fable_directive_selects_claude(self):
         for request in (
