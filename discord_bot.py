@@ -75,7 +75,12 @@ from services.code_generator import generate_code_patch
 from services import usage_costs
 from services.user_profile import maybe_refresh_profile
 from providers.claude_utils import ANTHROPIC_API_KEY
-from bot.intent_dispatcher import DispatchContext, dispatch_intent, resolve_keyword_intent
+from bot.intent_dispatcher import (
+    DispatchContext,
+    dispatch_intent,
+    resolve_keyword_intent,
+    validate_classified_intent,
+)
 from bot.message_inputs import (
     collect_gemini_parts,
     collect_image_inputs,
@@ -1253,6 +1258,7 @@ async def on_message(message: discord.Message):
             recent_turns=recent_turns,
             prev_intent=seen.get("last_intent") if seen else None,
         )
+        intent = validate_classified_intent(intent, prompt)
 
     usage_costs.set_request_context(
         user_id=str(user_id),
