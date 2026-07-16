@@ -8,7 +8,7 @@ import re
 
 import discord
 
-from providers.claude_utils import generate_claude_response
+from providers.claude_utils import CLAUDE_MODEL, generate_claude_response
 from providers.gemini_utils import GeminiModerationError, generate_gemini_text
 from providers.openai_utils import (
     OpenAIModerationError,
@@ -110,7 +110,7 @@ async def handle_claude_chat_intent(
             response,
             target_msg=status_msg,
             original_message=message,
-            model="claude-sonnet-4",
+            model=CLAUDE_MODEL,
         )
     else:
         await status_msg.edit(content="❌ Claude returned no response.")
