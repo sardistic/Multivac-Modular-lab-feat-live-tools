@@ -1,15 +1,16 @@
-import os
 import logging
 import anthropic
 from typing import List, Dict, Any, Optional
 
+from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
+
 logger = logging.getLogger("discord_bot")
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+CLAUDE_MODEL = ANTHROPIC_MODEL
 
 async def generate_claude_response(
     messages: List[Dict[str, Any]], 
-    model: str = "claude-sonnet-4-20250514",
+    model: str | None = None,
     tools: Optional[List[Dict[str, Any]]] = None,
     temperature: float = 0.7,
     max_tokens: int = 1024
@@ -32,6 +33,7 @@ async def generate_claude_response(
         return "❌ Error: `ANTHROPIC_API_KEY` is not set in the environment."
 
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    selected_model = model or CLAUDE_MODEL
 
     # 1. Extract System Prompt(s)
     system_prompt_parts = []
@@ -84,7 +86,7 @@ async def generate_claude_response(
     try:
         # 3. Call API
         kwargs = {
-            "model": model,
+            "model": selected_model,
             "max_tokens": max_tokens,
             "messages": sanitized_messages,
             "temperature": temperature,
@@ -105,16 +107,34 @@ async def generate_claude_response(
                     "prompt_tokens": getattr(u, "input_tokens", 0) or 0,
                     "completion_tokens": getattr(u, "output_tokens", 0) or 0,
                 }
-                usage_costs.record(model, usage, usage_costs.estimate_cost(model, usage), label="claude_chat")
+                usage_costs.record(
+                    selected_model,
+                    usage,
+                    usage_costs.estimate_cost(selected_model, usage),
+                    label="claude_chat",
+                )
         except Exception:
             logger.warning("claude usage recording failed", exc_info=True)
 
-        # 4. Extract Text
-        content_block = response.content[0]
-        if content_block.type == "text":
-            return content_block.text
-        else:
-            return f"[Non-text response type: {content_block.type}]"
+        # Fable refusals are successful HTTP 200 responses with no text, not
+        # API exceptions. Surface that distinction instead of crashing on an
+        # empty content list.
+        if getattr(response, "stop_reason", None) == "refusal":
+            details = getattr(response, "stop_details", None)
+            category = getattr(details, "category", None)
+            suffix = f" ({category})" if category else ""
+            return f"❌ Claude Fable declined this request{suffix}."
+
+        # Thinking-capable models can return multiple blocks. Only send their
+        # user-visible text blocks to Discord.
+        text_parts = [
+            block.text
+            for block in (getattr(response, "content", None) or [])
+            if getattr(block, "type", None) == "text" and getattr(block, "text", None)
+        ]
+        if text_parts:
+            return "\n".join(text_parts)
+        return "❌ Claude returned an empty response."
 
     except anthropic.APIStatusError as e:
         logger.error(f"Claude API Error: {e}")
