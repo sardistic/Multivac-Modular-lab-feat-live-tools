@@ -28,6 +28,10 @@ def select_code_generation_provider(request: str) -> str:
     return "claude" if _CLAUDE_PROVIDER_RE.search(request or "") else "openai"
 
 
+def code_generation_model(request: str) -> str:
+    return CLAUDE_MODEL if select_code_generation_provider(request) == "claude" else CODE_MODEL
+
+
 def _request_without_provider_directive(request: str) -> str:
     text = request or ""
     patterns = (

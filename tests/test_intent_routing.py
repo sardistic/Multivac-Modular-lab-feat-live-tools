@@ -1,6 +1,8 @@
 import asyncio
 import os
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from bot.intent_dispatcher import (
     resolve_keyword_intent,
@@ -212,6 +214,40 @@ class ClassifierOutageFallbackTests(unittest.TestCase):
             self.assertEqual(asyncio.run(oi.classify_intent("how do magnets work")), "chat")
         finally:
             oi.get_openai_client = original
+
+
+class EfficientClassifierTests(unittest.IsolatedAsyncioTestCase):
+    async def test_luna_router_disables_reasoning_and_caps_output(self):
+        import providers.openai_intents as oi
+
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="chat_light"))],
+            usage=None,
+            model="gpt-5.6-luna",
+        )
+        create = AsyncMock(return_value=response)
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with patch.object(oi, "get_openai_client", return_value=client), patch(
+            "services.usage_costs.record_response"
+        ):
+            result = await oi.classify_intent(
+                "what is two plus two?",
+                recent_turns=["user: old", "assistant: newer", "user: newest"],
+            )
+
+        self.assertEqual(result, "chat_light")
+        kwargs = create.await_args.kwargs
+        self.assertEqual(kwargs["model"], "gpt-5.6-luna")
+        self.assertEqual(kwargs["reasoning_effort"], "none")
+        self.assertEqual(kwargs["max_completion_tokens"], 64)
+        self.assertEqual(kwargs["messages"][0]["role"], "developer")
+        classifier_prompt = kwargs["messages"][0]["content"]
+        self.assertIn("cheapest sufficient tier", classifier_prompt)
+        user_prompt = kwargs["messages"][1]["content"]
+        self.assertNotIn("user: old", user_prompt)
+        self.assertIn("assistant: newer", user_prompt)
+        self.assertIn("user: newest", user_prompt)
 
 
 class ChatOutageDetectionTests(unittest.TestCase):
