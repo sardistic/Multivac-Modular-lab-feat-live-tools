@@ -66,9 +66,12 @@ DISCORD_TOKEN           = get_metadata("DISCORD_TOKEN")
 OPENAI_API_KEY          = get_metadata("OPENAI_API_KEY")
 OPENAI_DEFAULT_MODEL    = get_metadata("OPENAI_DEFAULT_MODEL", "gpt-5.6-terra")
 OPENAI_CODE_MODEL       = get_metadata("OPENAI_CODE_MODEL", "gpt-5.6-sol")
-# Cheaper tiers (verified available on this key 2026-07): mini for casual
-# answers; Luna is a stronger but still cost-oriented one-label router.
+# Answer gradient, cheapest sufficient model first.
+OPENAI_TINY_MODEL       = get_metadata("OPENAI_TINY_MODEL", "gpt-5.4-nano")
 OPENAI_CASUAL_MODEL     = get_metadata("OPENAI_CASUAL_MODEL", "gpt-5.4-mini")
+OPENAI_STANDARD_MODEL   = get_metadata("OPENAI_STANDARD_MODEL", "gpt-5.6-luna")
+OPENAI_DEEP_MODEL       = get_metadata("OPENAI_DEEP_MODEL", "gpt-5.6-sol")
+# Luna is also the cost-oriented one-label router.
 OPENAI_INTENT_MODEL     = get_metadata("OPENAI_INTENT_MODEL", "gpt-5.6-luna")
 STABILITY_HOST          = get_metadata("STABILITY_HOST")
 STABILITY_KEY           = get_metadata("STABILITY_KEY")

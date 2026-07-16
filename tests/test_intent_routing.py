@@ -293,10 +293,10 @@ class LiveReplyToImageClassifierTests(unittest.TestCase):
             )
         )
 
-    def test_bare_reaction_is_chat_light(self):
+    def test_bare_reaction_is_chat_tiny(self):
         for reaction in ("kino", "nice", "based", "lol"):
             with self.subTest(reaction=reaction):
-                self.assertEqual(self._classify(reaction), "chat_light")
+                self.assertEqual(self._classify(reaction), "chat_tiny")
 
     def test_change_request_is_edit_image(self):
         for prompt in ("make it darker", "remove the text on the marquee"):
@@ -331,7 +331,10 @@ class LiveWriteVsDepictTests(unittest.TestCase):
             "give me a caption for a spooky doki doki scene",
         ):
             with self.subTest(prompt=prompt):
-                self.assertIn(self._classify(prompt), {"chat", "chat_light"})
+                self.assertIn(
+                    self._classify(prompt),
+                    {"chat_light", "chat_standard", "chat"},
+                )
 
     def test_real_image_requests_still_route_to_image(self):
         for prompt in (
@@ -366,10 +369,11 @@ class LiveCodebaseQuestionTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.assertEqual(self._classify(prompt), "chat")
 
-    def test_trivial_one_liners_stay_light(self):
-        for prompt in ("lol", "whats up", "what is a liminal space"):
+    def test_trivial_one_liners_use_tiny_and_brief_fact_uses_light(self):
+        for prompt in ("lol", "whats up"):
             with self.subTest(prompt=prompt):
-                self.assertEqual(self._classify(prompt), "chat_light")
+                self.assertEqual(self._classify(prompt), "chat_tiny")
+        self.assertEqual(self._classify("what is a liminal space"), "chat_light")
 
 
 if __name__ == "__main__":
