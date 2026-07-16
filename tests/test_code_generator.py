@@ -5,6 +5,7 @@ from providers.openai_client import OPENAI_CHAT_MODEL
 from services import code_generator
 from services.code_generator import (
     CODE_MODEL,
+    code_generation_model,
     extract_unified_diff,
     select_code_generation_provider,
 )
@@ -24,12 +25,14 @@ class CodeGeneratorOutputTests(unittest.TestCase):
         ):
             with self.subTest(request=request):
                 self.assertEqual(select_code_generation_provider(request), "claude")
+                self.assertEqual(code_generation_model(request), "claude-fable-5")
 
     def test_mentions_about_claude_do_not_select_it_as_generator(self):
         self.assertEqual(
             select_code_generation_provider("change your code so Claude chat has a timeout"),
             "openai",
         )
+        self.assertEqual(code_generation_model("change your code"), "gpt-5.6-sol")
 
 
 class ProviderAwareCodeGenerationTests(unittest.IsolatedAsyncioTestCase):

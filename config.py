@@ -67,9 +67,9 @@ OPENAI_API_KEY          = get_metadata("OPENAI_API_KEY")
 OPENAI_DEFAULT_MODEL    = get_metadata("OPENAI_DEFAULT_MODEL", "gpt-5.6-terra")
 OPENAI_CODE_MODEL       = get_metadata("OPENAI_CODE_MODEL", "gpt-5.6-sol")
 # Cheaper tiers (verified available on this key 2026-07): mini for casual
-# banter + profile distillation, nano for intent classification.
+# answers; Luna is a stronger but still cost-oriented one-label router.
 OPENAI_CASUAL_MODEL     = get_metadata("OPENAI_CASUAL_MODEL", "gpt-5.4-mini")
-OPENAI_INTENT_MODEL     = get_metadata("OPENAI_INTENT_MODEL", "gpt-5.4-nano")
+OPENAI_INTENT_MODEL     = get_metadata("OPENAI_INTENT_MODEL", "gpt-5.6-luna")
 STABILITY_HOST          = get_metadata("STABILITY_HOST")
 STABILITY_KEY           = get_metadata("STABILITY_KEY")
 GOOGLE_PLACES_API_KEY   = get_metadata("GOOGLE_PLACES_API_KEY")

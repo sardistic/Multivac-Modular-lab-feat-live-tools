@@ -71,7 +71,7 @@ from services.database_utils import (
     request_any_code_rollback,
 )
 from services.code_changes import MAX_PATCH_BYTES, get_baseline_sha, validate_patch
-from services.code_generator import generate_code_patch
+from services.code_generator import code_generation_model, generate_code_patch
 from services import usage_costs
 from services.user_profile import maybe_refresh_profile
 from providers.claude_utils import ANTHROPIC_API_KEY
@@ -596,9 +596,15 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
         )
         proposal = await asyncio.to_thread(get_code_proposal, requester_id, proposal_id)
         proposal_name = proposal.get("public_id") or str(proposal_id)
+        generator_model = code_generation_model(request)
         if status_msg is not None:
             with contextlib.suppress(Exception):
-                await status_msg.edit(content=f"[🧩 Proposal {proposal_name}] Selecting relevant source and generating a patch…")
+                await status_msg.edit(
+                    content=(
+                        f"[🧩 Proposal {proposal_name}] Selecting relevant source and "
+                        f"generating a patch with **{generator_model}**…"
+                    )
+                )
         try:
             patch, generation = await generate_code_patch(request, baseline)
             await asyncio.to_thread(set_code_proposal_patch, requester_id, proposal_id, patch)

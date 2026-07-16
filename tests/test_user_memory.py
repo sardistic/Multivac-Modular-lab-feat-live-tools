@@ -115,7 +115,7 @@ class UserMemoryStoreTests(unittest.TestCase):
         )
         proposal = self.store.get_code_proposal("owner-1", proposal_id)
         self.assertEqual(proposal["status"], "draft")
-        self.assertRegex(proposal["public_id"], r"^[a-z]+-[a-z]+$")
+        self.assertRegex(proposal["public_id"], r"^[a-z]+(?:-[a-z]+){1,2}$")
         self.assertIsNone(self.store.get_code_proposal("owner-2", proposal_id))
 
         proposal = self.store.set_code_proposal_patch(
@@ -264,6 +264,7 @@ class UsageCostsTests(unittest.TestCase):
         self.assertAlmostEqual(usage_costs.estimate_cost("gpt-5.5", usage), 1.25)
         self.assertAlmostEqual(usage_costs.estimate_cost("gpt-5.6-terra", usage), 2.50)
         self.assertAlmostEqual(usage_costs.estimate_cost("gpt-5.6-sol", usage), 5.00)
+        self.assertAlmostEqual(usage_costs.estimate_cost("gpt-5.6-luna", usage), 1.00)
         self.assertAlmostEqual(usage_costs.estimate_cost("claude-fable-5", usage), 10.00)
         self.assertEqual(usage_costs.estimate_cost("mystery-model", usage), 0.0)
 

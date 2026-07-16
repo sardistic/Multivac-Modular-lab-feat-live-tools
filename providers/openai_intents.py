@@ -59,6 +59,13 @@ _INTENT_SYSTEM = (
     "- Casual banter, greetings, reactions, one-liners, jokes, simple factual questions "
     "that need no tools or deep reasoning -> 'chat_light'.\n"
     "- Anything substantive, multi-part, tool-worthy, or emotionally weighty -> 'chat'.\n"
+    "- ANSWER-COST ROUTING: for ordinary chat, predict what producing a COMPLETE, ACCURATE "
+    "answer requires and choose the cheapest sufficient tier. Use 'chat_light' only when the "
+    "answer can be completed from stable general knowledge in at most a few short paragraphs, "
+    "without tools, current facts, private memory retrieval, code/repository inspection, careful "
+    "multi-step reasoning, or high-stakes judgment. Use 'chat' whenever any of those are needed. "
+    "Message length and casual wording do not make a hard question light; formal wording does not "
+    "make an easy question heavy. When uncertain, choose 'chat'.\n"
     "- Questions about MY OWN code, commands, repository, commits, tools, or how I'm "
     "built/configured are tool-worthy (they need code or history search) -> 'chat', "
     "never 'chat_light'.\n"
@@ -165,32 +172,38 @@ async def classify_intent(
         else:
             system_prompt = _INTENT_SYSTEM
 
-        # Reasoning models (gpt-5+/o-series) burn hidden reasoning tokens before
-        # emitting the label, so a tiny budget of 16 gets exhausted mid-reasoning
-        # and returns a 400. Give them room and keep reasoning effort minimal.
+        # GPT-5.6 can classify with reasoning disabled. It only emits one label,
+        # so do not pay for a hidden reasoning budget on every Discord message.
         reasoning = is_reasoning_model(OPENAI_INTENT_MODEL)
-        max_out = 2000 if reasoning else 16
+        no_reasoning = OPENAI_INTENT_MODEL.lower().startswith("gpt-5.6")
+        max_out = 64 if no_reasoning else (2000 if reasoning else 16)
 
         # Give the classifier conversational context so follow-ups like
         # "another one" or "same but blue" route to the right intent.
         user_content = ""
         if recent_turns:
-            ctx_lines = "\n".join(str(t)[:200] for t in recent_turns[-3:])
+            ctx_lines = "\n".join(str(t)[:160] for t in recent_turns[-2:])
             user_content += f"CONVERSATION CONTEXT (older first):\n{ctx_lines}\n\n"
         if prev_intent:
             user_content += f"PREVIOUS INTENT: {prev_intent}\n\n"
-        user_content += f"MESSAGE TO CLASSIFY:\n{text.strip()}"
+        message_text = text.strip()
+        if len(message_text) > 1800:
+            message_text = message_text[:1200] + "\n[…trimmed…]\n" + message_text[-500:]
+        user_content += f"MESSAGE TO CLASSIFY:\n{message_text}"
 
         payload = {
             "model": OPENAI_INTENT_MODEL,
             **temperature_kwargs(OPENAI_INTENT_MODEL, 0),
             "messages": [
-                {"role": "system", "content": system_prompt},
+                {
+                    "role": "developer" if no_reasoning else "system",
+                    "content": system_prompt,
+                },
                 {"role": "user", "content": user_content},
             ],
         }
         if reasoning:
-            payload["reasoning_effort"] = "minimal"
+            payload["reasoning_effort"] = "none" if no_reasoning else "minimal"
 
         try:
             resp = await get_openai_client().chat.completions.create(
