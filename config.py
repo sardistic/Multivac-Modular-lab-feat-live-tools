@@ -64,7 +64,8 @@ def _truthy(s: str | None, default: bool = False) -> bool:
 # --- App/API keys ---
 DISCORD_TOKEN           = get_metadata("DISCORD_TOKEN")
 OPENAI_API_KEY          = get_metadata("OPENAI_API_KEY")
-OPENAI_DEFAULT_MODEL    = get_metadata("OPENAI_DEFAULT_MODEL", "gpt-5.5")
+OPENAI_DEFAULT_MODEL    = get_metadata("OPENAI_DEFAULT_MODEL", "gpt-5.6-terra")
+OPENAI_CODE_MODEL       = get_metadata("OPENAI_CODE_MODEL", "gpt-5.6-sol")
 # Cheaper tiers (verified available on this key 2026-07): mini for casual
 # banter + profile distillation, nano for intent classification.
 OPENAI_CASUAL_MODEL     = get_metadata("OPENAI_CASUAL_MODEL", "gpt-5.4-mini")

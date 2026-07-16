@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 from pathlib import PurePosixPath
 
-from providers.openai_client import OPENAI_CHAT_MODEL
+from providers.openai_client import OPENAI_CODE_MODEL
 from providers.openai_messages import generate_openai_messages_response_with_tools
 from services.code_changes import MAX_PATCH_BYTES, REPO_PATH, inspect_patch, is_protected_path
 
 MAX_CONTEXT_CHARS = 70_000
 MAX_FILES = 14
-CODE_MODEL = os.getenv("OPENAI_CODE_MODEL", OPENAI_CHAT_MODEL)
+CODE_MODEL = OPENAI_CODE_MODEL
 
 
 def _git_at(baseline: str, *args: str, max_chars: int = 100_000) -> str:
