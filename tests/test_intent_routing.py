@@ -2,7 +2,11 @@ import asyncio
 import os
 import unittest
 
-from bot.intent_dispatcher import resolve_keyword_intent, wants_gemini
+from bot.intent_dispatcher import (
+    resolve_keyword_intent,
+    validate_classified_intent,
+    wants_gemini,
+)
 
 
 class KeywordRoutingTests(unittest.TestCase):
@@ -134,6 +138,35 @@ class ProviderSelectionTests(unittest.TestCase):
         for p in negative:
             with self.subTest(p=p):
                 self.assertFalse(wants_gemini(p))
+
+
+class ClassifiedIntentGuardTests(unittest.TestCase):
+    def test_false_code_status_guesses_return_to_chat(self):
+        for prompt in (
+            "are you editing the code in 5.6",
+            "why did you just do that",
+            "what do you think about your code?",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(validate_classified_intent("code_status", prompt), "chat")
+
+    def test_real_status_questions_remain_code_status(self):
+        for prompt in (
+            "did it deploy?",
+            "what is the proposal status?",
+            "is maple-saffron active?",
+            "did that change take?",
+            "what happened to the patch?",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(
+                    validate_classified_intent("code_status", prompt),
+                    "code_status",
+                )
+
+    def test_other_classifier_intents_are_untouched(self):
+        self.assertEqual(validate_classified_intent("chat_light", "hello"), "chat_light")
+        self.assertEqual(validate_classified_intent("code_change", "change your code"), "code_change")
 
 
 class ClassifierOutageFallbackTests(unittest.TestCase):

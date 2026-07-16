@@ -56,6 +56,35 @@ _VIDEO_GENERATION_RE = re.compile(
     re.I,
 )
 
+_CODE_STATUS_CUE_RE = re.compile(
+    r"\b(?:status|progress|deploy(?:ed|ment|ing)?|pass(?:ed|ing)?|fail(?:ed|ure|ing)?|"
+    r"validat(?:e|ed|ion|ing)|active|live|finish(?:ed)?|complete(?:d)?|"
+    r"approv(?:e|ed|al)|reject(?:ed|ion)?|reviewable|rolled\s+back)\b|"
+    r"\bwhat\s+happened\b|\bhow(?:'s|\s+is)\s+(?:it|that|the\s+change)\s+going\b|"
+    r"\bdid\s+(?:it|that|(?:that|the)\s+change)\s+(?:take|work|ship)\b",
+    re.I,
+)
+_CODE_PROPOSAL_REF_RE = re.compile(
+    r"\b(?:proposal|patch|code\s+change|change\s+request|baseline)\b|"
+    r"\b[a-z]+(?:-[a-z]+){1,3}\b",
+    re.I,
+)
+
+
+def validate_classified_intent(intent: str, prompt: str) -> str:
+    """Reject code-status guesses based only on conversational context.
+
+    Status lookup defaults to the newest proposal, so a false positive exposes
+    an unrelated card. Require the current message to express a status idea or
+    identify a proposal. Explicit keyword-routed controls bypass this guard.
+    """
+    if intent != "code_status":
+        return intent
+    text = prompt or ""
+    if _CODE_STATUS_CUE_RE.search(text) or _CODE_PROPOSAL_REF_RE.search(text):
+        return intent
+    return "chat"
+
 
 def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) -> Optional[str]:
     """Keywords decide the PROVIDER, the LLM classifier decides the INTENT.
