@@ -531,11 +531,14 @@ def _code_proposal_summary(proposal: dict) -> str:
         request = request[:597] + "..."
     validation = proposal.get("validation")
     checks = "not run"
+    generator = None
     if validation:
         checks = "passed" if validation.get("ok") else f"failed ({len(validation.get('errors', []))} errors)"
+        generator = (validation.get("generation") or {}).get("model")
+    generator_text = f" · generator: `{generator}`" if generator else ""
     return (
         f"**Code proposal `{proposal.get('public_id') or proposal['id']}`** · `{proposal['status']}`\n"
-        f"Baseline: `{proposal['baseline_sha'][:12]}` · validation: **{checks}**\n"
+        f"Baseline: `{proposal['baseline_sha'][:12]}` · validation: **{checks}**{generator_text}\n"
         f"> {request}"
     )
 

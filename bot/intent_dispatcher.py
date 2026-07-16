@@ -37,7 +37,9 @@ _CODE_CONTROL_RE = {
 }
 _CODE_CHANGE_RE = re.compile(
     r"(?:^/code_propose\b|\b(?:change|modify|edit|rewrite|refactor|add|remove|fix)\b.{0,80}"
-    r"\b(?:your|the bot(?:'s)?)\s+(?:code|source|implementation|structure|routing|readme|command|response))",
+    r"\b(?:(?:your|the bot(?:'s)?)\s+"
+    r"(?:code|codebase|source|implementation|structure|routing|readme|command|response)|"
+    r"(?:the\s+)?(?:codebase|repository|repo)))",
     re.I,
 )
 

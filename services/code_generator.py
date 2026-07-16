@@ -7,6 +7,7 @@ import re
 import subprocess
 from pathlib import PurePosixPath
 
+from providers.claude_utils import CLAUDE_MODEL, generate_claude_response
 from providers.openai_client import OPENAI_CODE_MODEL
 from providers.openai_messages import generate_openai_messages_response_with_tools
 from services.code_changes import MAX_PATCH_BYTES, REPO_PATH, inspect_patch, is_protected_path
@@ -14,6 +15,56 @@ from services.code_changes import MAX_PATCH_BYTES, REPO_PATH, inspect_patch, is_
 MAX_CONTEXT_CHARS = 70_000
 MAX_FILES = 14
 CODE_MODEL = OPENAI_CODE_MODEL
+_CLAUDE_PROVIDER_RE = re.compile(
+    r"^\s*(?:(?:hey\s+)?(?:claude|fable)\b|"
+    r"(?:use|using|with|via)\s+(?:claude|fable)\b|"
+    r"(?:ask|have|let)\s+(?:claude|fable)\b)",
+    re.IGNORECASE,
+)
+
+
+def select_code_generation_provider(request: str) -> str:
+    """Honor an explicit Claude/Fable directive; otherwise retain Sol."""
+    return "claude" if _CLAUDE_PROVIDER_RE.search(request or "") else "openai"
+
+
+def _request_without_provider_directive(request: str) -> str:
+    text = request or ""
+    patterns = (
+        r"^\s*(?:hey\s+)?(?:claude|fable)\s*[:,]?\s*",
+        r"^\s*(?:use|using|with|via)\s+(?:claude|fable)\s+(?:to\s+)?",
+        r"^\s*(?:ask|have|let)\s+(?:claude|fable)\s+(?:to\s+)?",
+    )
+    for pattern in patterns:
+        cleaned = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE)
+        if cleaned != text:
+            return cleaned.strip() or text.strip()
+    return text.strip()
+
+
+async def _generate_code_response(
+    messages: list[dict], *, provider: str, max_tokens: int
+) -> tuple[str, str]:
+    if provider == "claude":
+        response = await generate_claude_response(
+            messages,
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            temperature=0.1,
+        )
+        if response.startswith("❌"):
+            raise RuntimeError(response)
+        return response, CLAUDE_MODEL
+    response = await generate_openai_messages_response_with_tools(
+        messages,
+        tools=[],
+        model=CODE_MODEL,
+        max_tokens=max_tokens,
+        temperature=0.1,
+    )
+    if response.startswith("⚠️ OpenAI"):
+        raise RuntimeError(response)
+    return response, CODE_MODEL
 
 
 def _git_at(baseline: str, *args: str, max_chars: int = 100_000) -> str:
@@ -99,7 +150,9 @@ def _architecture_index(baseline: str, candidates: list[str]) -> str:
     return "\n\n".join(blocks)
 
 
-async def plan_code_context(request: str, baseline: str) -> tuple[list[tuple[str, str]], dict]:
+async def plan_code_context(
+    request: str, baseline: str, *, provider: str = "openai"
+) -> tuple[list[tuple[str, str]], dict]:
     candidates = _candidate_paths(baseline)
     repo_map = "\n".join(candidates)
     architecture = _architecture_index(baseline, candidates)
@@ -124,8 +177,8 @@ async def plan_code_context(request: str, baseline: str) -> tuple[list[tuple[str
             ),
         },
     ]
-    response = await generate_openai_messages_response_with_tools(
-        messages, tools=[], model=CODE_MODEL, max_tokens=2500, temperature=0.1
+    response, planning_model = await _generate_code_response(
+        messages, provider=provider, max_tokens=2500
     )
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip(), flags=re.IGNORECASE)
     plan = json.loads(cleaned)
@@ -148,6 +201,7 @@ async def plan_code_context(request: str, baseline: str) -> tuple[list[tuple[str
         raise ValueError("Repository planner selected no policy-allowed files")
     return selected, {
         "selection": "model_planner",
+        "planning_model": planning_model,
         "rationale": str(plan.get("rationale") or "")[:1000],
         "scope_check": str(plan.get("scope_check") or "")[:1000],
     }
@@ -171,10 +225,14 @@ def extract_unified_diff(text: str) -> str:
 
 
 async def generate_code_patch(request: str, baseline: str) -> tuple[str, dict]:
+    provider = select_code_generation_provider(request)
+    generation_request = _request_without_provider_directive(request)
     try:
-        context, planning = await plan_code_context(request, baseline)
+        context, planning = await plan_code_context(
+            generation_request, baseline, provider=provider
+        )
     except (RuntimeError, ValueError, json.JSONDecodeError):
-        context = select_code_context(request, baseline)
+        context = select_code_context(generation_request, baseline)
         planning = {"selection": "lexical_fallback"}
     if not context:
         raise RuntimeError("No policy-allowed source context was found")
@@ -196,24 +254,21 @@ async def generate_code_patch(request: str, baseline: str) -> tuple[str, dict]:
         {
             "role": "user",
             "content": (
-                f"BASELINE SHA: {baseline}\nREQUEST: {request}\n"
+                f"BASELINE SHA: {baseline}\nREQUEST: {generation_request}\n"
                 f"REPOSITORY SCOPE PLAN: {planning}\n\n"
                 f"AVAILABLE SOURCE FILES:\n{source}"
             ),
         },
     ]
-    response = await generate_openai_messages_response_with_tools(
+    response, generation_model = await _generate_code_response(
         messages,
-        tools=[],
-        model=CODE_MODEL,
+        provider=provider,
         max_tokens=8000,
-        temperature=0.1,
     )
-    if response.startswith("⚠️ OpenAI"):
-        raise RuntimeError(response)
     patch = extract_unified_diff(response)
     return patch, {
-        "model": CODE_MODEL,
+        "provider": provider,
+        "model": generation_model,
         "context_files": [path for path, _ in context],
         "context_chars": sum(len(content) for _, content in context),
         **planning,
