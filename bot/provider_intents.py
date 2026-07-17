@@ -8,7 +8,7 @@ import re
 
 import discord
 
-from providers.claude_utils import CLAUDE_MODEL, generate_claude_response
+from providers.claude_utils import CLAUDE_MODEL, generate_claude_response, image_input_to_block
 from providers.gemini_utils import GeminiModerationError, generate_gemini_text
 from providers.openai_utils import (
     OpenAIModerationError,
@@ -76,8 +76,19 @@ async def handle_claude_chat_intent(
     stream_ok: bool,
     live_status_with_progress,
     send_or_edit_with_truncation,
+    image_urls=None,
+    ref_msg=None,
 ):
     clean_prompt = re.sub(r"^(claude|hey claude)\s*", "", prompt, flags=re.IGNORECASE).strip()
+
+    # When replying to another message, that message is usually the subject
+    # ("claude fix why this happened" under a bot error). Quote it so Claude
+    # sees what "this" is even if it has scrolled out of the history window.
+    ref_content = (getattr(ref_msg, "content", None) or "").strip()
+    if ref_content:
+        ref_author = getattr(getattr(ref_msg, "author", None), "display_name", None) or "earlier message"
+        clean_prompt = f'[Replying to {ref_author}: "{ref_content[:1500]}"]\n\n{clean_prompt}'
+
     personality_msg = build_personality_system_message(message.author.id, intent="claude_chat")
     context_msgs = build_message_window(
         guild_id=message.guild.id if message.guild else "DM",
@@ -93,7 +104,19 @@ async def handle_claude_chat_intent(
     if personality_msg:
         claude_messages.append({"role": "system", "content": personality_msg})
     claude_messages.extend(context_msgs)
-    claude_messages.append({"role": "user", "content": clean_prompt})
+
+    # Attached/replied-to images become Anthropic image blocks so Claude can
+    # actually see screenshots instead of asking for one that's already there.
+    image_blocks = []
+    for src in (image_urls or [])[:5]:
+        block = image_input_to_block(src)
+        if block:
+            image_blocks.append(block)
+    if image_blocks:
+        user_content = image_blocks + ([{"type": "text", "text": clean_prompt}] if clean_prompt else [])
+    else:
+        user_content = clean_prompt
+    claude_messages.append({"role": "user", "content": user_content})
 
     status_msg, response = await live_status_with_progress(
         message,
