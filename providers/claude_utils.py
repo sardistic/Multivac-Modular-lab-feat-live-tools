@@ -1,4 +1,5 @@
 import logging
+import re
 import anthropic
 from typing import List, Dict, Any, Optional
 
@@ -8,10 +9,41 @@ logger = logging.getLogger("discord_bot")
 
 CLAUDE_MODEL = ANTHROPIC_MODEL
 
+_DATA_URL_RE = re.compile(r"^data:(image/[\w.+-]+);base64,([A-Za-z0-9+/=\s]+)$")
+
 
 def _supports_temperature(model: str) -> bool:
     """Fable/Mythos 5 use always-on adaptive thinking and reject temperature."""
     return not model.startswith(("claude-fable-5", "claude-mythos-5"))
+
+
+def image_input_to_block(src: str) -> Optional[Dict[str, Any]]:
+    """Turn one bot-internal image input (data URL or plain http URL — the two
+    shapes collect_image_inputs produces) into an Anthropic image block."""
+    src = (src or "").strip()
+    m = _DATA_URL_RE.match(src)
+    if m:
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": m.group(1),
+                "data": re.sub(r"\s+", "", m.group(2)),
+            },
+        }
+    if src.startswith(("http://", "https://")):
+        return {"type": "image", "source": {"type": "url", "url": src}}
+    return None
+
+
+def _content_blocks(content: Any) -> List[Dict[str, Any]]:
+    """Normalize a message's content (str or block list) to a block list."""
+    if isinstance(content, str):
+        text = content.strip()
+        return [{"type": "text", "text": text}] if text else []
+    if isinstance(content, list):
+        return [b for b in content if isinstance(b, dict)]
+    return []
 
 async def generate_claude_response(
     messages: List[Dict[str, Any]], 
@@ -57,32 +89,28 @@ async def generate_claude_response(
     # - No empty content
     # - Alternating User/Assistant roles
     # - Must start with User
-    
+    # Content may be a plain string or a list of Anthropic content blocks
+    # (text + image); everything is normalized to block lists.
+
     sanitized_messages = []
-    
+
     for msg in raw_messages:
-        content = (msg.get("content") or "").strip()
         role = msg.get("role")
-        
-        if not content:
+        blocks = _content_blocks(msg.get("content"))
+
+        if not blocks:
             continue
-            
+
         if not sanitized_messages:
-            # First message must be user
+            # First message must be user; skip leading assistant messages.
             if role == "user":
-                sanitized_messages.append({"role": "user", "content": content})
-            else:
-                # If first is assistant, we skip it OR convert it? 
-                # Better to skip to avoid confusion, or prepend a dummy user message?
-                # Let's skip leading assistant messages for now.
-                pass
+                sanitized_messages.append({"role": "user", "content": blocks})
         else:
-            prev_role = sanitized_messages[-1]["role"]
-            if role == prev_role:
-                # Merge with previous
-                sanitized_messages[-1]["content"] += f"\n\n{content}"
+            prev = sanitized_messages[-1]
+            if role == prev["role"]:
+                prev["content"].extend(blocks)
             else:
-                sanitized_messages.append({"role": role, "content": content})
+                sanitized_messages.append({"role": role, "content": blocks})
 
     # Fallback if everything was filtered out
     if not sanitized_messages:
