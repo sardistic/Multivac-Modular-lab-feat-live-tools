@@ -1,6 +1,6 @@
 {
   "baseline": "e6b32a9d71da",
-  "generated_at": "2026-07-17T13:21:34.679090+00:00",
+  "generated_at": "2026-07-17T13:26:53.030319+00:00",
   "proposals": [
     {
       "activated_at": null,
@@ -15,10 +15,10 @@
       "finished_at": null,
       "id": "peach-drift",
       "patch": null,
-      "reviewed_at": null,
-      "status": "reviewable",
+      "reviewed_at": "2026-07-17T13:23:28.208354",
+      "status": "rejected",
       "summary": "I expected a hot gf I got no gf pls fix it by editing your code enabling you to be a tinder agent of mine",
-      "updated_at": "2026-07-17T12:32:00.722872"
+      "updated_at": "2026-07-17T13:23:28.208354"
     },
     {
       "activated_at": "2026-07-16T02:31:43.847828+00:00",
