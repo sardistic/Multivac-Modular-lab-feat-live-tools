@@ -36,6 +36,7 @@ _DEFAULT_TIMEOUT = 6.0
 # --------------------------------------------------------------------------------------
 _ZIP_RE = re.compile(r"\d{5}(?:-\d{4})?$")
 _SNOWFLAKE_RE = re.compile(r"^\d{10,20}$")  # discord snowflakes
+_DISCORD_TOKEN_RE = re.compile(r"<(?:@[!&]?|#|a?:\w+:)\d{10,20}>")  # mentions/channels/roles/emojis
 
 def _is_zip(s: str) -> bool:
     return bool(_ZIP_RE.fullmatch((s or "").strip()))
@@ -517,7 +518,11 @@ async def handle_weather_request(*args, **kwargs) -> str:
     Flexible entry-point so older/newer discord_bot call sites keep working.
     Accepts strings or message objects; ignores Discord snowflake IDs.
     """
-    raw = _pick_best_raw_text(*args, **kwargs).strip()
+    raw = _pick_best_raw_text(*args, **kwargs)
+    # Message content arrives with mention/channel/emoji tokens intact; they
+    # must never become part of a geocoding query or an echoed error.
+    raw = _DISCORD_TOKEN_RE.sub(" ", raw)
+    raw = re.sub(r"\s{2,}", " ", raw).strip()
     if not raw:
         return "I couldn’t find a location. Try: `weather 10001` or `weather Raleigh, NC`."
 

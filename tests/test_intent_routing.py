@@ -172,6 +172,29 @@ class ClassifiedIntentGuardTests(unittest.TestCase):
         self.assertEqual(validate_classified_intent("chat_light", "hello"), "chat_light")
         self.assertEqual(validate_classified_intent("code_change", "change your code"), "code_change")
 
+    def test_false_weather_guesses_return_to_chat(self):
+        for prompt in (
+            "how long till the new state of the union",
+            "when is the next election",
+            "how long until christmas",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(validate_classified_intent("get_weather", prompt), "chat")
+
+    def test_real_weather_questions_remain_get_weather(self):
+        for prompt in (
+            "weather in raleigh",
+            "what's the forecast for tomorrow",
+            "will it rain tonight in 27601",
+            "how hot is it outside",
+            "is it chilly out",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(
+                    validate_classified_intent("get_weather", prompt),
+                    "get_weather",
+                )
+
 
 class ClassifierOutageFallbackTests(unittest.TestCase):
     """When the OpenAI classifier can't run, routing must degrade gracefully:

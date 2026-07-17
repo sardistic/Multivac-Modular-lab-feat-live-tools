@@ -72,6 +72,15 @@ _CODE_PROPOSAL_REF_RE = re.compile(
     re.I,
 )
 
+_WEATHER_CUE_RE = re.compile(
+    r"\b(?:weather|forecast|temp(?:erature)?s?|rain\w*|snow\w*|humid\w*|wind\w*|"
+    r"sunny|cloud\w*|storm\w*|fog\w*|hail|sleet|drizzl\w*|degrees|"
+    r"heat\s+index|wind\s*chill|uv\s+index|air\s+quality|"
+    r"(?:hot|cold|warm|chilly|freezing|nice)\s+(?:out(?:side)?|today|tonight|tomorrow)|"
+    r"outside)\b",
+    re.I,
+)
+
 
 def validate_classified_intent(intent: str, prompt: str) -> str:
     """Reject code-status guesses based only on conversational context.
@@ -79,10 +88,17 @@ def validate_classified_intent(intent: str, prompt: str) -> str:
     Status lookup defaults to the newest proposal, so a false positive exposes
     an unrelated card. Require the current message to express a status idea or
     identify a proposal. Explicit keyword-routed controls bypass this guard.
+
+    Same idea for get_weather: the dedicated handler treats the whole message
+    as a location, so a false positive produces "couldn't resolve that
+    location (<entire message>)". Require actual weather vocabulary; anything
+    else goes to chat, which has a weather tool anyway.
     """
+    text = prompt or ""
+    if intent == "get_weather" and not _WEATHER_CUE_RE.search(text):
+        return "chat"
     if intent != "code_status":
         return intent
-    text = prompt or ""
     if _CODE_STATUS_CUE_RE.search(text) or _CODE_PROPOSAL_REF_RE.search(text):
         return intent
     return "chat"
@@ -226,6 +242,8 @@ async def dispatch_intent(ctx: DispatchContext) -> bool:
             stream_ok=ctx.stream_ok,
             live_status_with_progress=ctx.live_status_with_progress,
             send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
+            image_urls=ctx.image_urls,
+            ref_msg=ctx.ref_msg,
         )
         return True
 
