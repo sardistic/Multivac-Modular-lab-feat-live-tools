@@ -27,10 +27,14 @@ Make provider outages degrade cleanly: OpenAI image failures must try Gemini, Op
 - `python -m pytest -q`
 - Result: 123 passed, 7 skipped, 72 subtests passed.
 - `git diff --check` passed.
+- Production checkout verified at implementation commit `753ec8fcdb0f5448863a91ca852403997248911e`.
+- Rebuilt and restarted only `multivac-multivac-1`; Elasticsearch remained running.
+- Post-deploy verification: container started at `2026-07-20T01:01:45Z`, restart count 0, Discord gateway connected, and the bot logged `Bot is online and ready!`.
+- Verified `.env` was restored to `root:root` mode `0600` after Compose completed.
 
 ## Uncommitted implementation details
 
-Modified provider routing, configuration, usage pricing, and tests. New tests are `tests/test_chat_fallback.py` and `tests/test_gemini_tool_followup.py`.
+None. Provider routing, configuration, usage pricing, tests, and this deployment handoff are committed and pushed.
 
 ## Unresolved risks
 
@@ -39,8 +43,8 @@ Modified provider routing, configuration, usage pricing, and tests. New tests ar
 
 ## Next concrete action
 
-Review the diff, commit it, deploy the Multivac container, then trigger a controlled OpenAI-outage image request and inspect logs/status-message behavior.
+Trigger a controlled OpenAI-outage image request and inspect the single status message plus Gemini result. No paid live-provider request was sent during deployment verification.
 
 ## Deployment/status impact
 
-Not committed, pushed, or deployed. Production behavior is unchanged.
+Implementation commit `753ec8f` was pushed to `origin/main` and deployed to the production Multivac container on 2026-07-20. The bot is connected and ready; no rollback was required.
