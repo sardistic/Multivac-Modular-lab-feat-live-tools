@@ -45,7 +45,12 @@ async def handle_chat_intent(
     default_model=None,
     clarify_hint: bool = False,
 ):
-    async def _do_chat_generation(model_name=None):
+    async def _do_chat_generation(
+        model_name=None,
+        *,
+        existing_status_msg=None,
+        allow_model_escalation: bool = True,
+    ):
         selected_model = model_name or default_model or OPENAI_CHAT_MODEL
 
         async def _chat_with_es_window():
@@ -113,14 +118,16 @@ async def handle_chat_intent(
             return f"• Using {selected_model}…\n• Drafting answer…"
 
         try:
-            status_msg, response = await live_status_with_progress(
-                message,
-                action_label=f"Responding ({selected_model})",
-                emoji="💬",
-                coro=_chat_with_es_window(),
-                duration_estimate=duration_estimate,
-                summarizer=_summarizer if stream_ok else None,
-            )
+            status_kwargs = {
+                "action_label": f"Responding ({selected_model})",
+                "emoji": "💬",
+                "coro": _chat_with_es_window(),
+                "duration_estimate": duration_estimate,
+                "summarizer": _summarizer if stream_ok else None,
+            }
+            if existing_status_msg is not None:
+                status_kwargs["existing_status_msg"] = existing_status_msg
+            status_msg, response = await live_status_with_progress(message, **status_kwargs)
 
             if _is_openai_outage(response) and "gemini" not in selected_model.lower():
                 # OpenAI backend is down (quota/429/etc). Don't surface the raw
@@ -133,7 +140,11 @@ async def handle_chat_intent(
                     await status_msg.edit(
                         content="⚠️ OpenAI is unavailable right now — answering with **Gemini** instead…"
                     )
-                await _do_chat_generation(model_name=GEMINI_FALLBACK_CHAT_MODEL)
+                await _do_chat_generation(
+                    model_name=GEMINI_FALLBACK_CHAT_MODEL,
+                    existing_status_msg=status_msg,
+                    allow_model_escalation=False,
+                )
             elif response and response.strip():
                 response = apply_personality_overrides(user_id, intent="chat", text=response)
                 await send_or_edit_with_truncation(
@@ -142,12 +153,16 @@ async def handle_chat_intent(
                     original_message=message,
                     model=selected_model,
                 )
-            elif selected_model != OPENAI_CHAT_MODEL:
+            elif selected_model != OPENAI_CHAT_MODEL and allow_model_escalation:
                 # Light-tier model punted; escalate to the main model once.
                 logger.info("Empty response from %s; escalating to %s", selected_model, OPENAI_CHAT_MODEL)
-                await _do_chat_generation(model_name=OPENAI_CHAT_MODEL)
+                await _do_chat_generation(
+                    model_name=OPENAI_CHAT_MODEL,
+                    existing_status_msg=status_msg,
+                    allow_model_escalation=False,
+                )
             else:
-                await status_msg.edit(content="🤖 INSUFFICIENT DATA FOR MEANINGFUL ANSWER")
+                await status_msg.edit(content="❌ The fallback model returned no response. Please try again.")
 
         except OpenAIModerationError as e:
             logger.warning(f"OpenAI moderation hit: {e}")

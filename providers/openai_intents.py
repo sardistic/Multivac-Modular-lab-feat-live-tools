@@ -3,6 +3,10 @@ from __future__ import annotations
 import logging
 import re
 
+import anthropic
+
+from config import ANTHROPIC_API_KEY, ANTHROPIC_INTENT_MODEL
+
 from providers.openai_client import (
     OPENAI_INTENT_MODEL,
     get_openai_client,
@@ -130,6 +134,55 @@ VALID_INTENTS = {
 }
 
 
+def _normalize_intent_label(text: str) -> str:
+    label = (text or "").strip().lower()
+    label = re.sub(r"[^a-z_]", "", label)
+    return label if label in VALID_INTENTS else ""
+
+
+async def _classify_intent_with_sonnet(system_prompt: str, user_content: str) -> str:
+    """Use Sonnet only when the primary OpenAI router is unavailable."""
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+
+    client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    response = await client.messages.create(
+        model=ANTHROPIC_INTENT_MODEL,
+        max_tokens=32,
+        temperature=0,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_content}],
+    )
+    text = "\n".join(
+        block.text
+        for block in (getattr(response, "content", None) or [])
+        if getattr(block, "type", None) == "text" and getattr(block, "text", None)
+    )
+    label = _normalize_intent_label(text)
+    if not label:
+        raise ValueError(f"Sonnet returned an invalid intent label: {text!r}")
+
+    try:
+        from services import usage_costs
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            token_usage = {
+                "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
+                "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
+            }
+            usage_costs.record(
+                ANTHROPIC_INTENT_MODEL,
+                token_usage,
+                usage_costs.estimate_cost(ANTHROPIC_INTENT_MODEL, token_usage),
+                label="intent_classify_fallback",
+            )
+    except Exception:
+        logging.warning("Sonnet intent usage recording failed", exc_info=True)
+
+    return label
+
+
 def _keyword_fallback_intent(text: str) -> str:
     """Deterministic route for when the classifier itself can't run (OpenAI
     down / out of quota). The only provider signal we can honor without an LLM
@@ -240,12 +293,21 @@ async def classify_intent(
         from services import usage_costs
         usage_costs.record_response(OPENAI_INTENT_MODEL, resp, label="intent_classify")
 
-        label = (resp.choices[0].message.content or "").strip().lower()
-        label = re.sub(r"[^a-z_]", "", label)
-        return label if label in VALID_INTENTS else "chat"
+        label = _normalize_intent_label(resp.choices[0].message.content or "")
+        return label or "chat"
     except Exception as e:
         if isinstance(e, OpenAIModerationError):
             raise
-        fallback = _keyword_fallback_intent(text)
-        logging.warning("[intent] classifier failed (%s); keyword fallback -> %s", e, fallback)
-        return fallback
+        logging.warning("[intent] OpenAI classifier failed (%s); trying Sonnet", e)
+        try:
+            fallback = await _classify_intent_with_sonnet(system_prompt, user_content)
+            logging.info("[intent] Sonnet fallback -> %s", fallback)
+            return fallback
+        except Exception as sonnet_error:
+            fallback = _keyword_fallback_intent(text)
+            logging.warning(
+                "[intent] Sonnet classifier also failed (%s); keyword fallback -> %s",
+                sonnet_error,
+                fallback,
+            )
+            return fallback

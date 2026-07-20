@@ -164,6 +164,26 @@ async def handle_image_generation(
             provider_state["provider"] = name
             provider_state["model"] = model
 
+    async def _openai_then_gemini(image_prompt: str, width: int, height: int) -> Optional[BytesIO]:
+        """Try OpenAI once, then always try Gemini for any OpenAI failure."""
+        _set_provider("OpenAI", IMG_MODEL_OPENAI)
+        try:
+            img = await generate_gpt_image(image_prompt)
+        except ImageModerationError:
+            img = None
+        if img:
+            return img
+
+        if message:
+            await message.channel.send("⚠️ OpenAI image generation failed — trying **Gemini** instead…")
+        _set_provider("Gemini", IMG_MODEL_GEMINI)
+        img = await asyncio.to_thread(generate_gemini_image, image_prompt, width, height)
+        if img:
+            return img
+        if message:
+            await message.channel.send("❌ Gemini image generation failed too. Try again or rephrase the prompt.")
+        return None
+
     try:
         prompt_with_reply_context = _compose_reply_aware_image_prompt(prompt, reply_msg)
         width, height = extract_width_height_from_prompt(prompt)
@@ -174,8 +194,7 @@ async def handle_image_generation(
                 img = await generate_stability_image(image_prompt, width, height)
                 if img:
                     return img
-            _set_provider("OpenAI", IMG_MODEL_OPENAI)
-            return await generate_gpt_image(image_prompt)
+            return await _openai_then_gemini(image_prompt, width, height)
 
         # Provider selection is passed in by the dispatcher (the user said
         # "gemini" somewhere); the prefix regex is only used to strip routing
@@ -228,10 +247,10 @@ async def handle_image_generation(
                 except Exception as e:
                     logger.error("Failed to download URL %s: %s", url, e)
             if ref_images:
-                img = generate_gemini_with_references(image_prompt, ref_images)
+                img = await asyncio.to_thread(generate_gemini_with_references, image_prompt, ref_images)
                 if img:
                     return img
-            img = generate_gemini_image(image_prompt, width, height)
+            img = await asyncio.to_thread(generate_gemini_image, image_prompt, width, height)
             if img:
                 return img
             if message:
@@ -244,21 +263,7 @@ async def handle_image_generation(
                     await message.channel.send("🚫 OpenAI's safety system also rejected this prompt. Try rephrasing.")
                 return None
 
-        _set_provider("OpenAI", IMG_MODEL_OPENAI)
-        try:
-            return await generate_gpt_image(prompt_with_reply_context)
-        except ImageModerationError:
-            # Mirror the chat path's cross-provider fallback: Gemini may
-            # accept what OpenAI's safety system refused.
-            if message:
-                await message.channel.send("🚫 OpenAI's safety system rejected this prompt — trying **Gemini** instead…")
-            _set_provider("Gemini", IMG_MODEL_GEMINI)
-            img = await asyncio.to_thread(generate_gemini_image, prompt_with_reply_context, width, height)
-            if img:
-                return img
-            if message:
-                await message.channel.send("🚫 Gemini couldn't render it either. Try rephrasing the prompt.")
-            return None
+        return await _openai_then_gemini(prompt_with_reply_context, width, height)
     except Exception:
         logger.exception("Error in handle_image_generation")
         return None
