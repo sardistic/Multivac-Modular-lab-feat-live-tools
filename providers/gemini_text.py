@@ -399,14 +399,16 @@ def generate_gemini_text(
                                 final_text.append(args["answer"])
                         elif part.function_call.name == "search_elasticsearch_resource":
                             part_events.append("function_call:search_elasticsearch_resource")
-                            pending_tool_calls.append(part.function_call)
+                            # Preserve the complete Part. Gemini 3 attaches a
+                            # thought_signature to function-call parts and the
+                            # API rejects follow-ups if it is reconstructed away.
+                            pending_tool_calls.append(part)
                         else:
                             part_events.append(f"function_call:{part.function_call.name}")
-                            try:
-                                arg_str = str(part.function_call.args)
-                            except Exception:
-                                arg_str = "{...}"
-                            final_text.append(f"🛠️ `[Tool Call: {part.function_call.name}({arg_str})]`")
+                            logger.warning(
+                                "Ignoring undeclared Gemini function call: %s",
+                                part.function_call.name,
+                            )
                     if part.code_execution_result:
                         outcome = part.code_execution_result.outcome
                         output = part.code_execution_result.output.strip()
@@ -445,10 +447,11 @@ def generate_gemini_text(
                 calls = pending_tool_calls
                 pending_tool_calls = []
                 attempt_contents.append(
-                    types.Content(role="model", parts=[types.Part(function_call=fc) for fc in calls])
+                    types.Content(role="model", parts=calls)
                 )
                 response_parts = []
-                for fc in calls:
+                for call_part in calls:
+                    fc = call_part.function_call
                     result = _execute_es_tool(fc)
                     response_parts.append(
                         types.Part(

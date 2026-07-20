@@ -238,6 +238,24 @@ class ClassifierOutageFallbackTests(unittest.TestCase):
         finally:
             oi.get_openai_client = original
 
+    def test_classify_intent_uses_sonnet_before_keyword_fallback(self):
+        import providers.openai_intents as oi
+
+        with patch.object(oi, "get_openai_client", side_effect=RuntimeError("insufficient_quota")), patch.object(
+            oi,
+            "_classify_intent_with_sonnet",
+            new=AsyncMock(return_value="generate_image"),
+        ) as sonnet:
+            result = asyncio.run(
+                oi.classify_intent(
+                    "fallback to gemini picture generation",
+                    prev_intent="generate_image",
+                )
+            )
+
+        self.assertEqual(result, "generate_image")
+        sonnet.assert_awaited_once()
+
 
 class EfficientClassifierTests(unittest.IsolatedAsyncioTestCase):
     async def test_luna_router_disables_reasoning_and_caps_output(self):

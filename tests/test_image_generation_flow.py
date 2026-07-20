@@ -51,6 +51,24 @@ class ImageGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Replied message context from Ry7", composed_prompt)
         self.assertIn("A calm scholar with round glasses", composed_prompt)
 
+    @patch("providers.stability_generation.generate_gemini_image")
+    @patch("providers.stability_generation.generate_gpt_image", new_callable=AsyncMock)
+    async def test_openai_image_failure_always_falls_back_to_gemini(self, mock_generate_gpt, mock_gemini):
+        mock_generate_gpt.return_value = None
+        mock_gemini.return_value = "gemini-image"
+        provider_state = {}
+
+        result = await stability_generation.handle_image_generation(
+            message=None,
+            prompt="imagine a moonlit library",
+            provider_state=provider_state,
+        )
+
+        self.assertEqual(result, "gemini-image")
+        mock_gemini.assert_called_once()
+        self.assertEqual(provider_state["provider"], "Gemini")
+        self.assertEqual(provider_state["model"], stability_generation.IMG_MODEL_GEMINI)
+
     @patch("providers.stability_generation.get_openai_image_client")
     async def test_generate_gpt_image_uses_auto_size(self, mock_get_client):
         generate = AsyncMock(
