@@ -75,3 +75,16 @@ Reviewed tool and command modules may now replace checked-in symbols only when
 they declare exact `TOOL_OVERRIDES` or `COMMAND_OVERRIDES`. This preserves a
 recoverable original object for unload and rollback while preventing a module
 from expanding its replacement scope implicitly.
+
+## 2026-07-22: Resolve proposal baselines through the canonical branch
+
+The running bot may execute from an immutable detached release while the host
+control checkout and canonical branch continue advancing. Code proposals must
+therefore record `refs/heads/main` (or the explicitly configured canonical
+branch), never the running release's `HEAD`.
+
+The supervisor validates against the same canonical ref and advances its local
+copy after every successful promotion. Shared read-only Git metadata makes that
+ref immediately visible to the running release without weakening code-mount
+immutability. This prevents harmless documentation promotions and earlier
+hotloads from making every later proposal stale.

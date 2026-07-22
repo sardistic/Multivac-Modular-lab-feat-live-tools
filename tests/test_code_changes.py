@@ -1,4 +1,9 @@
+import os
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from services.code_changes import get_baseline_sha, inspect_patch, validate_patch
 
@@ -13,6 +18,50 @@ new file mode 100644
 
 
 class CodeChangePolicyTests(unittest.TestCase):
+    def test_baseline_uses_canonical_branch_from_detached_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+            tracked = repo / "tracked.txt"
+            tracked.write_text("canonical\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(
+                [
+                    "git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                    "commit", "-m", "canonical",
+                ],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+            canonical = subprocess.run(
+                ["git", "rev-parse", "main"], cwd=repo, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+            subprocess.run(["git", "switch", "--detach"], cwd=repo, check=True, capture_output=True)
+            tracked.write_text("detached\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(
+                [
+                    "git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                    "commit", "-m", "detached",
+                ],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+            detached = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+
+            self.assertNotEqual(canonical, detached)
+            with (
+                mock.patch("services.code_changes.REPO_PATH", str(repo)),
+                mock.patch.dict(os.environ, {"MULTIVAC_CANONICAL_BRANCH": "main"}),
+            ):
+                self.assertEqual(get_baseline_sha(), canonical)
+
     def test_safe_text_patch_is_inspected(self):
         report = inspect_patch(README_PATCH)
         self.assertTrue(report["ok"])

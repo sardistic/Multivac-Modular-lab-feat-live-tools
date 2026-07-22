@@ -43,6 +43,7 @@ TOOL_ACTIVATION_TIMEOUT = int(os.environ.get("MULTIVAC_TOOL_ACTIVATION_TIMEOUT",
 SIGNING_KEY_PATH = Path(os.environ.get("MULTIVAC_SIGNING_KEY", "/etc/multivac-supervisor.key"))
 RELEASE_RETENTION = int(os.environ.get("MULTIVAC_RELEASE_RETENTION", "5"))
 CANONICAL_BRANCH = os.environ.get("MULTIVAC_CANONICAL_BRANCH", "main")
+CANONICAL_REF = f"refs/heads/{CANONICAL_BRANCH}"
 CHANGE_DASHBOARD_URL = "https://sardistic.github.io/Multivac-Refactored/"
 
 
@@ -247,7 +248,10 @@ def create_worktree(row: sqlite3.Row) -> tuple[Path, str]:
 
 
 def require_current_baseline(row: sqlite3.Row) -> None:
-    current = run(["git", "rev-parse", "HEAD"], cwd=BASE_DIR).stdout.strip().lower()
+    current = run(
+        ["git", "rev-parse", "--verify", f"{CANONICAL_REF}^{{commit}}"],
+        cwd=BASE_DIR,
+    ).stdout.strip().lower()
     if current != row["baseline_sha"].lower():
         raise RuntimeError(
             f"Proposal baseline {row['baseline_sha'][:12]} is stale; current baseline is {current[:12]}. "
@@ -278,6 +282,10 @@ def promote_release(commit_sha: str) -> None:
         timeout=90,
     )
     run(["git", "merge", "--ff-only", commit_sha], cwd=BASE_DIR, timeout=60)
+    # The production control checkout may use a deployment branch while the
+    # running read-only release resolves proposal baselines through the shared
+    # canonical ref. Keep both views on the newly promoted commit.
+    run(["git", "update-ref", CANONICAL_REF, commit_sha], cwd=BASE_DIR, timeout=60)
 
 
 def validate_again(row: sqlite3.Row) -> None:
