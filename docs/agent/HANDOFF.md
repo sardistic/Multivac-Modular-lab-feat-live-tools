@@ -68,10 +68,11 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
 
 ## Uncommitted implementation details
 
-The complete tool, command, and behavior hotload stack is uncommitted in the
-current worktree. It includes runtimes, control workers, Discord routing,
-provider indirection, supervisor changes, tests, Compose/systemd integration,
-proposal policy, documentation, decisions, and this handoff.
+The complete tool, command, and behavior hotload stack is committed and pushed
+at `0c5e723`. A follow-up supervisor fix keeps SQLite/control state under `/tmp`
+inside networkless, capability-dropped validation containers while retaining
+fail-closed ownership enforcement for production state; that fix is pending its
+follow-up commit.
 
 ## Unresolved risks
 
@@ -85,20 +86,22 @@ proposal policy, documentation, decisions, and this handoff.
 - Discord command activation depends on external global tree sync availability
   and rate limits; failed sync is locally rolled back and followed by restorative
   sync, but the flow has not been exercised against live Discord.
-- No production artifact publication or activation has occurred. The stack needs
-  one normal deployment before later hotloads can avoid a gateway reconnect.
+- Production activation has not occurred. A rollback worktree at the prior
+  `27f18e7` release and a candidate worktree at `0c5e723` are staged on the host;
+  the candidate must pass the corrected isolated host gate before activation.
 - Database schema/data changes remain restart-only and require forward-compatible
   migrations; code rollback alone cannot reverse persisted mutations safely.
 
 ## Next concrete action
 
-Review and commit the stack, perform one normal production deployment, verify
-the artifact mount is read-only and `/state/tool-control` is writable by UID
-65532, then activate harmless tool, command, and behavior proposals. Confirm no
-Discord gateway reconnect, exercise one in-flight behavior replacement, verify
-command tree sync, unload each source, and confirm all built-ins return.
+Commit and publish the isolated-validation fix, rerun the networkless host gate,
+then activate the staged candidate and verify startup, mounts, ownership, and
+release state. Afterward activate harmless tool, command, and behavior proposals;
+confirm no Discord gateway reconnect, exercise one in-flight behavior replacement,
+verify command tree sync, unload each source, and confirm all built-ins return.
 
 ## Deployment/status impact
 
-Not deployed. Production remains unchanged until the normal release workflow
-installs this infrastructure.
+Not yet active. Production still runs `27f18e7`; rollback is staged at
+`/srv/multivac-releases/manual-rollback-27f18e7` and candidate code is staged at
+`/srv/multivac-releases/manual-hotload-0c5e723`.

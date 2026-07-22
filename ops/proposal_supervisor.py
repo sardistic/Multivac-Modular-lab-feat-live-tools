@@ -83,8 +83,17 @@ def initialize() -> None:
         and hasattr(os, "geteuid")
         and os.geteuid() == 0
     ):
-        os.chown(TOOL_CONTROL_DIR, 65532, 65532)
-        TOOL_CONTROL_DIR.chmod(0o700)
+        try:
+            os.chown(TOOL_CONTROL_DIR, 65532, 65532)
+            TOOL_CONTROL_DIR.chmod(0o700)
+        except PermissionError:
+            # The isolated validation container deliberately drops CAP_CHOWN.
+            # Its state root is a disposable /tmp path and never serves the bot.
+            # Production state must still fail closed if ownership cannot be set.
+            try:
+                STATE_DIR.relative_to(Path("/tmp").resolve())
+            except ValueError:
+                raise
     with db_connect() as conn:
         conn.executescript(
             """
@@ -369,6 +378,8 @@ def test_release(release: Path) -> None:
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
             "--memory", "768m", "--cpus", "2", "--pids-limit", "256",
             "-e", "OPENSEARCH_ENABLED=false",
+            "-e", "MULTIVAC_STATE_DIR=/tmp/multivac-test-state",
+            "-e", "USAGE_DB_PATH=/tmp/multivac-test-usage.db",
             # A linked worktree's .git file points back into the baseline
             # checkout. Mount only that metadata read-only so Git-based policy
             # tests can resolve and archive the recorded commit.
@@ -394,6 +405,8 @@ def test_tool_modules(release: Path, paths: list[str]) -> None:
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
             "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
             "-e", "OPENSEARCH_ENABLED=false",
+            "-e", "MULTIVAC_STATE_DIR=/tmp/multivac-tool-validation-state",
+            "-e", "USAGE_DB_PATH=/tmp/multivac-tool-validation-usage.db",
             "-v", f"{release}:/app:ro", "-w", "/app",
             "--entrypoint", "python", IMAGE_NAME,
             "-m", "dev.validate_tool_modules", *modules,
@@ -418,6 +431,8 @@ def test_command_modules(release: Path, paths: list[str]) -> None:
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
             "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
             "-e", "OPENSEARCH_ENABLED=false",
+            "-e", "MULTIVAC_STATE_DIR=/tmp/multivac-command-validation-state",
+            "-e", "USAGE_DB_PATH=/tmp/multivac-command-validation-usage.db",
             "-e", "PYTHONDONTWRITEBYTECODE=1",
             "-v", f"{release}:/app:ro", "-w", "/app",
             "--entrypoint", "python", IMAGE_NAME,
@@ -443,6 +458,8 @@ def test_behavior_modules(release: Path, paths: list[str]) -> None:
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
             "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
             "-e", "OPENSEARCH_ENABLED=false",
+            "-e", "MULTIVAC_STATE_DIR=/tmp/multivac-behavior-validation-state",
+            "-e", "USAGE_DB_PATH=/tmp/multivac-behavior-validation-usage.db",
             "-e", "PYTHONDONTWRITEBYTECODE=1",
             "-v", f"{release}:/app:ro", "-w", "/app",
             "--entrypoint", "python", IMAGE_NAME,
