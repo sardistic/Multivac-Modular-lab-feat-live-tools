@@ -71,8 +71,9 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
 The complete tool, command, and behavior hotload stack is committed and pushed
 at `0c5e723`. A follow-up supervisor fix keeps SQLite/control state under `/tmp`
 inside networkless, capability-dropped validation containers while retaining
-fail-closed ownership enforcement for production state; that fix is pending its
-follow-up commit.
+fail-closed ownership enforcement for production state. The production-image
+gate then exposed shared outer state in the dynamically imported supervisor test
+fixture; its state root is now explicitly isolated per test.
 
 ## Unresolved risks
 

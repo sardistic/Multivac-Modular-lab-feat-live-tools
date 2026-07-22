@@ -18,10 +18,16 @@ class ProposalSupervisorStateTests(unittest.TestCase):
         self.base.mkdir()
         old_base = os.environ.get("MULTIVAC_BASE_DIR")
         old_releases = os.environ.get("MULTIVAC_RELEASES_DIR")
+        old_state = os.environ.get("MULTIVAC_STATE_DIR")
         self.addCleanup(self._restore_env, "MULTIVAC_BASE_DIR", old_base)
         self.addCleanup(self._restore_env, "MULTIVAC_RELEASES_DIR", old_releases)
+        self.addCleanup(self._restore_env, "MULTIVAC_STATE_DIR", old_state)
         os.environ["MULTIVAC_BASE_DIR"] = str(self.base)
         os.environ["MULTIVAC_RELEASES_DIR"] = str(self.releases)
+        # The release validator supplies a writable state root because the
+        # candidate checkout is mounted read-only. Keep each dynamically loaded
+        # supervisor test isolated instead of sharing that outer state database.
+        os.environ["MULTIVAC_STATE_DIR"] = str(self.base)
 
         spec = importlib.util.spec_from_file_location(
             "test_supervisor_module",
