@@ -63,13 +63,19 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
 - Supervisor/policy tests cover behavior-only detection, isolated branch routing,
   protected authority files, and mixed-kind rejection.
 - Full suite: 153 passed, 7 skipped, 84 subtests passed.
+- Production-image gate: 160 unittest cases passed with 7 expected skips in a
+  networkless, read-only, capability-dropped container.
+- Live verification: the container runs commit `3f71745` with zero restarts;
+  Discord reached ready state and synchronized 11 application commands.
+- `/app` and `/tool-artifacts` are read-only mounts, artifact content is readable
+  by UID 65532, and `/state/tool-control` is writable by UID/GID 65532.
 - `git diff --check` passed; Git emitted only LF/CRLF normalization warnings.
 - Existing dependency-version and Python `audioop` warnings remain.
 
-## Uncommitted implementation details
+## Implementation details
 
-The complete tool, command, and behavior hotload stack is committed and pushed
-at `0c5e723`. A follow-up supervisor fix keeps SQLite/control state under `/tmp`
+The complete tool, command, and behavior hotload stack and deployment-gate fixes
+are committed and pushed through `3f71745`. The supervisor keeps SQLite/control state under `/tmp`
 inside networkless, capability-dropped validation containers while retaining
 fail-closed ownership enforcement for production state. The production-image
 gate then exposed shared outer state in the dynamically imported supervisor test
@@ -87,22 +93,21 @@ fixture; its state root is now explicitly isolated per test.
 - Discord command activation depends on external global tree sync availability
   and rate limits; failed sync is locally rolled back and followed by restorative
   sync, but the flow has not been exercised against live Discord.
-- Production activation has not occurred. A rollback worktree at the prior
-  `27f18e7` release and a candidate worktree at `0c5e723` are staged on the host;
-  the candidate must pass the corrected isolated host gate before activation.
+- Live tool, command, and behavior activation paths have not yet been exercised
+  against harmless production proposals. The infrastructure deployment itself
+  is healthy, and the prior `27f18e7` worktree remains staged for rollback.
 - Database schema/data changes remain restart-only and require forward-compatible
   migrations; code rollback alone cannot reverse persisted mutations safely.
 
 ## Next concrete action
 
-Commit and publish the isolated-validation fix, rerun the networkless host gate,
-then activate the staged candidate and verify startup, mounts, ownership, and
-release state. Afterward activate harmless tool, command, and behavior proposals;
-confirm no Discord gateway reconnect, exercise one in-flight behavior replacement,
-verify command tree sync, unload each source, and confirm all built-ins return.
+Activate harmless tool, command, and behavior proposals; confirm no Discord
+gateway reconnect, exercise one in-flight behavior replacement, verify command
+tree sync, unload each source, and confirm all built-ins return.
 
 ## Deployment/status impact
 
-Not yet active. Production still runs `27f18e7`; rollback is staged at
-`/srv/multivac-releases/manual-rollback-27f18e7` and candidate code is staged at
-`/srv/multivac-releases/manual-hotload-0c5e723`.
+Deployed on 2026-07-22. Production runs commit `3f71745` from
+`/srv/multivac-releases/manual-hotload-0c5e723`. The prior `27f18e7` release is
+preserved at `/srv/multivac-releases/manual-rollback-27f18e7` for immediate
+Compose activation if rollback is required.
