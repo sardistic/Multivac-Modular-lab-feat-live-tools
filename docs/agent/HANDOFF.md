@@ -69,6 +69,12 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
   Discord reached ready state and synchronized 11 application commands.
 - `/app` and `/tool-artifacts` are read-only mounts, artifact content is readable
   by UID 65532, and `/state/tool-control` is writable by UID/GID 65532.
+- The proposal-supervisor timer is enabled and active; its latest service result
+  and the dashboard service result are successful. Both run as `sardistic` with
+  supplementary state group 65532.
+- Production has zero approved proposals awaiting deployment. Existing approved
+  proposals all have recorded release deployments, so no live channel can be
+  exercised without a new owner-reviewed proposal.
 - `git diff --check` passed; Git emitted only LF/CRLF normalization warnings.
 - Existing dependency-version and Python `audioop` warnings remain.
 
@@ -80,6 +86,8 @@ inside networkless, capability-dropped validation containers while retaining
 fail-closed ownership enforcement for production state. The production-image
 gate then exposed shared outer state in the dynamically imported supervisor test
 fixture; its state root is now explicitly isolated per test.
+The tool, command, and behavior guides now accurately distinguish the deployed
+infrastructure from the still-pending end-to-end proposal smoke tests.
 
 ## Unresolved risks
 
