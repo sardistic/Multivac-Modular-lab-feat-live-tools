@@ -109,4 +109,6 @@ or intent changes, logging/event-loop bootstrap, mounts, hotload authority, and
 the stable gateway shell remain normal releases. Arbitrary module reload cannot
 safely replace existing class identities, unmanaged tasks, or native state.
 
-This infrastructure is implemented in the worktree but has not been deployed.
+This infrastructure was deployed to production on 2026-07-22. A harmless
+owner-approved behavior proposal is still needed to verify live activation,
+in-flight generation draining, teardown, and rollback against the running bot.

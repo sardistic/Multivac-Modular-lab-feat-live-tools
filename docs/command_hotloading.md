@@ -80,5 +80,6 @@ local mode, an optional final `true` authorizes declared overrides.
 Command modules are trusted in-process Python, not sandboxed workers. Event,
 intent, provider, and runtime-setting changes use the separate managed behavior
 component channel. Bootstrap, dependency, and database changes remain on the
-full release-and-restart path. This infrastructure is implemented in the
-worktree but has not been deployed.
+full release-and-restart path. The infrastructure was deployed to production on
+2026-07-22; a harmless owner-approved command proposal is still needed to verify
+live global tree synchronization and unload against Discord.

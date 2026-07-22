@@ -119,4 +119,7 @@ later tool-only and command-only proposals do not disconnect Discord.
 ## Current deployment status
 
 The runtime, supervisor publisher, read-only mount, persistent control protocol,
-and rollback path are implemented in the worktree but have not been deployed.
+and rollback path were deployed to production on 2026-07-22. Startup, mount
+permissions, supervisor automation, and the isolated production-image suite are
+verified. A harmless owner-approved tool proposal is still needed to exercise
+live activation and unload end to end.
