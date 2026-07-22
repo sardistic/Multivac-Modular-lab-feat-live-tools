@@ -81,20 +81,26 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
   `main` and proves proposal creation still records the canonical commit. It also
   verifies supervisor validation and promotion use and advance that same ref.
 - Expanded full suite: 156 passed, 7 skipped, 84 subtests passed.
+- Corrected production-image gate: 163 unittest cases passed with 7 expected
+  skips in the networkless, read-only, capability-dropped container.
+- Live verification at `290599d`: Discord reached ready state, synchronized 11
+  commands, and retained zero restarts. From inside the detached container,
+  `get_baseline_sha()`, `HEAD`, and `refs/heads/main` all resolved to `290599d`.
 - `git diff --check` passed; Git emitted only LF/CRLF normalization warnings.
 - Existing dependency-version and Python `audioop` warnings remain.
 
 ## Implementation details
 
-The complete tool, command, and behavior hotload stack and deployment-gate fixes
-are committed and pushed through `3f71745`. The supervisor keeps SQLite/control state under `/tmp`
+The complete tool, command, and behavior hotload stack, deployment-gate fixes,
+and canonical-baseline fix are committed and pushed through `290599d`. The
+supervisor keeps SQLite/control state under `/tmp`
 inside networkless, capability-dropped validation containers while retaining
 fail-closed ownership enforcement for production state. The production-image
 gate then exposed shared outer state in the dynamically imported supervisor test
 fixture; its state root is now explicitly isolated per test.
 The tool, command, and behavior guides now accurately distinguish the deployed
 infrastructure from the still-pending end-to-end proposal smoke tests.
-The canonical-baseline fix and its regression tests are pending deployment.
+The canonical-baseline fix and its regression tests are deployed.
 
 ## Unresolved risks
 
@@ -119,15 +125,14 @@ The canonical-baseline fix and its regression tests are pending deployment.
 
 ## Next concrete action
 
-Deploy the canonical-baseline fix, regenerate the harmless tool proposal, then
+Regenerate the harmless tool proposal against the canonical baseline, then
 activate tool, command, and behavior proposals. Confirm no Discord gateway
 reconnect, verify command tree sync, unload each source, and confirm all
 built-ins return.
 
 ## Deployment/status impact
 
-Hotloading infrastructure is deployed, but the canonical-baseline fix is not
-yet active. Production runs commit `3f71745` from
-`/srv/multivac-releases/manual-hotload-0c5e723`. The prior `27f18e7` release is
-preserved at `/srv/multivac-releases/manual-rollback-27f18e7` for immediate
-Compose activation if rollback is required.
+Deployed on 2026-07-22. Production runs commit `290599d` from
+`/srv/multivac-releases/manual-baseline-fix-290599d`. The immediately prior
+`3f71745` release remains at `/srv/multivac-releases/manual-hotload-0c5e723`,
+with `27f18e7` also preserved at the earlier rollback worktree.
