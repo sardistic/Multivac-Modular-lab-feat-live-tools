@@ -17,7 +17,12 @@ from providers.openai_images import (
     normalize_image_inputs,
 )
 from services import usage_costs
-from services.tools_registry import TOOL_SPECS, execute_tool
+from services.tools_registry import (
+    TOOL_SPECS,
+    ToolSnapshot,
+    execute_tool,
+    get_tool_snapshot,
+)
 
 
 async def _responses_create(**kwargs):
@@ -61,7 +66,7 @@ CONTINUE_PROMPT = (
 
 
 def _normalize_tools(tools: list | None) -> list:
-    src = tools if tools is not None else TOOLS_DEF
+    src = tools if tools is not None else get_tool_snapshot().tool_specs()
     if not USE_RESPONSES:
         return src
     flat = []
@@ -337,10 +342,21 @@ async def _collect_responses_text_with_continuations(
     return combined
 
 
-async def _exec_tool(name: str, args: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> str:
+async def _exec_tool(
+    name: str,
+    args: Dict[str, Any],
+    context: Optional[Dict[str, Any]] = None,
+    *,
+    tool_snapshot: ToolSnapshot | None = None,
+) -> str:
     logging.debug("[openai.tools] Executing %s with args=%s", name, list(args.keys()))
     try:
-        result = await execute_tool(name, args, context=context, tool_specs=TOOLS_DEF)
+        result = await execute_tool(
+            name,
+            args,
+            context=context,
+            snapshot=tool_snapshot,
+        )
         if isinstance(result, str):
             return result
         return json.dumps(result, ensure_ascii=False)
@@ -407,6 +423,8 @@ async def _responses_tool_loop(
     max_tokens: int = 700,
     max_rounds: int = 3,
     tool_context: Optional[Dict[str, Any]] = None,
+    tool_snapshot: ToolSnapshot | None = None,
+    active_tools: Optional[list] = None,
 ):
     resp = first_resp
     current_input = list(messages)
@@ -420,12 +438,17 @@ async def _responses_tool_loop(
         elif raw_output:
             current_input.append(raw_output)
         for cid, name, args in uses:
-            output_text = await _exec_tool(name, args, context=tool_context)
+            output_text = await _exec_tool(
+                name,
+                args,
+                context=tool_context,
+                tool_snapshot=tool_snapshot,
+            )
             current_input.append({"type": "function_call_output", "call_id": cid, "output": str(output_text)})
         resp = await _responses_create(
             model=model,
             input=current_input,
-            tools=_normalize_tools(None),
+            tools=_normalize_tools(active_tools),
             max_output_tokens=max_tokens,
             **temperature_kwargs(model, temperature),
         )
@@ -545,7 +568,11 @@ async def generate_openai_messages_response_with_tools(
     temperature: float = 0.6,
 ) -> str:
     try:
-        active_tools = TOOLS_DEF if tools is None else tools
+        # Capture schemas and handlers together. A hotload during this request
+        # is visible to the next request, while this one remains internally
+        # consistent through every tool-call round.
+        tool_snapshot = get_tool_snapshot()
+        active_tools = tool_snapshot.tool_specs() if tools is None else tools
         chat_tools = active_tools or None
         chat_tool_choice = "auto" if chat_tools else None
         if USE_RESPONSES:
@@ -585,6 +612,8 @@ async def generate_openai_messages_response_with_tools(
                 max_tokens=max_tokens,
                 max_rounds=3,
                 tool_context=tool_context,
+                tool_snapshot=tool_snapshot,
+                active_tools=active_tools,
             )
             text = _extract_responses_text(resp)
             if text:
@@ -632,7 +661,12 @@ async def generate_openai_messages_response_with_tools(
             for tc in msg.tool_calls:
                 try:
                     args = json.loads(tc.function.arguments)
-                    output = await _exec_tool(tc.function.name, args, context=tool_context)
+                    output = await _exec_tool(
+                        tc.function.name,
+                        args,
+                        context=tool_context,
+                        tool_snapshot=tool_snapshot,
+                    )
                 except Exception as e:
                     output = f"Error: {e}"
                 current_msgs.append({"role": "tool", "tool_call_id": tc.id, "content": str(output)})
@@ -680,7 +714,6 @@ async def generate_openai_response_tools(
     messages.append({"role": "user", "content": build_user_content_chat(prompt, image_list)})
     return await generate_openai_messages_response_with_tools(
         messages,
-        tools=TOOLS_DEF,
         tool_context={"conversation_id": conversation_id, "user_id": str(user_id), "image_urls": image_list or []},
         model=OPENAI_CHAT_MODEL,
         max_tokens=max_tokens,

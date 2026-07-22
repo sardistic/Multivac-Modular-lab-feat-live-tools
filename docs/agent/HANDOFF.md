@@ -2,49 +2,103 @@
 
 ## Active objective
 
-Make provider outages degrade cleanly: OpenAI image failures must try Gemini, OpenAI intent-classifier failures must try Claude Sonnet, and chat/Gemini tool fallbacks must not loop or emit raw tool calls.
+Review and install the completed no-restart runtime for tools, Discord commands,
+events, intents, providers, and runtime settings while retaining explicit
+restart boundaries for bootstrap, dependencies, and persistent-data migrations.
 
 ## Completed work
 
-- Added unconditional OpenAI-image to Gemini-image fallback, including billing/quota and empty-result failures.
-- Added `ANTHROPIC_INTENT_MODEL` with `claude-sonnet-5` as the default secondary intent classifier.
-- Bounded chat failover to one provider transition and reused the existing Discord status message.
-- Preserved Gemini function-call `thought_signature` data during tool follow-ups.
-- Stopped undeclared Gemini function calls from being rendered to Discord as raw pseudo-tool text.
-- Added Sonnet 5 pricing to the usage ledger.
-- Added regression coverage for all four paths.
+- Added immutable, request-scoped tool snapshots and digest-verified standalone
+  tool loading with atomic activation, persistence, unload, and rollback.
+- Added managed Discord Cog activation with one tree sync per batch, sync-failure
+  rollback, restart restoration, and original-command restoration.
+- Added exact `TOOL_OVERRIDES` and `COMMAND_OVERRIDES` declarations. Reviewed
+  modules can replace checked-in symbols only when the declared scope matches;
+  originals return on failure, unload, or rollback.
+- Added a behavior component runtime for event, intent, provider, and runtime
+  setting namespaces. Each Discord event captures one immutable generation, and
+  nested routing/provider/setting lookups reuse it.
+- Routed the message, raw-reaction, and command-error event shell, exact intent
+  dispatch, principal OpenAI/Gemini/Claude chat paths, image/vision paths, and
+  Sora/Veo entry points through the behavior registry.
+- Added async component setup and health checks, old-generation request draining,
+  stop signals, tracked task cancellation, tracked client/View cleanup, teardown,
+  bounded history, persistent active state, and rollback.
+- Added a third persistent supervisor stream for `live_components/*.py`, plus
+  isolated validation, signed content-addressed artifacts, no-restart activation,
+  rollback, audit state, and retention alongside tool and command artifacts.
+- Protected all tool, command, and behavior activation-authority/control/validator
+  files from generated proposals. Each hotload kind must be a standalone proposal;
+  mixed hotload kinds and core files are rejected.
+- Added owner-only local controls for tools, commands, and behaviors; direct
+  mutation is disabled whenever supervisor control is configured.
+- Documented all three module contracts, lifecycle rules, override declarations,
+  security boundaries, restart-only boundaries, and architectural decisions.
 
 ## Current behavior
 
-- Default image generation tries GPT Image once and then Gemini 3 Pro Image once when GPT Image returns no result or raises a moderation error.
-- Intent classification tries OpenAI first, then Sonnet, then the deterministic keyword router only if both APIs fail.
-- OpenAI chat outage fallback tries Gemini once. An empty Gemini response terminates with one user-facing error instead of returning to OpenAI.
-- Gemini Elasticsearch tool follow-ups retain the provider-supplied signed call part.
+- `live_tools/*.py` changes model-visible schemas and handlers atomically.
+- `live_commands/*.py` changes managed Cogs and synchronizes the Discord command
+  tree. Explicit declarations can temporarily displace checked-in direct commands.
+- `live_components/*.py` changes exact events, intents, provider entry points,
+  and settings. New events see the new generation while prior events finish on
+  the old generation before its resources are torn down.
+- Activation requests contain exact artifact-relative paths and SHA-256 digests.
+  Active sources survive later full releases and process restarts.
+- Setup, validation, health, batch activation, or Discord sync failures preserve
+  or restore the prior persistent projection.
+- Dependencies/native modules, database migrations, Discord token/intents,
+  logging/event-loop bootstrap, mounts, the gateway shell, and hotload authority
+  remain normal release-and-restart changes by design.
 
 ## Validation performed
 
-- `python -m py_compile config.py bot/chat_handler.py providers/openai_intents.py providers/stability_generation.py providers/gemini_text.py services/usage_costs.py`
-- `python -m pytest -q`
-- Result: 123 passed, 7 skipped, 72 subtests passed.
-- `git diff --check` passed.
-- Production checkout verified at implementation commit `753ec8fcdb0f5448863a91ca852403997248911e`.
-- Rebuilt and restarted only `multivac-multivac-1`; Elasticsearch remained running.
-- Post-deploy verification: container started at `2026-07-20T01:01:45Z`, restart count 0, Discord gateway connected, and the bot logged `Bot is online and ready!`.
-- Verified `.env` was restored to `root:root` mode `0600` after Compose completed.
+- Compiled every changed runtime, control worker, validator, routed bot module,
+  supervisor, and `discord_bot.py` with `python -m py_compile`.
+- Behavior tests cover exact override authorization, immutable settings, reload,
+  rollback, state restoration, failed-batch rollback, owned-task shutdown, and an
+  in-flight old request draining after new traffic switches generations.
+- Command tests cover built-in displacement/restoration and Discord tree-sync
+  rollback. Tool tests cover declared built-in replacement and restoration.
+- Supervisor/policy tests cover behavior-only detection, isolated branch routing,
+  protected authority files, and mixed-kind rejection.
+- Full suite: 153 passed, 7 skipped, 84 subtests passed.
+- `git diff --check` passed; Git emitted only LF/CRLF normalization warnings.
+- Existing dependency-version and Python `audioop` warnings remain.
 
 ## Uncommitted implementation details
 
-None. Provider routing, configuration, usage pricing, tests, and this deployment handoff are committed and pushed.
+The complete tool, command, and behavior hotload stack is uncommitted in the
+current worktree. It includes runtimes, control workers, Discord routing,
+provider indirection, supervisor changes, tests, Compose/systemd integration,
+proposal policy, documentation, decisions, and this handoff.
 
 ## Unresolved risks
 
-- No paid live-provider calls were made. Production must have an Anthropic key with access to `claude-sonnet-5`; `ANTHROPIC_INTENT_MODEL` can override the model if needed.
-- Existing dependency-version and Python `audioop` warnings remain unrelated to this change.
+- All hotloaded modules are trusted code executing inside the credential-bearing
+  bot process. Review and isolated validation reduce risk but do not sandbox them.
+- Lifecycle cleanup is enforceable only for resources registered through the
+  component context; a trusted module can still create unmanaged global state.
+- Provider overrides must preserve the documented fallback call signature.
+- A component replacing the full `message` event owns command pass-through and
+  must call `bot.process_commands` when appropriate.
+- Discord command activation depends on external global tree sync availability
+  and rate limits; failed sync is locally rolled back and followed by restorative
+  sync, but the flow has not been exercised against live Discord.
+- No production artifact publication or activation has occurred. The stack needs
+  one normal deployment before later hotloads can avoid a gateway reconnect.
+- Database schema/data changes remain restart-only and require forward-compatible
+  migrations; code rollback alone cannot reverse persisted mutations safely.
 
 ## Next concrete action
 
-Trigger a controlled OpenAI-outage image request and inspect the single status message plus Gemini result. No paid live-provider request was sent during deployment verification.
+Review and commit the stack, perform one normal production deployment, verify
+the artifact mount is read-only and `/state/tool-control` is writable by UID
+65532, then activate harmless tool, command, and behavior proposals. Confirm no
+Discord gateway reconnect, exercise one in-flight behavior replacement, verify
+command tree sync, unload each source, and confirm all built-ins return.
 
 ## Deployment/status impact
 
-Implementation commit `753ec8f` was pushed to `origin/main` and deployed to the production Multivac container on 2026-07-20. The bot is connected and ready; no rollback was required.
+Not deployed. Production remains unchanged until the normal release workflow
+installs this infrastructure.

@@ -23,8 +23,33 @@ from providers.stability_utils import (
     handle_image_generation,
 )
 from services.weather_utils import get_location_details, get_weather_data
+from services.behavior_registry import invoke_provider
 
 logger = logging.getLogger("discord_bot")
+
+
+async def _generate_gemini_image_threaded(*args, **kwargs):
+    return await asyncio.to_thread(generate_gemini_image, *args, **kwargs)
+
+
+async def _edit_gemini_image_threaded(*args, **kwargs):
+    return await asyncio.to_thread(edit_gemini_image, *args, **kwargs)
+
+
+async def _openai_edit_image(img_url: str, edit_instruction: str):
+    return await get_openai_client().responses.create(
+        model=OPENAI_CHAT_MODEL,
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": edit_instruction},
+                    {"type": "input_image", "image_url": img_url},
+                ],
+            }
+        ],
+        tools=[{"type": "image_generation", "action": "edit"}],
+    )
 
 _EXPLANATION_REQUEST_RE = re.compile(
     r"\b(explain|meaning|mean|what should i understand|what am i supposed to understand|"
@@ -377,7 +402,13 @@ async def handle_generate_image_intent(
                     f"Premium Apple / SF Pro typography / iOS 17 Weather app aesthetic, 8k hyper-detailed text."
                 )
                 logger.info(f"Generating extreme weather widget: {widget_prompt}")
-                return await asyncio.to_thread(generate_gemini_image, widget_prompt, 1600, 900)
+                return await invoke_provider(
+                    "image.gemini.generate",
+                    _generate_gemini_image_threaded,
+                    widget_prompt,
+                    1600,
+                    900,
+                )
             except Exception as e:
                 logger.error(f"Weather widget failed: {e}")
                 return None
@@ -410,8 +441,14 @@ async def handle_generate_image_intent(
         message,
         action_label=lambda: f"Generating ({provider_state['model']})",
         emoji="🎨",
-        coro=handle_image_generation(
-            message, prompt, reply_msg=ref_msg, use_gemini=use_gemini, provider_state=provider_state
+        coro=invoke_provider(
+            "image.generate",
+            handle_image_generation,
+            message,
+            prompt,
+            reply_msg=ref_msg,
+            use_gemini=use_gemini,
+            provider_state=provider_state,
         ),
         duration_estimate=duration_estimate,
         summarizer=(lambda: "Rendering image… adding details…") if stream_ok else None,
@@ -450,24 +487,19 @@ async def handle_edit_image_intent(
 
     async def _do_single_edit_gemini(img_url: str):
         image_bytes = await asyncio.to_thread(_image_ref_to_bytes, img_url)
-        return await asyncio.to_thread(edit_gemini_image, image_bytes, prompt)
+        return await invoke_provider(
+            "image.gemini.edit",
+            _edit_gemini_image_threaded,
+            image_bytes,
+            prompt,
+        )
 
     async def _do_single_edit(img_url: str):
         if use_gemini:
             return await _do_single_edit_gemini(img_url)
         edit_instruction = f"You must edit this image. {prompt}. Apply the changes to the image."
-        response = await get_openai_client().responses.create(
-            model=OPENAI_CHAT_MODEL,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": edit_instruction},
-                        {"type": "input_image", "image_url": img_url},
-                    ],
-                }
-            ],
-            tools=[{"type": "image_generation", "action": "edit"}],
+        response = await invoke_provider(
+            "image.openai.edit", _openai_edit_image, img_url, edit_instruction
         )
 
         image_calls = [o for o in response.output if o.type == "image_generation_call"]
@@ -518,7 +550,8 @@ async def handle_describe_image_intent(
         reply_context = ""
 
     async def _describe():
-        extracted_notes = await generate_openai_messages_response(
+        extracted_notes = await invoke_provider(
+            "vision.openai", generate_openai_messages_response,
             _build_image_extraction_messages(
                 prompt=prompt,
                 image_urls=image_urls,
@@ -531,7 +564,8 @@ async def handle_describe_image_intent(
         if extracted_notes.startswith("⚠️ OpenAI error:"):
             return extracted_notes
 
-        final_text = await generate_openai_messages_response(
+        final_text = await invoke_provider(
+            "vision.openai", generate_openai_messages_response,
             _build_image_explanation_messages(
                 prompt=prompt,
                 extracted_notes=extracted_notes,
@@ -546,7 +580,8 @@ async def handle_describe_image_intent(
             return final_text
 
         if _needs_explanation_retry(prompt, final_text):
-            retry_text = await generate_openai_messages_response(
+            retry_text = await invoke_provider(
+                "vision.openai", generate_openai_messages_response,
                 _build_image_explanation_messages(
                     prompt=prompt,
                     extracted_notes=extracted_notes,
@@ -563,7 +598,8 @@ async def handle_describe_image_intent(
 
         repair_rounds = 0
         while _needs_explanation_repair(prompt, final_text) and repair_rounds < 2:
-            repaired_text = await generate_openai_messages_response(
+            repaired_text = await invoke_provider(
+                "vision.openai", generate_openai_messages_response,
                 _build_image_repair_messages(
                     prompt=prompt,
                     extracted_notes=extracted_notes,

@@ -42,6 +42,85 @@ class CodeChangePolicyTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertTrue(any("dashboard/app.js" in error for error in report["errors"]))
 
+    def test_live_tool_authority_cannot_be_changed_by_proposals(self):
+        for path in (
+            "services/tool_runtime.py",
+            "services/tool_control.py",
+            "services/tools_registry.py",
+            "services/tool_dispatch.py",
+            "services/command_runtime.py",
+            "services/command_control.py",
+            "services/behavior_runtime.py",
+            "services/behavior_registry.py",
+            "services/behavior_control.py",
+            "dev/validate_tool_modules.py",
+            "dev/validate_command_modules.py",
+            "dev/validate_behavior_modules.py",
+        ):
+            with self.subTest(path=path):
+                patch = f"""diff --git a/{path} b/{path}
+--- a/{path}
++++ b/{path}
+@@ -1 +1 @@
+-safe
++unsafe
+"""
+                report = inspect_patch(patch)
+                self.assertFalse(report["ok"])
+                self.assertTrue(any(path in error for error in report["errors"]))
+
+    def test_live_tools_must_be_standalone_tool_only_modules(self):
+        mixed = """diff --git a/live_tools/echo.py b/live_tools/echo.py
+new file mode 100644
+--- /dev/null
++++ b/live_tools/echo.py
+@@ -0,0 +1 @@
++TOOL_SPECS = []
+diff --git a/readme.md b/readme.md
+--- a/readme.md
++++ b/readme.md
+@@ -1 +1 @@
+-old
++new
+"""
+        report = inspect_patch(mixed)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("proposed separately" in error for error in report["errors"]))
+
+        mixed_kinds = """diff --git a/live_tools/echo.py b/live_tools/echo.py
+new file mode 100644
+--- /dev/null
++++ b/live_tools/echo.py
+@@ -0,0 +1 @@
++TOOL_SPECS = []
+diff --git a/live_commands/hello.py b/live_commands/hello.py
+new file mode 100644
+--- /dev/null
++++ b/live_commands/hello.py
+@@ -0,0 +1 @@
++async def setup(bot): pass
+"""
+        report = inspect_patch(mixed_kinds)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("separate proposals" in error for error in report["errors"]))
+
+        mixed_behavior = """diff --git a/live_components/chat.py b/live_components/chat.py
+new file mode 100644
+--- /dev/null
++++ b/live_components/chat.py
+@@ -0,0 +1 @@
++BEHAVIOR_HANDLERS = {}
+diff --git a/live_commands/hello.py b/live_commands/hello.py
+new file mode 100644
+--- /dev/null
++++ b/live_commands/hello.py
+@@ -0,0 +1 @@
++async def setup(bot): pass
+"""
+        report = inspect_patch(mixed_behavior)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("separate proposals" in error for error in report["errors"]))
+
     def test_traversal_and_binary_patches_are_rejected(self):
         patch = """diff --git a/../outside b/../outside
 GIT binary patch

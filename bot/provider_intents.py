@@ -12,16 +12,20 @@ from providers.claude_utils import CLAUDE_MODEL, generate_claude_response, image
 from providers.gemini_utils import GeminiModerationError, generate_gemini_text
 from providers.openai_utils import (
     OpenAIModerationError,
-    TOOLS_DEF,
     generate_openai_messages_response,
     generate_openai_messages_response_with_tools,
 )
+from services.behavior_registry import invoke_provider
 from bot.response_policy import apply_personality_overrides, build_personality_system_message
 from services.memory_utils import build_message_window
 from services.url_utils import extract_main_text, fetch_url_content, reduce_text_length
 from services.youtube_utils import extract_youtube_id, fetch_youtube_transcript
 
 logger = logging.getLogger("discord_bot")
+
+
+async def _generate_gemini_threaded(*args, **kwargs):
+    return await asyncio.to_thread(generate_gemini_text, *args, **kwargs)
 
 
 async def _youtube_transcript_for(text_with_url: str, max_chars: int = 9000) -> str | None:
@@ -122,7 +126,7 @@ async def handle_claude_chat_intent(
         message,
         action_label="Thinking (Claude)",
         emoji="🧠",
-        coro=generate_claude_response(claude_messages),
+        coro=invoke_provider("chat.claude", generate_claude_response, claude_messages),
         duration_estimate=5,
         summarizer=(lambda: "Queries Anthropic API...") if stream_ok else None,
     )
@@ -208,16 +212,18 @@ async def handle_gemini_chat_intent(
                 }
                 msgs = list(context_msgs)
                 msgs.append({"role": "user", "content": clean_prompt})
-                txt = await generate_openai_messages_response_with_tools(
+                txt = await invoke_provider(
+                    "chat.openai",
+                    generate_openai_messages_response_with_tools,
                     msgs,
-                    tools=TOOLS_DEF,
                     tool_context=ctx,
                     model=selected_model,
                 )
                 return txt, []
 
-            return await asyncio.to_thread(
-                generate_gemini_text,
+            return await invoke_provider(
+                "chat.gemini",
+                _generate_gemini_threaded,
                 clean_prompt,
                 context=context_msgs,
                 extra_parts=gemini_parts,
@@ -323,7 +329,9 @@ async def handle_summarize_url_intent(
         ]
         if personality_msg:
             msgs.insert(0, {"role": "system", "content": personality_msg})
-        summary = await generate_openai_messages_response(msgs)
+        summary = await invoke_provider(
+            "chat.openai_plain", generate_openai_messages_response, msgs
+        )
         summary = apply_personality_overrides(message.author.id, intent="summarize_url", text=summary)
         return f"**{title or 'Summary'}**\n{summary}"
 

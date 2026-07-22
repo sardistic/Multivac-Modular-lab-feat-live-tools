@@ -7,13 +7,18 @@ from bot.response_policy import apply_personality_overrides
 from providers.openai_images import DEFAULT_VISION_DETAIL
 from providers.gemini_utils import GeminiModerationError, generate_gemini_text
 from providers.openai_client import OPENAI_CHAT_MODEL
-from providers.openai_utils import OpenAIModerationError, TOOLS_DEF, generate_openai_messages_response_with_tools
+from providers.openai_utils import OpenAIModerationError, generate_openai_messages_response_with_tools
+from services.behavior_registry import invoke_provider
 
 logger = logging.getLogger("discord_bot")
 
 # Model used to answer chat when the OpenAI backend is unavailable (quota/429,
 # rate limit, connection). Keeps the bot usable during an OpenAI outage.
 GEMINI_FALLBACK_CHAT_MODEL = "gemini-3-flash-preview"
+
+
+async def _generate_gemini_threaded(*args, **kwargs):
+    return await asyncio.to_thread(generate_gemini_text, *args, **kwargs)
 
 
 def _is_openai_outage(text) -> bool:
@@ -86,8 +91,9 @@ async def handle_chat_intent(
                 status_res = {"text": ""}
                 # to_thread: generate_gemini_text is synchronous/blocking and
                 # this runs on the event loop (as a live OpenAI-outage fallback).
-                text_resp, artifacts = await asyncio.to_thread(
-                    generate_gemini_text,
+                text_resp, artifacts = await invoke_provider(
+                    "chat.gemini",
+                    _generate_gemini_threaded,
                     prompt=prompt,
                     context=msgs,
                     extra_parts=gemini_parts or None,
@@ -107,9 +113,10 @@ async def handle_chat_intent(
                     ],
                 }
 
-            return await generate_openai_messages_response_with_tools(
+            return await invoke_provider(
+                "chat.openai",
+                generate_openai_messages_response_with_tools,
                 msgs,
-                tools=TOOLS_DEF,
                 tool_context=ctx,
                 model=selected_model,
             )
