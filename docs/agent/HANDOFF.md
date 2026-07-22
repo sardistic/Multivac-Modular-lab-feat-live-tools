@@ -34,6 +34,8 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
   mutation is disabled whenever supervisor control is configured.
 - Documented all three module contracts, lifecycle rules, override declarations,
   security boundaries, restart-only boundaries, and architectural decisions.
+- Fixed proposal baseline resolution so a detached running release reads the
+  shared canonical branch, and successful promotion advances that local ref.
 
 ## Current behavior
 
@@ -75,6 +77,10 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
 - Production has zero approved proposals awaiting deployment. Existing approved
   proposals all have recorded release deployments, so no live channel can be
   exercised without a new owner-reviewed proposal.
+- Regression coverage creates a detached release whose `HEAD` differs from
+  `main` and proves proposal creation still records the canonical commit. It also
+  verifies supervisor validation and promotion use and advance that same ref.
+- Expanded full suite: 156 passed, 7 skipped, 84 subtests passed.
 - `git diff --check` passed; Git emitted only LF/CRLF normalization warnings.
 - Existing dependency-version and Python `audioop` warnings remain.
 
@@ -88,6 +94,7 @@ gate then exposed shared outer state in the dynamically imported supervisor test
 fixture; its state root is now explicitly isolated per test.
 The tool, command, and behavior guides now accurately distinguish the deployed
 infrastructure from the still-pending end-to-end proposal smoke tests.
+The canonical-baseline fix and its regression tests are pending deployment.
 
 ## Unresolved risks
 
@@ -104,18 +111,23 @@ infrastructure from the still-pending end-to-end proposal smoke tests.
 - Live tool, command, and behavior activation paths have not yet been exercised
   against harmless production proposals. The infrastructure deployment itself
   is healthy, and the prior `27f18e7` worktree remains staged for rollback.
+- The first harmless tool proposal failed closed because the running detached
+  release recorded its own commit rather than the newer canonical branch. No
+  artifact was activated; regenerate it after the baseline fix is deployed.
 - Database schema/data changes remain restart-only and require forward-compatible
   migrations; code rollback alone cannot reverse persisted mutations safely.
 
 ## Next concrete action
 
-Activate harmless tool, command, and behavior proposals; confirm no Discord
-gateway reconnect, exercise one in-flight behavior replacement, verify command
-tree sync, unload each source, and confirm all built-ins return.
+Deploy the canonical-baseline fix, regenerate the harmless tool proposal, then
+activate tool, command, and behavior proposals. Confirm no Discord gateway
+reconnect, verify command tree sync, unload each source, and confirm all
+built-ins return.
 
 ## Deployment/status impact
 
-Deployed on 2026-07-22. Production runs commit `3f71745` from
+Hotloading infrastructure is deployed, but the canonical-baseline fix is not
+yet active. Production runs commit `3f71745` from
 `/srv/multivac-releases/manual-hotload-0c5e723`. The prior `27f18e7` release is
 preserved at `/srv/multivac-releases/manual-rollback-27f18e7` for immediate
 Compose activation if rollback is required.

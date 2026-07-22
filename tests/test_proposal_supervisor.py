@@ -73,6 +73,43 @@ class ProposalSupervisorStateTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(tuple(row), ("/release/6", 6))
 
+    def test_baseline_check_reads_canonical_ref(self):
+        row = {"baseline_sha": "a" * 40}
+        result = mock.Mock(stdout=("a" * 40) + "\n")
+        with mock.patch.object(self.supervisor, "run", return_value=result) as run:
+            self.supervisor.require_current_baseline(row)
+
+        run.assert_called_once_with(
+            ["git", "rev-parse", "--verify", "refs/heads/main^{commit}"],
+            cwd=self.base,
+        )
+
+    def test_promotion_advances_canonical_ref(self):
+        commit = "b" * 40
+        with mock.patch.object(self.supervisor, "run") as run:
+            self.supervisor.promote_release(commit)
+
+        self.assertEqual(
+            run.call_args_list,
+            [
+                mock.call(
+                    ["git", "push", "origin", f"{commit}:refs/heads/main"],
+                    cwd=self.base,
+                    timeout=90,
+                ),
+                mock.call(
+                    ["git", "merge", "--ff-only", commit],
+                    cwd=self.base,
+                    timeout=60,
+                ),
+                mock.call(
+                    ["git", "update-ref", "refs/heads/main", commit],
+                    cwd=self.base,
+                    timeout=60,
+                ),
+            ],
+        )
+
     def test_failed_activation_restores_previous_release(self):
         release = self.releases / "proposal-9-abc"
         row = {

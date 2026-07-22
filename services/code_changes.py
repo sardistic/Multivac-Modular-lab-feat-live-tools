@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import os
 import re
 import subprocess
 import tarfile
@@ -64,15 +65,25 @@ def is_protected_path(path: str) -> bool:
 
 
 def get_baseline_sha() -> str:
+    branch = os.environ.get("MULTIVAC_CANONICAL_BRANCH", "main").strip()
+    if (
+        not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch)
+        or ".." in branch
+        or branch.endswith(("/", "."))
+    ):
+        raise RuntimeError("MULTIVAC_CANONICAL_BRANCH is not a valid branch name")
+    canonical_ref = f"refs/heads/{branch}^{{commit}}"
     result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        ["git", "rev-parse", "--verify", canonical_ref],
         cwd=REPO_PATH,
         capture_output=True,
         text=True,
         timeout=10,
     )
     if result.returncode != 0:
-        raise RuntimeError((result.stderr or "Unable to resolve Git baseline").strip())
+        raise RuntimeError(
+            (result.stderr or f"Unable to resolve canonical Git baseline {branch}").strip()
+        )
     sha = result.stdout.strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise RuntimeError("Git returned an invalid baseline SHA")
