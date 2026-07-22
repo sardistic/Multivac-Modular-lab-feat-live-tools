@@ -15,6 +15,7 @@ from providers.veo_utils import (
     veo_is_available,
 )
 from services import usage_costs
+from services.behavior_registry import invoke_provider
 from services.database_utils import (
     check_sora_limit,
     check_veo_limit,
@@ -352,9 +353,13 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
     async def _generate_video_task():
         if provider == "sora":
             if is_remix and remix_target_id:
-                job = await remix_sora_video(remix_target_id, effective_prompt)
+                job = await invoke_provider(
+                    "video.sora.remix", remix_sora_video, remix_target_id, effective_prompt
+                )
             else:
-                job = await create_sora_job(
+                job = await invoke_provider(
+                    "video.sora.create",
+                    create_sora_job,
                     effective_prompt,
                     model=selected_model,
                     size=None if image_data else "1280x720",
@@ -383,7 +388,9 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
                 if asyncio.get_event_loop().time() - start_time > 600:
                     return None, "Timeout waiting for video generation."
 
-                status_res = await get_sora_status(video_id)
+                status_res = await invoke_provider(
+                    "video.sora.status", get_sora_status, video_id
+                )
                 if not status_res.get("ok"):
                     logger.warning("Poll check failed: %s", status_res.get("error"))
                     continue
@@ -410,7 +417,9 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
                     err_msg = status_data.get("error", {}).get("message", "Unknown error")
                     return None, f"Video generation failed: {err_msg}"
 
-            content = await download_sora_content(video_id)
+            content = await invoke_provider(
+                "video.sora.download", download_sora_content, video_id
+            )
             if not content:
                 return None, "Failed to download video content."
 
@@ -419,7 +428,9 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
             _record_video_cost("sora", selected_model, selected_seconds)
             return f, None
 
-        content, err = await generate_veo_video(
+        content, err = await invoke_provider(
+            "video.veo.generate",
+            generate_veo_video,
             effective_prompt,
             model=selected_model,
             seconds=selected_seconds,

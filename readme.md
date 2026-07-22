@@ -14,6 +14,9 @@ Multivac is a modular Discord bot with multiple chat providers, image and video 
 - User facts, saved behavioral instructions, user-awareness profiles, and time-passage context
 - Owner diagnostic helpers for redacted bot log reads and tool listing
 - Optional Elasticsearch/OpenSearch backed memory and timeline recall
+- Explicit, versioned hotloading for trusted model-callable tool modules
+- Signed, rollback-capable hotloading for reviewed Discord command Cogs
+- Lifecycle-managed hotloading for reviewed events, intents, providers, and runtime settings
 
 ## Current Layout
 
@@ -109,6 +112,15 @@ This first phase changes prompt-level behavior only. It does not permit users to
 edit Python, execute shell commands, restart the bot, or modify the audit system.
 See `docs/self_modification.md` for the local architecture and the proposed
 reviewed-code-change phase.
+
+Trusted tool modules can also be activated, unloaded, and rolled back without
+disconnecting the bot. This is an explicit owner operation over a configured
+read-only artifact directory, not an automatic writable-directory watcher. See
+`docs/tool_hotloading.md` for the module contract and security boundary.
+Reviewed Discord Cogs use the parallel contract in
+`docs/command_hotloading.md`.
+Reviewed behavior components use request-scoped generations and lifecycle hooks
+documented in `docs/behavior_hotloading.md`.
 
 The owner can also record and statically review executable-code proposals with
 the `/code_*` commands. Patches are checked against their committed baseline in

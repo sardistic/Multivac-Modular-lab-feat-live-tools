@@ -6,6 +6,8 @@ services:
       - HOME=/tmp
       - PYTHONDONTWRITEBYTECODE=1
       - MULTIVAC_STATE_DIR=/state
+      - MULTIVAC_TOOL_HOTLOAD_DIR=/tool-artifacts
+      - MULTIVAC_TOOL_CONTROL_DIR=/state/tool-control
       - USAGE_DB_PATH=/state/usage_costs.db
       - GIT_CONFIG_COUNT=1
       - GIT_CONFIG_KEY_0=safe.directory
@@ -19,3 +21,4 @@ services:
       - ./state/bot.log:/app/bot.log
       - ./.git:/srv/multivac/.git:ro
       - /srv/multivac-releases:/srv/multivac-releases:ro
+      - ${MULTIVAC_TOOL_ARTIFACTS_DIR:-/srv/multivac-tool-artifacts}:/tool-artifacts:ro

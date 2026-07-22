@@ -8,6 +8,7 @@ runs it as a separate authority on the Debian host.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import hmac
 import json
@@ -21,15 +22,24 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from pathlib import PurePosixPath
 
 BASE_DIR = Path(os.environ.get("MULTIVAC_BASE_DIR", "/srv/multivac")).resolve()
 RELEASES_DIR = Path(os.environ.get("MULTIVAC_RELEASES_DIR", "/srv/multivac-releases")).resolve()
+TOOL_ARTIFACTS_DIR = Path(
+    os.environ.get(
+        "MULTIVAC_TOOL_ARTIFACTS_DIR",
+        str(BASE_DIR.parent / "multivac-tool-artifacts"),
+    )
+).resolve()
 STATE_DIR = Path(os.environ.get("MULTIVAC_STATE_DIR", str(BASE_DIR))).resolve()
+TOOL_CONTROL_DIR = STATE_DIR / "tool-control"
 DB_PATH = STATE_DIR / "conversation_history.db"
 STATE_PATH = BASE_DIR / ".multivac-release.json"
 OVERRIDE_PATH = BASE_DIR / "ops" / "docker-compose.release.yml"
 IMAGE_NAME = os.environ.get("MULTIVAC_TEST_IMAGE", "multivac-multivac")
 HEALTH_TIMEOUT = int(os.environ.get("MULTIVAC_HEALTH_TIMEOUT", "75"))
+TOOL_ACTIVATION_TIMEOUT = int(os.environ.get("MULTIVAC_TOOL_ACTIVATION_TIMEOUT", "45"))
 SIGNING_KEY_PATH = Path(os.environ.get("MULTIVAC_SIGNING_KEY", "/etc/multivac-supervisor.key"))
 RELEASE_RETENTION = int(os.environ.get("MULTIVAC_RELEASE_RETENTION", "5"))
 CANONICAL_BRANCH = os.environ.get("MULTIVAC_CANONICAL_BRANCH", "main")
@@ -62,7 +72,19 @@ def db_connect() -> sqlite3.Connection:
 
 def initialize() -> None:
     RELEASES_DIR.mkdir(parents=True, exist_ok=True)
+    TOOL_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    TOOL_CONTROL_DIR.mkdir(parents=True, exist_ok=True)
+    # The container runs as 65532:65532 and must atomically write result and
+    # active-state files. The host supervisor remains able to read/write as root.
+    if (
+        os.name != "nt"
+        and hasattr(os, "chown")
+        and hasattr(os, "geteuid")
+        and os.geteuid() == 0
+    ):
+        os.chown(TOOL_CONTROL_DIR, 65532, 65532)
+        TOOL_CONTROL_DIR.chmod(0o700)
     with db_connect() as conn:
         conn.executescript(
             """
@@ -88,6 +110,14 @@ def initialize() -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(code_deployments)")}
         if "manifest_signature" not in columns:
             conn.execute("ALTER TABLE code_deployments ADD COLUMN manifest_signature TEXT")
+        if "deployment_kind" not in columns:
+            conn.execute(
+                "ALTER TABLE code_deployments ADD COLUMN deployment_kind TEXT NOT NULL DEFAULT 'release'"
+            )
+        if "hotload_state_json" not in columns:
+            conn.execute("ALTER TABLE code_deployments ADD COLUMN hotload_state_json TEXT")
+        if "previous_hotload_state_json" not in columns:
+            conn.execute("ALTER TABLE code_deployments ADD COLUMN previous_hotload_state_json TEXT")
 
 
 def read_state() -> dict:
@@ -121,6 +151,7 @@ def compose_args(release: Path, *args: str) -> list[str]:
 def compose_env(release: Path) -> dict[str, str]:
     env = dict(os.environ)
     env["MULTIVAC_APP_DIR"] = str(release)
+    env["MULTIVAC_TOOL_ARTIFACTS_DIR"] = str(TOOL_ARTIFACTS_DIR)
     return env
 
 
@@ -163,7 +194,8 @@ def proposal(proposal_id: int) -> sqlite3.Row:
 def update_deployment(proposal_id: int, status: str, *, detail: str | None = None, **fields) -> None:
     allowed = {
         "release_path", "patch_sha256", "previous_release", "previous_proposal_id",
-        "activated_at", "finished_at", "manifest_signature",
+        "activated_at", "finished_at", "manifest_signature", "deployment_kind",
+        "hotload_state_json", "previous_hotload_state_json",
     }
     assignments = ["status=?", "detail=?"]
     values: list[object] = [status, detail]
@@ -248,6 +280,88 @@ def validate_again(row: sqlite3.Row) -> None:
         raise RuntimeError("Revalidation failed: " + "; ".join(report.get("errors", []))[:1500])
 
 
+def proposal_paths(row) -> list[str]:
+    raw_validation = None
+    if isinstance(row, dict):
+        raw_validation = row.get("validation_json")
+    elif "validation_json" in row.keys():
+        raw_validation = row["validation_json"]
+    try:
+        validation = json.loads(raw_validation or "null")
+    except (TypeError, json.JSONDecodeError):
+        validation = None
+    if isinstance(validation, dict) and isinstance(validation.get("files"), list):
+        return sorted({str(path).replace("\\", "/") for path in validation["files"]})
+
+    patch = row.get("patch", "") if isinstance(row, dict) else row["patch"]
+    paths = []
+    for line in (patch or "").splitlines():
+        if line.startswith("diff --git a/") and " b/" in line:
+            paths.append(line.split(" b/", 1)[1].strip().replace("\\", "/"))
+    return sorted(set(paths))
+
+
+def is_tool_only_proposal(row) -> bool:
+    paths = proposal_paths(row)
+    if not paths:
+        return False
+    for raw in paths:
+        path = PurePosixPath(raw)
+        if (
+            not path.parts
+            or path.parts[0] != "live_tools"
+            or path.suffix.lower() != ".py"
+            or path.name == "__init__.py"
+            or ".." in path.parts
+        ):
+            return False
+    return True
+
+
+def is_command_only_proposal(row) -> bool:
+    paths = proposal_paths(row)
+    if not paths:
+        return False
+    for raw in paths:
+        path = PurePosixPath(raw)
+        if (
+            not path.parts
+            or path.parts[0] != "live_commands"
+            or path.suffix.lower() != ".py"
+            or path.name == "__init__.py"
+            or ".." in path.parts
+        ):
+            return False
+    return True
+
+
+def is_behavior_only_proposal(row) -> bool:
+    paths = proposal_paths(row)
+    if not paths:
+        return False
+    for raw in paths:
+        path = PurePosixPath(raw)
+        if (
+            not path.parts
+            or path.parts[0] != "live_components"
+            or path.suffix.lower() != ".py"
+            or path.name == "__init__.py"
+            or ".." in path.parts
+        ):
+            return False
+    return True
+
+
+def hotload_kind(row) -> str | None:
+    if is_tool_only_proposal(row):
+        return "tool"
+    if is_command_only_proposal(row):
+        return "command"
+    if is_behavior_only_proposal(row):
+        return "behavior"
+    return None
+
+
 def test_release(release: Path) -> None:
     result = run(
         [
@@ -268,6 +382,80 @@ def test_release(release: Path) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError("Isolated tests failed: " + (result.stdout + result.stderr)[-3000:])
+
+
+def test_tool_modules(release: Path, paths: list[str]) -> None:
+    modules = [path for path in paths if (release / path).is_file()]
+    if not modules:
+        return
+    result = run(
+        [
+            "docker", "run", "--rm", "--network", "none",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+            "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
+            "-e", "OPENSEARCH_ENABLED=false",
+            "-v", f"{release}:/app:ro", "-w", "/app",
+            "--entrypoint", "python", IMAGE_NAME,
+            "-m", "dev.validate_tool_modules", *modules,
+        ],
+        timeout=90,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Isolated live-tool validation failed: "
+            + (result.stdout + result.stderr)[-3000:]
+        )
+
+
+def test_command_modules(release: Path, paths: list[str]) -> None:
+    modules = [path for path in paths if (release / path).is_file()]
+    if not modules:
+        return
+    result = run(
+        [
+            "docker", "run", "--rm", "--network", "none",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+            "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
+            "-e", "OPENSEARCH_ENABLED=false",
+            "-e", "PYTHONDONTWRITEBYTECODE=1",
+            "-v", f"{release}:/app:ro", "-w", "/app",
+            "--entrypoint", "python", IMAGE_NAME,
+            "-m", "dev.validate_command_modules", *modules,
+        ],
+        timeout=90,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Isolated live-command validation failed: "
+            + (result.stdout + result.stderr)[-3000:]
+        )
+
+
+def test_behavior_modules(release: Path, paths: list[str]) -> None:
+    modules = [path for path in paths if (release / path).is_file()]
+    if not modules:
+        return
+    result = run(
+        [
+            "docker", "run", "--rm", "--network", "none",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+            "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
+            "-e", "OPENSEARCH_ENABLED=false",
+            "-e", "PYTHONDONTWRITEBYTECODE=1",
+            "-v", f"{release}:/app:ro", "-w", "/app",
+            "--entrypoint", "python", IMAGE_NAME,
+            "-m", "dev.validate_behavior_modules", *modules,
+        ],
+        timeout=90,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Isolated live-behavior validation failed: "
+            + (result.stdout + result.stderr)[-3000:]
+        )
 
 
 def restore_pristine_release(row: sqlite3.Row, release: Path) -> None:
@@ -302,6 +490,251 @@ def sign_release(row: sqlite3.Row, patch_hash: str, release: Path) -> str:
         encoding="utf-8",
     )
     return signature
+
+
+def _atomic_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+    temp.replace(path)
+
+
+def read_active_tools() -> dict:
+    path = TOOL_CONTROL_DIR / "active-tools.json"
+    if not path.is_file():
+        return {"version": 1, "sources": {}}
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if state.get("version") != 1 or not isinstance(state.get("sources"), dict):
+        raise RuntimeError("Active tool state is invalid")
+    return state
+
+
+def read_active_commands() -> dict:
+    path = TOOL_CONTROL_DIR / "active-commands.json"
+    if not path.is_file():
+        return {"version": 1, "sources": {}}
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if state.get("version") != 1 or not isinstance(state.get("sources"), dict):
+        raise RuntimeError("Active command state is invalid")
+    return state
+
+
+def read_active_behaviors() -> dict:
+    path = TOOL_CONTROL_DIR / "active-behaviors.json"
+    if not path.is_file():
+        return {"version": 1, "sources": {}}
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if state.get("version") != 1 or not isinstance(state.get("sources"), dict):
+        raise RuntimeError("Active behavior state is invalid")
+    return state
+
+
+def read_active_hotload(kind: str) -> dict:
+    if kind == "tool":
+        return read_active_tools()
+    if kind == "command":
+        return read_active_commands()
+    if kind == "behavior":
+        return read_active_behaviors()
+    raise ValueError(f"Unsupported hotload kind: {kind}")
+
+
+def publish_hotload_artifacts(
+    row, release: Path, patch_hash: str, paths: list[str], *, kind: str
+) -> tuple[Path, str, list[dict], dict]:
+    source_prefix = {
+        "tool": "hotload",
+        "command": "hotcommand",
+        "behavior": "hotbehavior",
+    }.get(kind)
+    if source_prefix is None:
+        raise ValueError(f"Unsupported hotload kind: {kind}")
+    if not SIGNING_KEY_PATH.is_file():
+        raise RuntimeError("Host release-signing key is missing")
+    final = TOOL_ARTIFACTS_DIR / f"proposal-{row['id']}-{patch_hash[:12]}"
+    temp = TOOL_ARTIFACTS_DIR / f".proposal-{row['id']}-{patch_hash[:12]}.tmp"
+    if final.exists():
+        raise RuntimeError(f"Tool artifact already exists: {final}")
+    if temp.exists():
+        resolved = temp.resolve()
+        if resolved.parent != TOOL_ARTIFACTS_DIR or not resolved.name.startswith(".proposal-"):
+            raise RuntimeError("Refusing to clean an unexpected tool artifact path")
+        shutil.rmtree(resolved)
+    temp.mkdir(parents=True)
+
+    active_sources = read_active_hotload(kind)["sources"]
+    previous: dict[str, dict] = {}
+    operations: list[dict] = []
+    files: list[dict] = []
+    try:
+        for raw in paths:
+            source_id = f"{source_prefix}:{raw}"
+            if source_id in active_sources:
+                previous[source_id] = active_sources[source_id]
+            candidate = release / raw
+            if candidate.is_symlink():
+                raise RuntimeError(f"Symlinked tool source is not accepted: {raw}")
+            source = candidate.resolve()
+            try:
+                source.relative_to(release.resolve())
+            except ValueError as exc:
+                raise RuntimeError(f"Tool source escapes release: {raw}") from exc
+            if not source.is_file():
+                operations.append(
+                    {"action": "unload", "source_id": source_id, "proposal_id": row["id"]}
+                )
+                continue
+            payload = source.read_bytes()
+            digest = hashlib.sha256(payload).hexdigest()
+            destination = temp / raw
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payload)
+            relative_path = f"{final.name}/{raw}"
+            record = {"path": raw, "sha256": digest, "bytes": len(payload)}
+            files.append(record)
+            operations.append(
+                {
+                    "action": "activate",
+                    "source_id": source_id,
+                    "relative_path": relative_path,
+                    "sha256": digest,
+                    "proposal_id": row["id"],
+                }
+            )
+
+        unsigned = {
+            "version": 1,
+            "kind": kind,
+            "proposal_id": row["id"],
+            "baseline_sha": row["baseline_sha"],
+            "patch_sha256": patch_hash,
+            "files": files,
+            "operations": operations,
+        }
+        payload = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        signature = hmac.new(
+            SIGNING_KEY_PATH.read_bytes(), payload, hashlib.sha256
+        ).hexdigest()
+        (temp / "manifest.json").write_text(
+            json.dumps({**unsigned, "signature": signature}, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        for file_path in temp.rglob("*"):
+            if file_path.is_file():
+                file_path.chmod(0o444)
+        for directory in sorted(
+            (path for path in temp.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        ):
+            directory.chmod(0o555)
+        temp.chmod(0o555)
+        temp.replace(final)
+        return final, signature, operations, previous
+    except Exception:
+        if temp.exists():
+            for path in temp.rglob("*"):
+                with contextlib.suppress(OSError):
+                    path.chmod(0o755 if path.is_dir() else 0o644)
+            temp.chmod(0o755)
+            shutil.rmtree(temp)
+        raise
+
+
+def publish_tool_artifacts(
+    row, release: Path, patch_hash: str, paths: list[str]
+) -> tuple[Path, str, list[dict], dict]:
+    return publish_hotload_artifacts(
+        row, release, patch_hash, paths, kind="tool"
+    )
+
+
+def publish_command_artifacts(
+    row, release: Path, patch_hash: str, paths: list[str]
+) -> tuple[Path, str, list[dict], dict]:
+    return publish_hotload_artifacts(
+        row, release, patch_hash, paths, kind="command"
+    )
+
+
+def publish_behavior_artifacts(
+    row, release: Path, patch_hash: str, paths: list[str]
+) -> tuple[Path, str, list[dict], dict]:
+    return publish_hotload_artifacts(
+        row, release, patch_hash, paths, kind="behavior"
+    )
+
+
+def request_hotload_activation(
+    proposal_id: int, operations: list[dict], *, kind: str
+) -> dict:
+    filenames = {
+        "tool": ("request.json", "result.json"),
+        "command": ("command-request.json", "command-result.json"),
+        "behavior": ("behavior-request.json", "behavior-result.json"),
+    }
+    if kind not in filenames:
+        raise ValueError(f"Unsupported hotload kind: {kind}")
+    request_name, result_name = filenames[kind]
+    request_id = f"{kind}-proposal-{proposal_id}-{time.time_ns()}"
+    request = {
+        "version": 1,
+        "request_id": request_id,
+        "proposal_id": proposal_id,
+        "operations": operations,
+        "created_at": now_iso(),
+    }
+    _atomic_json(TOOL_CONTROL_DIR / request_name, request)
+    deadline = time.monotonic() + TOOL_ACTIVATION_TIMEOUT
+    result_path = TOOL_CONTROL_DIR / result_name
+    last = f"waiting for bot {kind}-control worker"
+    while time.monotonic() < deadline:
+        if result_path.is_file():
+            try:
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                last = str(exc)
+            else:
+                if result.get("request_id") == request_id:
+                    if not result.get("ok"):
+                        raise RuntimeError(
+                            f"Live-{kind} activation failed: "
+                            + str(result.get("detail", "unknown"))
+                        )
+                    return result
+        time.sleep(1)
+    raise RuntimeError(f"Live-{kind} activation timed out: {last}")
+
+
+def request_tool_activation(proposal_id: int, operations: list[dict]) -> dict:
+    return request_hotload_activation(proposal_id, operations, kind="tool")
+
+
+def request_command_activation(proposal_id: int, operations: list[dict]) -> dict:
+    return request_hotload_activation(proposal_id, operations, kind="command")
+
+
+def request_behavior_activation(proposal_id: int, operations: list[dict]) -> dict:
+    return request_hotload_activation(proposal_id, operations, kind="behavior")
+
+
+def restore_operations(previous: dict, affected: list[str]) -> list[dict]:
+    operations = []
+    for source_id in affected:
+        record = previous.get(source_id)
+        if record:
+            operations.append(
+                {
+                    "action": "activate",
+                    "source_id": source_id,
+                    "relative_path": record["relative_path"],
+                    "sha256": record["sha256"],
+                    "proposal_id": record.get("proposal_id"),
+                }
+            )
+        else:
+            operations.append({"action": "unload", "source_id": source_id})
+    return operations
 
 
 def _load_bot_token() -> str | None:
@@ -397,7 +830,7 @@ def edit_approval_progress(
         if current and not failure:
             lines.extend(("", f"Current: **{current}**"))
         if failure:
-            lines.extend(("", "**Deployment failed safely; the previous release was restored.**", failure[:700]))
+            lines.extend(("", "**Deployment failed safely; the previous state was restored.**", failure[:700]))
         lines.extend(("", f"Track public status: {CHANGE_DASHBOARD_URL}"))
         headers = {
             "Authorization": f"Bot {token}",
@@ -453,6 +886,14 @@ def activate_release(release: Path, proposal_id: int | None) -> None:
 def deploy(proposal_id: int) -> None:
     row = proposal(proposal_id)
     previous_state = read_state()
+    live_kind = hotload_kind(row)
+    hotload_only = live_kind is not None
+    changed_paths = proposal_paths(row)
+    has_live_paths = any(
+        path.startswith(("live_tools/", "live_commands/", "live_components/"))
+        for path in changed_paths
+    )
+    hotload_paths = changed_paths if hotload_only else []
     with db_connect() as conn:
         prior = conn.execute(
             "SELECT status FROM code_deployments WHERE proposal_id=?", (proposal_id,)
@@ -465,21 +906,31 @@ def deploy(proposal_id: int) -> None:
             """
             INSERT INTO code_deployments
                 (proposal_id, release_path, patch_sha256, status, previous_release,
-                 previous_proposal_id, created_at)
-            VALUES (?, '', '', 'building', ?, ?, ?)
+                 previous_proposal_id, created_at, deployment_kind)
+            VALUES (?, '', '', 'building', ?, ?, ?, ?)
             """,
             (
                 proposal_id,
                 previous_state["active_release"],
                 previous_state.get("proposal_id"),
                 now_iso(),
+                live_kind or "release",
             ),
         )
 
     previous = Path(previous_state["active_release"])
     release = None
+    artifact = None
+    hotload_operations: list[dict] = []
+    previous_hotload: dict = {}
+    hotload_activated = False
+    release_activation_attempted = False
     completed_steps = 1
     try:
+        if has_live_paths and not hotload_only:
+            raise RuntimeError(
+                "Live modules must be standalone .py files in one kind-specific proposal"
+            )
         edit_approval_progress(row, completed_steps, "Revalidating the approved patch")
         require_current_baseline(row)
         validate_again(row)
@@ -492,28 +943,94 @@ def deploy(proposal_id: int) -> None:
         )
         edit_approval_progress(row, completed_steps, "Running the networkless test suite")
         test_release(release)
+        if live_kind == "tool":
+            test_tool_modules(release, hotload_paths)
+        elif live_kind == "command":
+            test_command_modules(release, hotload_paths)
+        elif live_kind == "behavior":
+            test_behavior_modules(release, hotload_paths)
         completed_steps = 4
         edit_approval_progress(row, completed_steps, "Creating the audited Git commit")
         restore_pristine_release(row, release)
         release_commit = commit_release(row, release)
         completed_steps = 5
         edit_approval_progress(row, completed_steps, "Signing the release manifest")
-        signature = sign_release(row, patch_hash, release)
+        if live_kind == "tool":
+            artifact, signature, hotload_operations, previous_hotload = publish_tool_artifacts(
+                row, release, patch_hash, hotload_paths
+            )
+        elif live_kind == "command":
+            artifact, signature, hotload_operations, previous_hotload = publish_command_artifacts(
+                row, release, patch_hash, hotload_paths
+            )
+        elif live_kind == "behavior":
+            artifact, signature, hotload_operations, previous_hotload = publish_behavior_artifacts(
+                row, release, patch_hash, hotload_paths
+            )
+        else:
+            signature = sign_release(row, patch_hash, release)
         completed_steps = 6
-        update_deployment(proposal_id, "activating", manifest_signature=signature)
-        edit_approval_progress(row, completed_steps, "Activating the release on the host")
-        activate_release(release, proposal_id)
+        update_deployment(
+            proposal_id,
+            "activating",
+            manifest_signature=signature,
+            release_path=str(artifact if hotload_only else release),
+        )
+        if live_kind == "tool":
+            edit_approval_progress(row, completed_steps, "Hotloading the approved tool artifact")
+            activation = request_tool_activation(proposal_id, hotload_operations)
+            hotload_activated = True
+        elif live_kind == "command":
+            edit_approval_progress(row, completed_steps, "Hotloading the approved command Cogs")
+            activation = request_command_activation(proposal_id, hotload_operations)
+            hotload_activated = True
+        elif live_kind == "behavior":
+            edit_approval_progress(row, completed_steps, "Hotloading the approved behavior components")
+            activation = request_behavior_activation(proposal_id, hotload_operations)
+            hotload_activated = True
+        else:
+            edit_approval_progress(row, completed_steps, "Activating the release on the host")
+            release_activation_attempted = True
+            activate_release(release, proposal_id)
         completed_steps = 7
-        edit_approval_progress(row, completed_steps, "Waiting for Discord readiness and command sync")
-        ok, detail = healthy()
+        edit_approval_progress(row, completed_steps, "Checking the running Discord bot")
+        if hotload_only:
+            # The bot processes control requests only while Discord reports
+            # ready, so its matching acknowledgement is the health signal.
+            ok, health_detail = True, "Discord ready and tool control acknowledged"
+        else:
+            ok, health_detail = healthy()
         if not ok:
-            raise RuntimeError(f"Health check failed: {detail}")
+            raise RuntimeError(f"Health check failed: {health_detail}")
+        detail = (
+            f"Live {live_kind}s active at generation {activation['generation']}; {health_detail}"
+            if hotload_only
+            else health_detail
+        )
         completed_steps = 8
         edit_approval_progress(row, completed_steps, "Promoting the canonical Git branch")
         promote_release(release_commit)
         completed_steps = 10
+        state_fields = {}
+        if hotload_only:
+            affected = [operation["source_id"] for operation in hotload_operations]
+            current = read_active_hotload(live_kind)["sources"]
+            active_subset = {
+                source_id: current[source_id]
+                for source_id in affected
+                if source_id in current
+            }
+            state_fields = {
+                "hotload_state_json": json.dumps(active_subset, sort_keys=True),
+                "previous_hotload_state_json": json.dumps(previous_hotload, sort_keys=True),
+            }
         update_deployment(
-            proposal_id, "active", detail=detail, activated_at=now_iso(), finished_at=now_iso()
+            proposal_id,
+            "active",
+            detail=detail,
+            activated_at=now_iso(),
+            finished_at=now_iso(),
+            **state_fields,
         )
         refresh_dashboard()
         edit_approval_progress(row, completed_steps)
@@ -526,8 +1043,15 @@ def deploy(proposal_id: int) -> None:
     except Exception as exc:
         detail = str(exc)[:3000]
         try:
-            activate_release(previous, previous_state.get("proposal_id"))
-            healthy(timeout=45)
+            if hotload_only:
+                if hotload_activated:
+                    affected = [operation["source_id"] for operation in hotload_operations]
+                    restore = restore_operations(previous_hotload, affected)
+                    request_hotload_activation(proposal_id, restore, kind=live_kind)
+            else:
+                if release_activation_attempted:
+                    activate_release(previous, previous_state.get("proposal_id"))
+                    healthy(timeout=45)
         finally:
             update_deployment(proposal_id, "failed", detail=detail, finished_at=now_iso())
             refresh_dashboard()
@@ -576,6 +1100,57 @@ def rollback() -> int:
     return int(proposal_id)
 
 
+def rollback_deployment(proposal_id: int) -> int:
+    with db_connect() as conn:
+        deployment = conn.execute(
+            """
+            SELECT status, deployment_kind, hotload_state_json, previous_hotload_state_json
+            FROM code_deployments WHERE proposal_id=?
+            """,
+            (proposal_id,),
+        ).fetchone()
+    if not deployment:
+        raise RuntimeError("Deployment record is missing")
+    if deployment["status"] != "active":
+        raise RuntimeError(f"Deployment is {deployment['status']}, not active")
+    deployment_kind = deployment["deployment_kind"]
+    if deployment_kind not in {"tool", "command", "behavior"}:
+        state = read_state()
+        if state.get("proposal_id") != proposal_id:
+            raise RuntimeError("Active release changed before rollback was processed")
+        return rollback()
+
+    activated = json.loads(deployment["hotload_state_json"] or "{}")
+    previous = json.loads(deployment["previous_hotload_state_json"] or "{}")
+    affected = sorted(set(activated).union(previous))
+    current_sources = read_active_hotload(deployment_kind)["sources"]
+    current_subset = {
+        source_id: current_sources[source_id]
+        for source_id in affected
+        if source_id in current_sources
+    }
+    if current_subset != activated:
+        raise RuntimeError(f"Active {deployment_kind} versions changed before rollback was processed")
+    operations = restore_operations(previous, affected)
+    if deployment_kind == "tool":
+        result = request_tool_activation(proposal_id, operations)
+    elif deployment_kind == "command":
+        result = request_command_activation(proposal_id, operations)
+    else:
+        result = request_behavior_activation(proposal_id, operations)
+    detail = (
+        f"Previous {deployment_kind} versions restored at generation {result['generation']}"
+    )
+    update_deployment(
+        proposal_id,
+        "rolled_back",
+        detail=detail,
+        finished_at=now_iso(),
+    )
+    refresh_dashboard()
+    return proposal_id
+
+
 def process_control_requests() -> None:
     with db_connect() as conn:
         requests = conn.execute(
@@ -586,10 +1161,8 @@ def process_control_requests() -> None:
         ).fetchall()
     for request in requests:
         try:
-            active_id = rollback()
-            if active_id != request["proposal_id"]:
-                raise RuntimeError("Active release changed before rollback was processed")
-            status, detail = "completed", "Previous release restored and healthy"
+            active_id = rollback_deployment(int(request["proposal_id"]))
+            status, detail = "completed", "Previous deployment state restored and healthy"
             notify_owner(request["owner_id"], f"↩️ Multivac proposal #{active_id} was rolled back successfully.")
         except Exception as exc:
             status, detail = "failed", str(exc)[:2000]
@@ -621,6 +1194,57 @@ def prune_releases() -> None:
             continue
         run(["git", "worktree", "remove", "--force", str(resolved)], check=False)
     run(["git", "worktree", "prune"], check=False)
+    prune_tool_artifacts()
+
+
+def prune_tool_artifacts() -> None:
+    keep_names: set[str] = set()
+
+    def retain_records(records: dict) -> None:
+        for record in records.values():
+            relative = record.get("relative_path") if isinstance(record, dict) else None
+            if isinstance(relative, str):
+                parts = PurePosixPath(relative).parts
+                if parts and parts[0].startswith("proposal-"):
+                    keep_names.add(parts[0])
+
+    retain_records(read_active_tools()["sources"])
+    retain_records(read_active_commands()["sources"])
+    retain_records(read_active_behaviors()["sources"])
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT hotload_state_json, previous_hotload_state_json
+            FROM code_deployments
+            WHERE deployment_kind IN ('tool', 'command', 'behavior')
+            ORDER BY id DESC LIMIT ?
+            """,
+            (RELEASE_RETENTION,),
+        ).fetchall()
+    for row in rows:
+        for raw in row:
+            try:
+                records = json.loads(raw or "{}")
+            except json.JSONDecodeError:
+                continue
+            if isinstance(records, dict):
+                retain_records(records)
+
+    artifacts = sorted(
+        TOOL_ARTIFACTS_DIR.glob("proposal-*"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    keep_names.update(path.name for path in artifacts[:RELEASE_RETENTION])
+    for artifact in artifacts:
+        resolved = artifact.resolve()
+        if resolved.name in keep_names or resolved.parent != TOOL_ARTIFACTS_DIR:
+            continue
+        for path in resolved.rglob("*"):
+            with contextlib.suppress(OSError):
+                path.chmod(0o755 if path.is_dir() else 0o644)
+        resolved.chmod(0o755)
+        shutil.rmtree(resolved)
 
 
 def status() -> None:
@@ -642,7 +1266,10 @@ def main() -> int:
             parser.error("deploy requires proposal_id")
         deploy(args.proposal_id)
     elif args.action == "rollback":
-        rollback()
+        if args.proposal_id is None:
+            rollback()
+        else:
+            rollback_deployment(args.proposal_id)
     else:
         status()
     return 0

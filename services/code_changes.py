@@ -40,6 +40,18 @@ PROTECTED_PATTERNS = (
     "services/sqlite_store.py",
     "services/database_utils.py",
     "services/git_utils.py",
+    "services/tool_runtime.py",
+    "services/tool_control.py",
+    "services/tools_registry.py",
+    "services/tool_dispatch.py",
+    "services/command_runtime.py",
+    "services/command_control.py",
+    "services/behavior_runtime.py",
+    "services/behavior_registry.py",
+    "services/behavior_control.py",
+    "dev/validate_tool_modules.py",
+    "dev/validate_command_modules.py",
+    "dev/validate_behavior_modules.py",
     "ops/*",
     "tests/*",
     "dashboard/*",
@@ -132,6 +144,21 @@ def inspect_patch(patch: str) -> dict[str, Any]:
             errors.append(f"Protected path cannot be changed: {path}")
         if low.startswith(("archive/", "scripts/")):
             warnings.append(f"Review executable or archived path carefully: {path}")
+
+    live_paths = [
+        path
+        for path in paths
+        if path.lower().startswith(("live_tools/", "live_commands/", "live_components/"))
+    ]
+    if live_paths and len(live_paths) != len(paths):
+        errors.append("Live modules must be proposed separately from all other changes")
+    live_roots = {PurePosixPath(path).parts[0].lower() for path in live_paths}
+    if len(live_roots) > 1:
+        errors.append("Live tool, command, and behavior modules require separate proposals")
+    for path in live_paths:
+        normalized = PurePosixPath(path)
+        if normalized.suffix.lower() != ".py" or normalized.name == "__init__.py":
+            errors.append(f"Live artifact must be one standalone .py module: {path}")
 
     return {
         "ok": not errors,

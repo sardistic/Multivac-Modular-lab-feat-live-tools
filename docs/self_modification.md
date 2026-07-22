@@ -116,6 +116,29 @@ For each newly approved proposal, the supervisor:
    recent releases, and sends the proposal owner a best-effort Discord DM with
    activation, failure, or rollback results.
 
+Approved proposals containing only standalone `live_tools/*.py` modules take a
+no-restart branch after the same revalidation and networkless suite. The
+supervisor additionally imports the modules in a restricted container, signs a
+content-addressed tool artifact, publishes it through a read-only mount, and
+requests an atomic registry activation from the running bot. The bot verifies
+the file digests, persists active source records for restart restoration, and
+reports the resulting registry generation. Mixed proposals and all other code
+continue to use full release activation.
+
+Standalone `live_commands/*.py` proposals follow the same signed artifact path.
+The bot loads them through the discord.py Cog lifecycle, synchronizes the global
+application-command tree once per batch, persists active sources for restart
+restoration, and restores the prior Cogs and tree if setup or synchronization
+fails. Tool modules and command modules require separate proposals.
+
+Standalone `live_components/*.py` proposals form a third no-restart channel.
+The permanent Discord shell captures an immutable generation and routes message,
+reaction, command-error, exact intent, provider, and runtime-setting lookups
+through it. Component setup and health checks run before activation; old calls
+drain before tasks, Views, clients, and other owned resources are torn down.
+Active behavior state persists, and rollback restores the previous artifact.
+Each hotload kind requires its own proposal.
+
 The active bot runs as UID/GID 65532 with a read-only root filesystem and
 read-only release-code mount. Only `/tmp` and the dedicated `/state` mount are
 writable. Git metadata and retained worktrees are mounted

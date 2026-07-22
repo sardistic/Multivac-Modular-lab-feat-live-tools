@@ -72,6 +72,13 @@ from services.database_utils import (
 )
 from services.code_changes import MAX_PATCH_BYTES, get_baseline_sha, validate_patch
 from services.code_generator import code_generation_model, generate_code_patch
+from services.command_control import CommandControlWorker
+from services.command_runtime import CommandModuleLoader
+from services.behavior_control import BehaviorControlWorker
+from services.behavior_registry import BEHAVIOR_REGISTRY, dispatch_event
+from services.behavior_runtime import BehaviorModuleLoader
+from services.tool_control import ToolControlWorker
+from services.tools_registry import TOOL_REGISTRY, ToolModuleLoader
 from services import usage_costs
 from services.user_profile import maybe_refresh_profile
 from providers.claude_utils import ANTHROPIC_API_KEY
@@ -135,6 +142,40 @@ intents.messages = True
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="/", intents=intents)
+
+_tool_hotload_root = (os.getenv("MULTIVAC_TOOL_HOTLOAD_DIR") or "").strip()
+_tool_module_loader = (
+    ToolModuleLoader(TOOL_REGISTRY, _tool_hotload_root)
+    if _tool_hotload_root
+    else None
+)
+_tool_control_root = (os.getenv("MULTIVAC_TOOL_CONTROL_DIR") or "").strip()
+_tool_control_worker = (
+    ToolControlWorker(_tool_module_loader, _tool_control_root)
+    if _tool_module_loader is not None and _tool_control_root
+    else None
+)
+_tool_control_task: asyncio.Task | None = None
+_command_module_loader = (
+    CommandModuleLoader(bot, _tool_hotload_root) if _tool_hotload_root else None
+)
+_command_control_worker = (
+    CommandControlWorker(_command_module_loader, _tool_control_root)
+    if _command_module_loader is not None and _tool_control_root
+    else None
+)
+_command_control_task: asyncio.Task | None = None
+_behavior_module_loader = (
+    BehaviorModuleLoader(BEHAVIOR_REGISTRY, _tool_hotload_root, bot=bot)
+    if _tool_hotload_root
+    else None
+)
+_behavior_control_worker = (
+    BehaviorControlWorker(_behavior_module_loader, _tool_control_root)
+    if _behavior_module_loader is not None and _tool_control_root
+    else None
+)
+_behavior_control_task: asyncio.Task | None = None
 
 # ---- Backfill high-water marks (per guild:channel), stored in SQLite ----
 def _state_key(guild_id: int | None, channel_id: int) -> str:
@@ -348,6 +389,115 @@ async def backfill_recent_channel_history_to_es(
 _app_commands_synced = False
 
 
+async def _run_tool_control() -> None:
+    try:
+        restored = await asyncio.to_thread(_tool_control_worker.restore_active)
+        if restored["errors"]:
+            logger.error("Live tool restore errors: %s", restored["errors"])
+        elif restored["restored"]:
+            logger.info("Restored live tool sources: %s", restored["restored"])
+    except Exception:
+        logger.exception("Unable to restore active live tools")
+
+    last_request_id = None
+    while not bot.is_closed():
+        if not bot.is_ready():
+            await asyncio.sleep(2)
+            continue
+        try:
+            result = await asyncio.to_thread(_tool_control_worker.process_once)
+            if result and result.get("request_id") != last_request_id:
+                last_request_id = result.get("request_id")
+                if result.get("ok"):
+                    logger.warning(
+                        "Supervisor tool activation completed request=%s generation=%s",
+                        last_request_id,
+                        result.get("generation"),
+                    )
+                else:
+                    logger.error(
+                        "Supervisor tool activation failed request=%s detail=%s",
+                        last_request_id,
+                        result.get("detail"),
+                    )
+        except Exception:
+            logger.exception("Live tool control poll failed")
+        await asyncio.sleep(2)
+
+
+async def _run_command_control() -> None:
+    try:
+        restored = await _command_control_worker.restore_active()
+        if restored["errors"]:
+            logger.error("Live command restore errors: %s", restored["errors"])
+        elif restored["restored"]:
+            logger.info("Restored live command sources: %s", restored["restored"])
+    except Exception:
+        logger.exception("Unable to restore active live commands")
+
+    last_request_id = None
+    while not bot.is_closed():
+        if not bot.is_ready():
+            await asyncio.sleep(2)
+            continue
+        try:
+            result = await _command_control_worker.process_once()
+            if result and result.get("request_id") != last_request_id:
+                last_request_id = result.get("request_id")
+                if result.get("ok"):
+                    logger.warning(
+                        "Supervisor command activation completed request=%s generation=%s synced=%s",
+                        last_request_id,
+                        result.get("generation"),
+                        result.get("synced_commands"),
+                    )
+                else:
+                    logger.error(
+                        "Supervisor command activation failed request=%s detail=%s",
+                        last_request_id,
+                        result.get("detail"),
+                    )
+        except Exception:
+            logger.exception("Live command control poll failed")
+        await asyncio.sleep(2)
+
+
+async def _run_behavior_control() -> None:
+    try:
+        restored = await _behavior_control_worker.restore_active()
+        if restored["errors"]:
+            logger.error("Live behavior restore errors: %s", restored["errors"])
+        elif restored["restored"]:
+            logger.info("Restored live behavior sources: %s", restored["restored"])
+    except Exception:
+        logger.exception("Unable to restore active live behaviors")
+
+    last_request_id = None
+    while not bot.is_closed():
+        if not bot.is_ready():
+            await asyncio.sleep(2)
+            continue
+        try:
+            result = await _behavior_control_worker.process_once()
+            if result and result.get("request_id") != last_request_id:
+                last_request_id = result.get("request_id")
+                if result.get("ok"):
+                    logger.warning(
+                        "Supervisor behavior activation completed request=%s generation=%s",
+                        last_request_id,
+                        result.get("generation"),
+                    )
+                else:
+                    logger.error(
+                        "Supervisor behavior activation failed request=%s detail=%s",
+                        last_request_id,
+                        result.get("detail"),
+                    )
+        except Exception:
+            logger.exception("Live behavior control poll failed")
+        await asyncio.sleep(2)
+
+
 @bot.event
 async def on_ready():
     await bot.change_presence(
@@ -358,7 +508,13 @@ async def on_ready():
     # Register slash (application) commands with Discord. Global sync; if the
     # commands don't appear, the bot needs re-inviting with the
     # 'applications.commands' OAuth scope.
-    global _app_commands_synced
+    global _app_commands_synced, _tool_control_task, _command_control_task, _behavior_control_task
+    if _tool_control_worker is not None and (
+        _tool_control_task is None or _tool_control_task.done()
+    ):
+        _tool_control_task = asyncio.create_task(
+            _run_tool_control(), name="multivac-tool-control"
+        )
     if not _app_commands_synced:
         try:
             synced = await bot.tree.sync()
@@ -366,9 +522,20 @@ async def on_ready():
             logger.info("Synced %d application commands: %s", len(synced), [c.name for c in synced])
         except Exception:
             logger.exception("Application command sync failed")
+    if _command_control_worker is not None and (
+        _command_control_task is None or _command_control_task.done()
+    ):
+        _command_control_task = asyncio.create_task(
+            _run_command_control(), name="multivac-command-control"
+        )
+    if _behavior_control_worker is not None and (
+        _behavior_control_task is None or _behavior_control_task.done()
+    ):
+        _behavior_control_task = asyncio.create_task(
+            _run_behavior_control(), name="multivac-behavior-control"
+        )
 
-@bot.event
-async def on_raw_reaction_add(payload):
+async def _builtin_on_raw_reaction_add(payload):
     # Ignore bot's own reactions
     if payload.user_id == bot.user.id:
         return
@@ -426,8 +593,13 @@ async def on_raw_reaction_add(payload):
     finally:
         _expansion_locks.discard(payload.message_id)
 
+
 @bot.event
-async def on_command_error(ctx, error):
+async def on_raw_reaction_add(payload):
+    return await dispatch_event("raw_reaction_add", _builtin_on_raw_reaction_add, payload)
+
+
+async def _builtin_on_command_error(ctx, error):
     """Surface command failures to the user instead of hanging a deferred
     interaction on silent 'thinking'."""
     root = getattr(error, "original", None) or error.__cause__ or error
@@ -441,6 +613,11 @@ async def on_command_error(ctx, error):
         await ctx.reply(f"❌ `{getattr(ctx.command, 'name', '?')}` failed: {type(root).__name__}: {str(root)[:150]}")
 
 
+@bot.event
+async def on_command_error(ctx, error):
+    return await dispatch_event("command_error", _builtin_on_command_error, ctx, error)
+
+
 # --------------------------
 # Commands
 # --------------------------
@@ -448,6 +625,246 @@ async def on_command_error(ctx, error):
 @bot.hybrid_command(name="ping", description="Check that the bot is alive.")
 async def ping(ctx):
     await ctx.reply("pong")
+
+
+@bot.hybrid_command(
+    name="tool_hotload",
+    description="Owner: explicitly activate, unload, roll back, or inspect a trusted tool module.",
+    with_app_command=False,
+)
+@commands.is_owner()
+async def tool_hotload(
+    ctx,
+    action: str = "status",
+    relative_path: str = "",
+    allow_overrides: bool = False,
+):
+    """Operate the explicit live-tool loader; no directory is watched automatically."""
+    action = action.strip().lower()
+    if action == "status":
+        status = TOOL_REGISTRY.status()
+        sources = status["sources"]
+        source_lines = [
+            f"- `{item['source_id']}` · version `{item['version'] or 'inactive'}` · "
+            f"history {item['history']}"
+            for item in sources
+        ]
+        response = (
+            f"Tool registry generation `{status['generation']}` · {len(status['tools'])} tools\n"
+            + ("\n".join(source_lines) if source_lines else "No tool sources registered.")
+        )
+        await ctx.reply(response[:1900])
+        return
+
+    if _tool_module_loader is None:
+        await ctx.reply(
+            "❌ Tool hotloading is disabled. Set `MULTIVAC_TOOL_HOTLOAD_DIR` to a "
+            "supervisor-controlled, read-only artifact directory and restart once."
+        )
+        return
+    if _tool_control_worker is not None:
+        await ctx.reply(
+            "❌ Direct tool mutation is disabled while supervisor control is active. "
+            "Use the reviewed `live_tools/*.py` proposal flow."
+        )
+        return
+    if not relative_path:
+        await ctx.reply("❌ Provide a `.py` path relative to the configured hotload directory.")
+        return
+
+    try:
+        if action in {"load", "reload", "activate"}:
+            result = await asyncio.to_thread(
+                _tool_module_loader.activate,
+                relative_path,
+                allow_overrides=allow_overrides,
+            )
+        elif action == "unload":
+            result = await asyncio.to_thread(_tool_module_loader.unload, relative_path)
+        elif action == "rollback":
+            result = await asyncio.to_thread(_tool_module_loader.rollback, relative_path)
+        else:
+            await ctx.reply("❌ Action must be `status`, `load`, `reload`, `unload`, or `rollback`.")
+            return
+    except Exception as exc:
+        logger.warning(
+            "Owner tool hotload failed action=%s path=%s: %s",
+            action,
+            relative_path,
+            exc,
+            exc_info=True,
+        )
+        await ctx.reply(f"❌ Tool hotload failed: `{type(exc).__name__}: {str(exc)[:500]}`")
+        return
+
+    logger.warning(
+        "Owner tool hotload action=%s path=%s generation=%s actor=%s",
+        action,
+        relative_path,
+        result["generation"],
+        ctx.author.id,
+    )
+    tools = result.get("tools")
+    suffix = f" · tools `{', '.join(tools)}`" if tools else ""
+    await ctx.reply(
+        f"✅ Tool `{action}` complete at registry generation `{result['generation']}`{suffix}."
+    )
+
+
+@bot.hybrid_command(
+    name="command_hotload",
+    description="Owner: explicitly activate, unload, roll back, or inspect a trusted command Cog.",
+    with_app_command=False,
+)
+@commands.is_owner()
+async def command_hotload(
+    ctx,
+    action: str = "status",
+    relative_path: str = "",
+    allow_overrides: bool = False,
+):
+    action = action.strip().lower()
+    if action == "status":
+        status = (
+            _command_module_loader.status()
+            if _command_module_loader is not None
+            else {"generation": 0, "sources": []}
+        )
+        lines = [
+            f"- `{item['source_id']}` · version `{item['version'] or 'inactive'}` · "
+            f"cogs `{', '.join(item['cogs']) or '-'}` · history {item['history']}"
+            for item in status["sources"]
+        ]
+        response = f"Command registry generation `{status['generation']}`\n" + (
+            "\n".join(lines) if lines else "No live command sources registered."
+        )
+        await ctx.reply(response[:1900])
+        return
+    if _command_module_loader is None:
+        await ctx.reply("❌ Command hotloading is disabled without a configured artifact root.")
+        return
+    if _command_control_worker is not None:
+        await ctx.reply(
+            "❌ Direct command mutation is disabled while supervisor control is active. "
+            "Use the reviewed `live_commands/*.py` proposal flow."
+        )
+        return
+    if not relative_path:
+        await ctx.reply("❌ Provide a `.py` path relative to the configured hotload directory.")
+        return
+    try:
+        if action in {"load", "reload", "activate"}:
+            result = await _command_module_loader.activate(
+                relative_path, allow_overrides=allow_overrides
+            )
+        elif action == "unload":
+            result = await _command_module_loader.unload_source(
+                _command_module_loader.source_id(relative_path)
+            )
+        elif action == "rollback":
+            result = await _command_module_loader.rollback_source(
+                _command_module_loader.source_id(relative_path)
+            )
+        else:
+            await ctx.reply("❌ Action must be `status`, `load`, `reload`, `unload`, or `rollback`.")
+            return
+        await bot.tree.sync()
+    except Exception as exc:
+        logger.warning(
+            "Owner command hotload failed action=%s path=%s: %s",
+            action,
+            relative_path,
+            exc,
+            exc_info=True,
+        )
+        await ctx.reply(f"❌ Command hotload failed: `{type(exc).__name__}: {str(exc)[:500]}`")
+        return
+    logger.warning(
+        "Owner command hotload action=%s path=%s generation=%s actor=%s",
+        action,
+        relative_path,
+        result["generation"],
+        ctx.author.id,
+    )
+    await ctx.reply(
+        f"✅ Command `{action}` complete at generation `{result['generation']}`."
+    )
+
+
+@bot.hybrid_command(
+    name="behavior_hotload",
+    description="Owner: activate, unload, roll back, or inspect a trusted behavior component.",
+    with_app_command=False,
+)
+@commands.is_owner()
+async def behavior_hotload(
+    ctx,
+    action: str = "status",
+    relative_path: str = "",
+    allow_overrides: bool = False,
+):
+    action = action.strip().lower()
+    if action == "status":
+        status = BEHAVIOR_REGISTRY.status()
+        lines = [
+            f"- `{item['source_id']}` · version `{item['version'] or 'inactive'}` · "
+            f"history {item['history']}"
+            for item in status["sources"]
+        ]
+        handlers = ", ".join(
+            f"{kind}={len(names)}" for kind, names in status["handlers"].items()
+        )
+        response = (
+            f"Behavior generation `{status['generation']}` · {handlers}\n"
+            + ("\n".join(lines) if lines else "No live behavior sources registered.")
+        )
+        await ctx.reply(response[:1900])
+        return
+    if _behavior_module_loader is None:
+        await ctx.reply("❌ Behavior hotloading is disabled without a configured artifact root.")
+        return
+    if _behavior_control_worker is not None:
+        await ctx.reply(
+            "❌ Direct behavior mutation is disabled while supervisor control is active. "
+            "Use the reviewed `live_components/*.py` proposal flow."
+        )
+        return
+    if not relative_path:
+        await ctx.reply("❌ Provide a `.py` path relative to the configured hotload directory.")
+        return
+    try:
+        source_id = _behavior_module_loader.source_id(relative_path)
+        if action in {"load", "reload", "activate"}:
+            result = await _behavior_module_loader.activate(
+                relative_path, allow_overrides=allow_overrides
+            )
+        elif action == "unload":
+            result = await _behavior_module_loader.unload_source(source_id)
+        elif action == "rollback":
+            result = await _behavior_module_loader.rollback_source(source_id)
+        else:
+            await ctx.reply("❌ Action must be `status`, `load`, `reload`, `unload`, or `rollback`.")
+            return
+    except Exception as exc:
+        logger.warning(
+            "Owner behavior hotload failed action=%s path=%s: %s",
+            action,
+            relative_path,
+            exc,
+            exc_info=True,
+        )
+        await ctx.reply(f"❌ Behavior hotload failed: `{type(exc).__name__}: {str(exc)[:500]}`")
+        return
+    logger.warning(
+        "Owner behavior hotload action=%s path=%s generation=%s actor=%s",
+        action,
+        relative_path,
+        result["generation"],
+        ctx.author.id,
+    )
+    await ctx.reply(
+        f"✅ Behavior `{action}` complete at generation `{result['generation']}`."
+    )
 
 
 def _behavior_change_summary(change: dict) -> str:
@@ -1118,8 +1535,7 @@ async def usage(ctx):
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-@bot.event
-async def on_message(message: discord.Message):
+async def _builtin_on_message(message: discord.Message):
     if message.author.bot:
         return
     
@@ -1342,6 +1758,11 @@ async def on_message(message: discord.Message):
 
     # let other cogs/commands run too
     await bot.process_commands(message)
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    return await dispatch_event("message", _builtin_on_message, message)
 
 # ---- Entrypoint (used by main.py) ----
 def run_bot():

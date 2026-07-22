@@ -4,7 +4,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-User=root
+User=sardistic
+SupplementaryGroups=65532
 WorkingDirectory=/srv/multivac
 ExecStart=/usr/bin/python3 /srv/multivac/ops/publish_change_dashboard.py
 Nice=10

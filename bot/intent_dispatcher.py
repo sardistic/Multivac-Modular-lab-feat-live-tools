@@ -19,6 +19,7 @@ from bot.provider_intents import (
 from bot.video_handler import handle_generate_video_intent
 from services.stock_utils import handle_stock_command
 from services.weather_utils import handle_weather_request
+from services.behavior_registry import dispatch_intent_override, get_runtime_setting
 
 # "imagine ..." normally means generate an image, but when an image is present
 # and the ask is to translate/describe/explain/read IT, "imagine" is used in its
@@ -157,7 +158,7 @@ def wants_gemini(prompt: str) -> bool:
 
 
 def get_duration_estimate(intent: str) -> int:
-    return {
+    default = {
         "generate_image": 40,
         "edit_image": 40,
         "summarize_url": 10,
@@ -171,6 +172,11 @@ def get_duration_estimate(intent: str) -> int:
         "get_weather": 5,
         "get_stock": 5,
     }.get(intent, 12)
+    value = get_runtime_setting(f"intent.duration.{intent}", default)
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def chat_model_for_intent(intent: str) -> str:
@@ -182,7 +188,7 @@ def chat_model_for_intent(intent: str) -> str:
         OPENAI_TINY_MODEL,
     )
 
-    return {
+    default = {
         "chat_tiny": OPENAI_TINY_MODEL,
         "chat_light": OPENAI_LIGHT_MODEL,
         "chat_standard": OPENAI_STANDARD_MODEL,
@@ -190,6 +196,8 @@ def chat_model_for_intent(intent: str) -> str:
         "chat_deep": OPENAI_DEEP_MODEL,
         "clarify": OPENAI_LIGHT_MODEL,
     }.get(intent, OPENAI_CHAT_MODEL)
+    value = get_runtime_setting(f"intent.model.{intent}", default)
+    return value if isinstance(value, str) and value.strip() else default
 
 
 @dataclass
@@ -217,7 +225,7 @@ class DispatchContext:
     moderation_view_factory: Any = None
 
 
-async def dispatch_intent(ctx: DispatchContext) -> bool:
+async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
     duration_estimate = get_duration_estimate(ctx.intent)
     message = ctx.message
 
@@ -350,3 +358,16 @@ async def dispatch_intent(ctx: DispatchContext) -> bool:
         clarify_hint=(ctx.intent == "clarify"),
     )
     return True
+
+
+async def dispatch_intent(ctx: DispatchContext) -> bool:
+    """Dispatch through one captured live generation, then use core fallback.
+
+    A live component can own one exact classifier intent without replacing the
+    stable Discord message shell. Requests already in progress retain their
+    captured callback until they finish.
+    """
+    handled, result = await dispatch_intent_override(ctx.intent, ctx)
+    if handled:
+        return True if result is None else bool(result)
+    return await _dispatch_builtin_intent(ctx)
