@@ -1,17 +1,17 @@
 {
   "baseline": "0ee9530a0618",
-  "generated_at": "2026-07-23T01:23:20.985337+00:00",
+  "generated_at": "2026-07-23T01:28:22.551471+00:00",
   "proposals": [
     {
       "activated_at": "2026-07-23T01:21:29.158774+00:00",
       "baseline": "eae965d02802",
       "created_at": "2026-07-23T01:19:33.948928",
-      "deployment_result": "Healthy",
-      "deployment_status": "active",
+      "deployment_result": "Rolled back",
+      "deployment_status": "rolled_back",
       "files": [
         "live_components/deployment_smoke.py"
       ],
-      "finished_at": "2026-07-23T01:21:29.158804+00:00",
+      "finished_at": "2026-07-23T01:25:57.498141+00:00",
       "id": "river-mango",
       "patch": "426fc716c1a8",
       "reviewed_at": "2026-07-23T01:20:05.484017",
