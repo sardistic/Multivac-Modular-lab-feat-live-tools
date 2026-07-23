@@ -6,6 +6,7 @@ from bot.intent_dispatcher import chat_model_for_intent
 from services import code_generator
 from services.code_generator import (
     CODE_MODEL,
+    IDEA_CODE_MODEL,
     code_generation_model,
     extract_unified_diff,
     select_code_generation_provider,
@@ -44,6 +45,38 @@ class CodeGeneratorOutputTests(unittest.TestCase):
 
 
 class ProviderAwareCodeGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_planned_idea_uses_low_cost_code_model_and_reviewed_context(self):
+        diff = """diff --git a/bot/response_policy.py b/bot/response_policy.py
+--- a/bot/response_policy.py
++++ b/bot/response_policy.py
+@@ -1 +1 @@
+-import re
++import re  # bounded retry
+"""
+        with patch.object(
+            code_generator,
+            "_candidate_paths",
+            return_value=["bot/response_policy.py"],
+        ), patch.object(
+            code_generator,
+            "_git_at",
+            return_value="import re\n",
+        ), patch.object(
+            code_generator,
+            "_generate_code_response",
+            new=AsyncMock(return_value=(diff, IDEA_CODE_MODEL)),
+        ) as generate:
+            patch_text, metadata = await code_generator.generate_planned_idea_patch(
+                "Implement reviewed retry plan",
+                "a" * 40,
+                context_paths=["bot/response_policy.py", "config.py"],
+            )
+
+        self.assertEqual(patch_text, diff)
+        self.assertEqual(metadata["model"], IDEA_CODE_MODEL)
+        self.assertEqual(metadata["context_files"], ["bot/response_policy.py"])
+        self.assertEqual(generate.await_args.kwargs["model_override"], IDEA_CODE_MODEL)
+
     async def test_claude_directive_uses_fable_for_patch(self):
         diff = """diff --git a/bot/response_policy.py b/bot/response_policy.py
 --- a/bot/response_policy.py

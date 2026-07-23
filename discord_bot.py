@@ -71,7 +71,12 @@ from services.database_utils import (
     request_any_code_rollback,
 )
 from services.code_changes import MAX_PATCH_BYTES, get_baseline_sha, validate_patch
-from services.code_generator import code_generation_model, generate_code_patch
+from services.code_generator import (
+    IDEA_CODE_MODEL,
+    code_generation_model,
+    generate_code_patch,
+    generate_planned_idea_patch,
+)
 from services.command_control import CommandControlWorker
 from services.command_runtime import CommandModuleLoader
 from services.behavior_control import BehaviorControlWorker
@@ -80,6 +85,7 @@ from services.behavior_runtime import BehaviorModuleLoader
 from services.tool_control import ToolControlWorker
 from services.tools_registry import TOOL_REGISTRY, ToolModuleLoader
 from services import usage_costs
+from services.reflection_worker import ReflectionErrorHandler, ReflectionWorker
 from services.user_profile import maybe_refresh_profile
 from providers.claude_utils import ANTHROPIC_API_KEY
 from bot.intent_dispatcher import (
@@ -176,6 +182,9 @@ _behavior_control_worker = (
     else None
 )
 _behavior_control_task: asyncio.Task | None = None
+_reflection_worker: ReflectionWorker | None = None
+_reflection_task: asyncio.Task | None = None
+_reflection_error_handler: ReflectionErrorHandler | None = None
 
 # ---- Backfill high-water marks (per guild:channel), stored in SQLite ----
 def _state_key(guild_id: int | None, channel_id: int) -> str:
@@ -498,6 +507,67 @@ async def _run_behavior_control() -> None:
         await asyncio.sleep(2)
 
 
+async def _fetch_reflection_channel_window(session: dict) -> list[dict]:
+    """Fetch ephemeral surrounding chat for one already-authorized session."""
+    channel = bot.get_channel(int(session["channel_id"]))
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(int(session["channel_id"]))
+        except Exception:
+            channel = None
+    if channel is None or not hasattr(channel, "history"):
+        return await asyncio.to_thread(
+            ReflectionWorker._fetch_indexed_evidence, session
+        )
+
+    try:
+        after = datetime.fromisoformat(session["started_at"])
+        before = datetime.fromisoformat(session["expires_at"])
+        rows = []
+        async for msg in channel.history(
+            limit=100, after=after, before=before, oldest_first=True
+        ):
+            if msg.author.bot and (not bot.user or msg.author.id != bot.user.id):
+                continue
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            if bot.user and msg.author.id == bot.user.id:
+                role = "assistant"
+            elif str(msg.author.id) == str(session["user_id"]):
+                role = "requester"
+            else:
+                role = "participant"
+            rows.append(
+                {"message_id": str(msg.id), "role": role, "content": content}
+            )
+        return rows
+    except Exception:
+        logger.warning(
+            "reflection surrounding-history fetch failed for session %s",
+            session.get("id"),
+            exc_info=True,
+        )
+        return await asyncio.to_thread(
+            ReflectionWorker._fetch_indexed_evidence, session
+        )
+
+
+def _get_reflection_worker() -> ReflectionWorker:
+    global _reflection_worker, _reflection_error_handler
+    if _reflection_worker is None:
+        _reflection_worker = ReflectionWorker(
+            history_fetcher=_fetch_reflection_channel_window
+        )
+    if (
+        _reflection_worker.enabled
+        and _reflection_error_handler is None
+    ):
+        _reflection_error_handler = ReflectionErrorHandler(_reflection_worker)
+        logging.getLogger().addHandler(_reflection_error_handler)
+    return _reflection_worker
+
+
 @bot.event
 async def on_ready():
     await bot.change_presence(
@@ -508,7 +578,7 @@ async def on_ready():
     # Register slash (application) commands with Discord. Global sync; if the
     # commands don't appear, the bot needs re-inviting with the
     # 'applications.commands' OAuth scope.
-    global _app_commands_synced, _tool_control_task, _command_control_task, _behavior_control_task
+    global _app_commands_synced, _tool_control_task, _command_control_task, _behavior_control_task, _reflection_task
     if _tool_control_worker is not None and (
         _tool_control_task is None or _tool_control_task.done()
     ):
@@ -533,6 +603,13 @@ async def on_ready():
     ):
         _behavior_control_task = asyncio.create_task(
             _run_behavior_control(), name="multivac-behavior-control"
+        )
+    reflection = _get_reflection_worker()
+    if reflection.enabled and (
+        _reflection_task is None or _reflection_task.done()
+    ):
+        _reflection_task = asyncio.create_task(
+            reflection.run_forever(), name="multivac-reflection"
         )
 
 async def _builtin_on_raw_reaction_add(payload):
@@ -1528,6 +1605,199 @@ async def usage(ctx):
     await ctx.reply("\n".join(lines)[:1990])
 
 
+@bot.hybrid_command(
+    name="reflection_off",
+    description="Delete your pending and derived reflection state.",
+)
+async def reflection_off(ctx):
+    worker = _get_reflection_worker()
+    await asyncio.to_thread(worker.set_user_enabled, str(ctx.author.id), False)
+    await ctx.reply(
+        "🧠 Your pending sessions and derived reflection observations were removed. "
+        "Explicitly invoking Multivac again will consent to a new bounded session."
+    )
+
+
+@bot.hybrid_command(
+    name="reflection_status",
+    description="Owner: show reflection scope, queues, models, and today's budget.",
+)
+@commands.is_owner()
+async def reflection_status(ctx):
+    status = await asyncio.to_thread(_get_reflection_worker().status)
+    budget = status["budget"]
+    models = status["models"]
+    await ctx.reply(
+        "🧠 **Reflection status**\n"
+        f"Enabled: **{status['enabled']}** · invocation-scoped consent: **True**\n"
+        f"Window: {status['lookback_minutes']}m before / {status['window_minutes']}m after invocation\n"
+        f"Queue: {status['pending_sessions']} sessions · {status['new_insights']} new observations · "
+        f"{status['active_ideas']} active ideas\n"
+        f"Models: extract `{models['extract']}` · plan `{models['plan']}` · cleanup `{models['cleanup']}`\n"
+        f"Today: ${budget['spent']:.4f} spent + ${budget['reserved']:.4f} reserved · "
+        f"${budget['remaining']:.4f} of ${budget['cap']:.2f} remaining"
+    )
+
+
+@bot.hybrid_command(
+    name="reflection_activity",
+    description="Owner: show sanitized reflection observations, runs, and schedule.",
+)
+@commands.is_owner()
+async def reflection_activity(ctx, limit: int = 5):
+    activity = await asyncio.to_thread(
+        _get_reflection_worker().activity, max(1, min(8, int(limit)))
+    )
+
+    def _relative_timestamp(value: str) -> str:
+        try:
+            epoch = int(datetime.fromisoformat(value).timestamp())
+            return f"<t:{epoch}:R>"
+        except (TypeError, ValueError):
+            return "unknown"
+
+    budget = activity["budget"]
+    lines = [
+        "🧠 **Reflection activity**",
+        "_Derived telemetry only; no transcripts, identities, or private model reasoning._",
+        (
+            f"Planning signals: {activity['signal_strength']}/{activity['signal_threshold']} · "
+            f"next time-eligible {_relative_timestamp(activity['next_plan_at'])}"
+        ),
+        (
+            f"Cleanup ideas: {activity['active_ideas']}/{activity['cleanup_threshold']} · "
+            f"next time-eligible {_relative_timestamp(activity['next_cleanup_at'])}"
+        ),
+        f"Automatic budget: ${budget['spent']:.4f} spent · ${budget['remaining']:.4f} remaining",
+    ]
+    observations = activity["observations"]
+    if observations:
+        lines.append("\n**Recent structured observations**")
+        for item in observations:
+            lines.append(
+                f"`#{item['id']}` `{item['kind']}` · {item['recent_occurrences']} recent/"
+                f"{item['occurrences']} total · {item['confidence']:.0%} confidence · "
+                f"{item['actor_count']} actor(s) · `{item['status']}`\n{item['summary'][:240]}"
+            )
+    else:
+        lines.append("\n_No structured observations yet._")
+    runs = activity["runs"]
+    if runs:
+        lines.append("\n**Recent runs**")
+        for run in runs:
+            detail = f" · {run['detail'][:120]}" if run["detail"] else ""
+            lines.append(
+                f"`{run['stage']}` `{run['status']}` · `{run['model']}` · "
+                f"{_relative_timestamp(run['finished_at'])}{detail}"
+            )
+    await ctx.reply("\n".join(lines)[:1990])
+
+
+@bot.hybrid_command(
+    name="reflection_ideas",
+    description="Owner: list evidence-backed improvements Multivac has considered.",
+)
+@commands.is_owner()
+async def reflection_ideas(ctx, limit: int = 5):
+    ideas = await asyncio.to_thread(
+        _get_reflection_worker().store.list_ideas, max(1, min(10, int(limit)))
+    )
+    if not ideas:
+        await ctx.reply("_No evidence-backed reflection ideas are ready yet._")
+        return
+    lines = ["🧠 **Evidence-backed improvement ideas**"]
+    for idea in ideas:
+        lines.append(
+            f"`#{idea['id']}` **{idea['title']}** · `{idea['hotload_kind']}` · "
+            f"{idea['evidence_count']} signal(s)\n{idea['problem'][:300]}"
+        )
+    lines.append("Use `/reflection_propose <idea_id>` to generate a normal reviewable proposal.")
+    await ctx.reply("\n\n".join(lines)[:1990])
+
+
+@bot.hybrid_command(
+    name="reflection_propose",
+    description="Owner: turn one reflection idea into a low-cost, reviewable code proposal.",
+)
+@commands.is_owner()
+async def reflection_propose(ctx, idea_id: int):
+    worker = _get_reflection_worker()
+    idea = await asyncio.to_thread(worker.store.get_idea, int(idea_id))
+    if not idea or idea["status"] != "active":
+        await ctx.reply("That active reflection idea does not exist or was already proposed.")
+        return
+    owner_id = str(ctx.author.id)
+    open_proposals = await asyncio.to_thread(list_code_proposals, owner_id, 30)
+    existing = next(
+        (
+            item for item in open_proposals
+            if item["status"] in {"draft", "patch_uploaded", "reviewable"}
+        ),
+        None,
+    )
+    if existing:
+        await ctx.reply(
+            f"Finish proposal `{existing.get('public_id') or existing['id']}` before generating another."
+        )
+        return
+    if ctx.interaction:
+        await ctx.defer()
+    request = (
+        f"Implement owner-selected reflection idea #{idea['id']}: {idea['title']}. "
+        f"Suggested deployment kind: {idea['hotload_kind']}. Problem: {idea['problem']} "
+        f"Plan: {idea['proposal']} Expected impact: {idea['expected_impact']} "
+        f"Risk to preserve against: {idea['risk']} Keep the patch minimal and reversible."
+    )
+    baseline = await asyncio.to_thread(get_baseline_sha)
+    proposal_id = await asyncio.to_thread(
+        create_code_proposal, owner_id, request, baseline
+    )
+    proposal = await asyncio.to_thread(get_code_proposal, owner_id, proposal_id)
+    proposal_name = proposal.get("public_id") or str(proposal_id)
+    usage_costs.set_request_context(user_id=owner_id, intent="reflection_code")
+    try:
+        patch, generation = await generate_planned_idea_patch(
+            request,
+            baseline,
+            context_paths=idea.get("code_paths") or [],
+        )
+        await asyncio.to_thread(set_code_proposal_patch, owner_id, proposal_id, patch)
+        report = await asyncio.to_thread(validate_patch, baseline, patch)
+        report["generation"] = generation
+        proposal = await asyncio.to_thread(
+            set_code_proposal_validation, owner_id, proposal_id, report
+        )
+    except (RuntimeError, ValueError) as exc:
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(
+                review_any_code_proposal,
+                proposal_id,
+                "rejected",
+                reviewer_id="reflection-generation-failure",
+            )
+        await ctx.reply(
+            f"Idea `#{idea_id}` was recorded as proposal `{proposal_name}`, but the "
+            f"{IDEA_CODE_MODEL} coding pass failed closed: {str(exc)[:1000]}"
+        )
+        return
+    payload = io.BytesIO(patch.encode("utf-8"))
+    if not report["ok"]:
+        await ctx.reply(
+            f"⚠️ Proposal `{proposal_name}` failed static validation and is not reviewable.\n"
+            f"{_code_proposal_summary(proposal)}",
+            file=discord.File(payload, filename=f"proposal-{proposal_name}-failed.diff"),
+        )
+        return
+    await asyncio.to_thread(worker.store.mark_idea_proposed, int(idea_id), proposal_id)
+    await ctx.reply(
+        f"🧩 Reflection idea `#{idea_id}` is now reviewable proposal `{proposal_name}`.\n"
+        f"{_code_proposal_summary(proposal)}\n"
+        f"Files: {', '.join(report['files'])}\n"
+        "Approval and deployment use the unchanged owner-reviewed pipeline.",
+        file=discord.File(payload, filename=f"proposal-{proposal_name}.diff"),
+    )
+
+
 # --------------------------
 # Main message handler
 # --------------------------
@@ -1567,6 +1837,18 @@ async def _builtin_on_message(message: discord.Message):
     # Skip if user is currently responding to an image selection prompt
     if message.author.id in _pending_image_selection:
         return
+
+    try:
+        reflection = _get_reflection_worker()
+        await asyncio.to_thread(
+            reflection.note_invocation,
+            guild_id=str(message.guild.id) if message.guild else "DM",
+            channel_id=str(message.channel.id),
+            user_id=str(message.author.id),
+            message_id=str(message.id),
+        )
+    except Exception:
+        logger.warning("Unable to record bounded reflection session", exc_info=True)
 
     preflight_status = None
     try:
