@@ -2,9 +2,10 @@
 
 ## Active objective
 
-Review and install the completed no-restart runtime for tools, Discord commands,
-events, intents, providers, and runtime settings while retaining explicit
-restart boundaries for bootstrap, dependencies, and persistent-data migrations.
+Operate the completed and production-verified no-restart runtime for tools,
+Discord commands, events, intents, providers, and runtime settings while
+retaining explicit restart boundaries for bootstrap, dependencies, and
+persistent-data migrations.
 
 ## Completed work
 
@@ -46,6 +47,10 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
   1, adding the managed `DeploymentSmokeCommands` Cog without a restart.
 - Invoked `/hotload_command_smoke` as a native Discord application command,
   received the expected JSON result, then rolled proposal 12 back as generation 2.
+- Activated owner-approved behavior proposal `river-mango` as behavior generation
+  1, publishing the `deployment.smoke` runtime setting after setup and healthcheck.
+- Rolled proposal 13 back as behavior generation 2, running teardown and removing
+  the setting without warnings, a process restart, or a gateway reconnect.
 
 ## Current behavior
 
@@ -126,6 +131,12 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
   API, marked the audit row `rolled_back`, and retained the signed artifact.
 - Native invocation, propagation, and rollback caused no container restart or
   gateway reconnect.
+- `river-mango` passed revalidation, networkless testing, artifact signing,
+  digest verification, setup, healthcheck, atomic setting publication, and
+  canonical Git promotion. Generation 1 reported no warnings.
+- Behavior rollback emptied `active-behaviors.json`, recorded a warning-free
+  generation-2 unload, marked the audit row `rolled_back`, retained the signed
+  immutable artifact, and caused no restart or gateway reconnect.
 - `git diff --check` passed; Git emitted only LF/CRLF normalization warnings.
 - Existing dependency-version and Python `audioop` warnings remain.
 
@@ -152,6 +163,9 @@ unloaded, while its signed artifact remains retained for audit and restoration.
 Canonical commit `39bd3e3` adds `live_commands/deployment_smoke.py`; its managed
 Cog and hybrid command were invoked successfully and are now unloaded. The
 signed command artifact remains retained for audit and restoration.
+Canonical commit `0ee9530` adds `live_components/deployment_smoke.py`; its setup,
+healthcheck, generation-scoped setting, teardown, and rollback all completed in
+production. The source is unloaded and its signed behavior artifact is retained.
 
 ## Unresolved risks
 
@@ -165,17 +179,17 @@ signed command artifact remains retained for audit and restoration.
 - Discord command activation depends on external global tree sync availability
   and rate limits; failed sync is locally rolled back and followed by restorative
   sync, but the flow has not been exercised against live Discord.
-- Live behavior activation has not yet been exercised against a harmless
-  production proposal. The complete tool and command lifecycles—including
-  native application-command registration and removal—are proven.
+- The complete tool, command, and behavior lifecycles are proven in production,
+  including invocation or publication, teardown, rollback, artifact retention,
+  and continuity of the gateway process.
 - Database schema/data changes remain restart-only and require forward-compatible
   migrations; code rollback alone cannot reverse persisted mutations safely.
 
 ## Next concrete action
 
-Activate a harmless behavior component, verify its health and generation-scoped
-setting or handler, then roll it back and confirm lifecycle teardown without a
-restart or gateway reconnect.
+Use the reviewed tool, command, or behavior channel for future standalone runtime
+changes. Continue using normal releases for dependencies, migrations, bootstrap,
+mounts, gateway authority, and other documented restart-only boundaries.
 
 ## Deployment/status impact
 
@@ -189,3 +203,7 @@ all promotions and its unload left the Discord container on immutable core
 release `290599d` without a restart. Active command proposal 12 promoted
 canonical commit `39bd3e3` and likewise caused no restart. Proposal 12 is now
 rolled back at runtime and Discord's global tree is restored to 11 commands.
+Behavior proposal 13 promoted canonical commit `0ee9530`, published its smoke
+setting at generation 1, and rolled back at generation 2. All three hotload
+channels are now production-verified end to end while the container remains on
+immutable core release `290599d` with zero restarts.
