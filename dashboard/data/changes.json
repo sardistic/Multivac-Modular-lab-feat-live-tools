@@ -1,17 +1,17 @@
 {
-  "baseline": "385ec6487fd9",
-  "generated_at": "2026-07-23T01:13:05.984524+00:00",
+  "baseline": "eae965d02802",
+  "generated_at": "2026-07-23T01:18:15.980658+00:00",
   "proposals": [
     {
       "activated_at": "2026-07-23T01:04:00.752326+00:00",
       "baseline": "fda3b7723064",
       "created_at": "2026-07-23T01:02:43.357292",
-      "deployment_result": "Healthy",
-      "deployment_status": "active",
+      "deployment_result": "Rolled back",
+      "deployment_status": "rolled_back",
       "files": [
         "live_commands/deployment_smoke.py"
       ],
-      "finished_at": "2026-07-23T01:04:00.752339+00:00",
+      "finished_at": "2026-07-23T01:14:17.477617+00:00",
       "id": "mango-wren",
       "patch": "cf371791bfcc",
       "reviewed_at": "2026-07-23T01:03:00.705784",
