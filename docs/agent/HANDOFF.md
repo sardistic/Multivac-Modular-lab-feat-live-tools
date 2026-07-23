@@ -36,6 +36,8 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
   security boundaries, restart-only boundaries, and architectural decisions.
 - Fixed proposal baseline resolution so a detached running release reads the
   shared canonical branch, and successful promotion advances that local ref.
+- Corrected the control channel from runtime-only `0700` ownership to a private
+  `2770` setgid directory shared by the deploy supervisor and runtime group.
 
 ## Current behavior
 
@@ -86,6 +88,11 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
 - Live verification at `290599d`: Discord reached ready state, synchronized 11
   commands, and retained zero restarts. From inside the detached container,
   `get_baseline_sha()`, `HEAD`, and `refs/heads/main` all resolved to `290599d`.
+- After the second tool smoke proposal failed closed on control-directory access,
+  production permissions were repaired without restarting the bot and verified
+  writable by both the `sardistic` supervisor identity and runtime UID 65532.
+- Expanded suite after the shared-control regression test: 157 passed, 7
+  skipped, 84 subtests passed.
 - `git diff --check` passed; Git emitted only LF/CRLF normalization warnings.
 - Existing dependency-version and Python `audioop` warnings remain.
 
@@ -101,6 +108,11 @@ fixture; its state root is now explicitly isolated per test.
 The tool, command, and behavior guides now accurately distinguish the deployed
 infrastructure from the still-pending end-to-end proposal smoke tests.
 The canonical-baseline fix and its regression tests are deployed.
+The supervisor's persistent initialization contract now preserves the shared
+setgid control-directory permissions; this host-side fix does not require a bot
+restart.
+That persistence fix and its regression test are pending their host control
+checkout promotion; the live directory itself is already repaired.
 
 ## Unresolved risks
 
@@ -120,6 +132,10 @@ The canonical-baseline fix and its regression tests are deployed.
 - The first harmless tool proposal failed closed because the running detached
   release recorded its own commit rather than the newer canonical branch. No
   artifact was activated; regenerate it after the baseline fix is deployed.
+- The second harmless tool proposal passed testing but failed before publication
+  because the host supervisor could not traverse the runtime-owned `0700`
+  control directory. The previous state remained active and permissions are now
+  repaired; regenerate once the host-side contract commit is promoted.
 - Database schema/data changes remain restart-only and require forward-compatible
   migrations; code rollback alone cannot reverse persisted mutations safely.
 

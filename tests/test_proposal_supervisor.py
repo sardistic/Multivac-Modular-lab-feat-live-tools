@@ -73,6 +73,20 @@ class ProposalSupervisorStateTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(tuple(row), ("/release/6", 6))
 
+    def test_initialize_configures_private_shared_group_control_directory(self):
+        control_dir = mock.Mock()
+        with (
+            mock.patch.object(self.supervisor, "TOOL_CONTROL_DIR", control_dir),
+            mock.patch.object(self.supervisor.os, "name", "posix"),
+            mock.patch.object(self.supervisor.os, "geteuid", return_value=0, create=True),
+            mock.patch.object(self.supervisor.os, "chown", create=True) as chown,
+            mock.patch.object(self.supervisor.os, "access", return_value=True),
+        ):
+            self.supervisor.initialize()
+
+        chown.assert_called_once_with(control_dir, -1, 65532)
+        control_dir.chmod.assert_called_once_with(0o2770)
+
     def test_baseline_check_reads_canonical_ref(self):
         row = {"baseline_sha": "a" * 40}
         result = mock.Mock(stdout=("a" * 40) + "\n")

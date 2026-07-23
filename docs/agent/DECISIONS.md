@@ -88,3 +88,15 @@ copy after every successful promotion. Shared read-only Git metadata makes that
 ref immediately visible to the running release without weakening code-mount
 immutability. This prevents harmless documentation promotions and earlier
 hotloads from making every later proposal stale.
+
+## 2026-07-22: Share the control channel through a private setgid group
+
+The bot runtime and host supervisor use different Unix users. Their control
+directory is therefore group-owned by the dedicated runtime state group with
+mode `2770`, not a single-owner `0700` directory. Both principals can traverse
+and atomically replace channel files, setgid preserves the shared group on new
+files, and unrelated host users retain no access.
+
+Supervisor initialization now enforces usable read/write/traverse access and
+fails closed for production paths. Restricted validation containers may retain
+their disposable `/tmp` ownership exception.
