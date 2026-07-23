@@ -17,6 +17,7 @@ Multivac is a modular Discord bot with multiple chat providers, image and video 
 - Explicit, versioned hotloading for trusted model-callable tool modules
 - Signed, rollback-capable hotloading for reviewed Discord command Cogs
 - Lifecycle-managed hotloading for reviewed events, intents, providers, and runtime settings
+- Opt-in, invocation-scoped reflection that detects recurring pain points and runtime errors
 
 ## Current Layout
 
@@ -122,6 +123,31 @@ Reviewed Discord Cogs use the parallel contract in
 Reviewed behavior components use request-scoped generations and lifecycle hooks
 documented in `docs/behavior_hotloading.md`.
 
+The optional reflection worker opens a bounded channel window only after a user
+explicitly mentions or replies to Multivac; that invocation is consent for the
+bounded session. It can inspect a short lookback plus the conversation tail,
+detect recurring sanitized runtime
+errors, and turn corroborated observations into owner-visible improvement
+ideas. Surrounding Discord text is processed ephemerally; the reflection store
+retains derived observations, hashed actor references, message IDs, frequency
+counters, ideas, and cost records rather than a second raw-chat archive.
+
+```text
+/reflection_off
+/reflection_status
+/reflection_activity
+/reflection_ideas
+/reflection_propose 3
+```
+
+The last four commands are owner-only. `/reflection_activity` exposes sanitized
+derived observations, model-run outcomes, thresholds, and next eligible run
+times without transcripts, identities, or private reasoning. Proposal generation remains inert until
+the ordinary static validation and explicit owner approval pipeline succeeds;
+eligible standalone tool, command, or behavior changes can then use the signed
+hotload channels. See `docs/reflection.md` for privacy, model tiers, budgeting,
+and operator settings.
+
 The owner can also record and statically review executable-code proposals with
 the `/code_*` commands. Patches are checked against their committed baseline in
 a disposable local snapshot. Approval records a review decision only; it never
@@ -171,6 +197,8 @@ OPENSEARCH_USER=...
 OPENSEARCH_PASS=...
 OPENSEARCH_VERIFY_CERTS=false
 OPENSEARCH_ENABLED=true
+REFLECTION_ENABLED=false
+REFLECTION_DAILY_BUDGET_USD=1.50
 ```
 
 ## Install

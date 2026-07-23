@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import PurePosixPath
 
 from providers.claude_utils import CLAUDE_MODEL, generate_claude_response
-from providers.openai_client import OPENAI_CODE_MODEL
+from providers.openai_client import OPENAI_CODE_MODEL, OPENAI_LIGHT_MODEL
 from providers.openai_messages import generate_openai_messages_response_with_tools
 from services.code_changes import MAX_PATCH_BYTES, REPO_PATH, inspect_patch, is_protected_path
 
 MAX_CONTEXT_CHARS = 70_000
 MAX_FILES = 14
 CODE_MODEL = OPENAI_CODE_MODEL
+IDEA_CODE_MODEL = os.getenv("OPENAI_IDEA_CODE_MODEL", OPENAI_LIGHT_MODEL)
 _CLAUDE_PROVIDER_RE = re.compile(
     r"^\s*(?:(?:hey\s+)?(?:claude|fable)\b|"
     r"(?:use|using|with|via)\s+(?:claude|fable)\b|"
@@ -47,9 +49,11 @@ def _request_without_provider_directive(request: str) -> str:
 
 
 async def _generate_code_response(
-    messages: list[dict], *, provider: str, max_tokens: int
+    messages: list[dict], *, provider: str, max_tokens: int, model_override: str | None = None
 ) -> tuple[str, str]:
     if provider == "claude":
+        if model_override:
+            raise ValueError("OpenAI model override cannot be used with Claude")
         response = await generate_claude_response(
             messages,
             model=CLAUDE_MODEL,
@@ -59,16 +63,17 @@ async def _generate_code_response(
         if response.startswith("❌"):
             raise RuntimeError(response)
         return response, CLAUDE_MODEL
+    selected_model = model_override or CODE_MODEL
     response = await generate_openai_messages_response_with_tools(
         messages,
         tools=[],
-        model=CODE_MODEL,
+        model=selected_model,
         max_tokens=max_tokens,
         temperature=0.1,
     )
     if response.startswith("⚠️ OpenAI"):
         raise RuntimeError(response)
-    return response, CODE_MODEL
+    return response, selected_model
 
 
 def _git_at(baseline: str, *args: str, max_chars: int = 100_000) -> str:
@@ -276,4 +281,72 @@ async def generate_code_patch(request: str, baseline: str) -> tuple[str, dict]:
         "context_files": [path for path, _ in context],
         "context_chars": sum(len(content) for _, content in context),
         **planning,
+    }
+
+
+async def generate_planned_idea_patch(
+    request: str,
+    baseline: str,
+    *,
+    context_paths: list[str] | None = None,
+) -> tuple[str, dict]:
+    """Generate an owner-prompted idea patch with the low-cost coding tier.
+
+    Expensive planning has already happened in the background. This step may
+    draft code, but it still passes the ordinary proposal policy, validation,
+    owner approval, and deployment gates.
+    """
+    candidates = set(_candidate_paths(baseline))
+    context: list[tuple[str, str]] = []
+    used = 0
+    for path in list(context_paths or [])[:MAX_FILES]:
+        if path not in candidates:
+            continue
+        content = _git_at(baseline, "show", f"{baseline}:{path}", max_chars=25_000)
+        if context and used + len(path) + len(content) > MAX_CONTEXT_CHARS:
+            continue
+        context.append((path, content))
+        used += len(path) + len(content)
+    if not context:
+        context = select_code_context(request, baseline)[:6]
+    if not context:
+        raise RuntimeError("No policy-allowed source context was found")
+
+    source = "\n\n".join(
+        f"===== FILE: {path} =====\n{content}" for path, content in context
+    )
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are implementing an already-reviewed architectural plan with a small, low-cost "
+                "coding pass. Return ONLY one valid unified Git diff beginning with 'diff --git'. "
+                "Do not use markdown fences or commentary. Prefer the supplied source files. A new "
+                "standalone live_tools, live_commands, or live_components Python file is allowed only "
+                "when the request explicitly selects that hotload kind. Never modify tests, ops, "
+                "secrets, configuration, dependency manifests, startup files, audit storage, or "
+                "self-modification policy. Do not add dependencies. Preserve unrelated behavior."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"BASELINE SHA: {baseline}\nREVIEWED IDEA: {request}\n\n"
+                f"AVAILABLE SOURCE CONTEXT:\n{source}"
+            ),
+        },
+    ]
+    response, model = await _generate_code_response(
+        messages,
+        provider="openai",
+        model_override=IDEA_CODE_MODEL,
+        max_tokens=6000,
+    )
+    patch = extract_unified_diff(response)
+    return patch, {
+        "provider": "openai",
+        "model": model,
+        "selection": "reflection_plan",
+        "context_files": [path for path, _ in context],
+        "context_chars": sum(len(content) for _, content in context),
     }

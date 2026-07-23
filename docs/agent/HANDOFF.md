@@ -2,10 +2,45 @@
 
 ## Active objective
 
-Operate the completed and production-verified no-restart runtime for tools,
-Discord commands, events, intents, providers, and runtime settings while
-retaining explicit restart boundaries for bootstrap, dependencies, and
-persistent-data migrations.
+Review and release the completed but uncommitted bounded-reflection subsystem,
+while preserving the production-verified no-restart runtime and its explicit
+restart boundaries.
+
+## Pending reflection implementation (not deployed)
+
+- Added an invocation-consented background reflection worker with a 10-minute lookback and
+  20-minute post-invocation Discord history tail. Surrounding channel text is
+  fetched ephemerally, role-anonymized, redacted, capped, and not copied into the
+  reflection database; a strict requester-and-reply Elasticsearch fallback is
+  used when Discord history is unavailable.
+- Added separate SQLite state for consent, invocation sessions, hashed-actor
+  observations, recent-frequency events, evidence-backed ideas, model runs, and
+  atomic daily budget reservations. Withdrawal during an in-flight extraction
+  fails closed, removes user-derived state, and supersedes ideas that lose their
+  final evidence.
+- Added sanitized `ERROR`/`CRITICAL` template fingerprinting. Dynamic logging
+  arguments are discarded, credential/identity-like values are redacted, and
+  only the last seven days of occurrence events qualify an error as frequent.
+- Split work across local host orchestration plus Flex model tiers: nano/low
+  extraction, sol/high daily planning with read-only code context, luna/medium
+  weekly idea cleanup, and mini/low owner-requested code drafting. Automatic
+  model work has a shared `$1.50` daily reservation ceiling and retry throttling.
+- Added `/reflection_off`, `/reflection_status`, `/reflection_activity`,
+  `/reflection_ideas`, and `/reflection_propose`. Activity is owner-only and
+  exposes sanitized derived observations, run outcomes, thresholds, and schedule
+  without transcripts, identities, evidence IDs, actor hashes, or private
+  reasoning. Ideas remain inert until the
+  owner requests a normal proposal; validation, approval, signing, hotload or
+  release deployment, and rollback remain in the existing gated pipeline.
+- Added 30-day terminal-session retention, 90-day operational metadata
+  retention, release Compose defaults, operator documentation, and an
+  architectural decision record.
+- Validation: changed modules compile; full suite is 172 passed, 7 skipped, 84
+  subtests passed; `git diff --check` and the untracked-file whitespace scan pass.
+- This feature changes core Discord wiring, creates a persistent SQLite schema,
+  and adds global application commands. Its first activation requires a normal
+  release/container recreation and Discord command-tree sync; later generated
+  standalone ideas may be hotloadable under the existing contracts.
 
 ## Completed work
 
@@ -187,9 +222,16 @@ production. The source is unloaded and its signed behavior artifact is retained.
 
 ## Next concrete action
 
-Use the reviewed tool, command, or behavior channel for future standalone runtime
-changes. Continue using normal releases for dependencies, migrations, bootstrap,
-mounts, gateway authority, and other documented restart-only boundaries.
+Review the bounded-reflection diff, then commit and use the normal release path
+for its first deployment. Confirm the five new Discord application commands,
+`/reflection_activity`, the `$1.50` budget ledger, an invocation-consented session, and
+rollback readiness before leaving it active. Do not attempt to hotload this core
+wiring or its new SQLite schema.
+
+GitHub authentication is verified through the host keyring. Publication and the
+normal Toughbook release are the remaining actions; retain the current active
+release as rollback and verify the new Discord command tree before declaring the
+feature live.
 
 ## Deployment/status impact
 

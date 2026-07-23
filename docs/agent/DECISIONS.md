@@ -100,3 +100,31 @@ files, and unrelated host users retain no access.
 Supervisor initialization now enforces usable read/write/traverse access and
 fails closed for production paths. Restricted validation containers may retain
 their disposable `/tmp` ownership exception.
+
+## 2026-07-22: Bound reflection to invocation-consented windows and owner-reviewed proposals
+
+Ongoing product reflection is a local scheduled subsystem, not an always-on chat
+participant or autonomous code agent. A user's explicit mention or reply is
+consent for a channel-scoped lookback and post-invocation tail. Discord history
+is processed ephemerally; persistent reflection state contains only derived
+observations, keyed actor hashes, bounded evidence IDs, recent-frequency events,
+ideas, and cost/audit records. Operational errors are fingerprinted from
+sanitized logging templates so recurrence can be measured without retaining
+formatted request arguments.
+
+The host handles scoping, redaction, storage, deduplication, frequency tracking,
+budgeting, and read-only code selection. Structured model calls use Flex with a
+cheap extractor, strong daily planner, and medium weekly cleanup pass. Automatic
+work shares an atomic `$1.50` default daily ceiling and never falls back to a
+more expensive tier. Provider failures are retry-throttled.
+
+Ideas are visible only when the owner asks. A separate cheap coding pass may
+turn a selected idea into an ordinary reviewable proposal, but reflection has no
+approval, signing, activation, deployment, or rollback authority. Eligible
+standalone changes retain the existing signed hotload path; all other changes
+retain the normal release boundary.
+
+Owner observability exposes only structured, sanitized activity: observation
+summaries and counts, anonymized actor totals, run outcomes, thresholds,
+schedules, and budget. Raw chat, message/evidence IDs, actor hashes, identities,
+source transcripts, and private model reasoning are not part of that interface.
