@@ -2,11 +2,10 @@
 
 ## Active objective
 
-Review and release the completed but uncommitted bounded-reflection subsystem,
-while preserving the production-verified no-restart runtime and its explicit
-restart boundaries.
+Operate and observe the deployed bounded-reflection subsystem while preserving
+the production-verified hotload runtime and its explicit restart boundaries.
 
-## Pending reflection implementation (not deployed)
+## Deployed reflection implementation
 
 - Added an invocation-consented background reflection worker with a 10-minute lookback and
   20-minute post-invocation Discord history tail. Surrounding channel text is
@@ -35,12 +34,14 @@ restart boundaries.
 - Added 30-day terminal-session retention, 90-day operational metadata
   retention, release Compose defaults, operator documentation, and an
   architectural decision record.
-- Validation: changed modules compile; full suite is 172 passed, 7 skipped, 84
-  subtests passed; `git diff --check` and the untracked-file whitespace scan pass.
+- Validation: changed modules compile; desktop suite is 172 passed, 7 skipped,
+  84 subtests passed. The networkless, capability-dropped production-image gate
+  passed 179 unittest cases with 7 expected skips. `git diff --check` passed.
 - This feature changes core Discord wiring, creates a persistent SQLite schema,
   and adds global application commands. Its first activation requires a normal
-  release/container recreation and Discord command-tree sync; later generated
-  standalone ideas may be hotloadable under the existing contracts.
+  release/container recreation and Discord command-tree sync; that activation
+  completed successfully. Later generated standalone ideas may be hotloadable
+  under the existing contracts.
 
 ## Completed work
 
@@ -219,19 +220,18 @@ production. The source is unloaded and its signed behavior artifact is retained.
   and continuity of the gateway process.
 - Database schema/data changes remain restart-only and require forward-compatible
   migrations; code rollback alone cannot reverse persisted mutations safely.
+- Reflection's first real extraction, planning, and cleanup model calls have not
+  yet occurred in production. Budget, model configuration, persistent schema,
+  worker startup, and command synchronization are verified, but owner command
+  invocation and a complete 20-minute observation window remain live smoke tests.
 
 ## Next concrete action
 
-Review the bounded-reflection diff, then commit and use the normal release path
-for its first deployment. Confirm the five new Discord application commands,
-`/reflection_activity`, the `$1.50` budget ledger, an invocation-consented session, and
-rollback readiness before leaving it active. Do not attempt to hotload this core
-wiring or its new SQLite schema.
-
-GitHub authentication is verified through the host keyring. Publication and the
-normal Toughbook release are the remaining actions; retain the current active
-release as rollback and verify the new Discord command tree before declaring the
-feature live.
+Invoke `/reflection_status` and `/reflection_activity`, then explicitly mention
+or reply to Multivac and inspect the completed session after its 20-minute tail.
+Monitor the automatic budget and first model-run records. If core health regresses,
+recreate the bot with `/srv/multivac-releases/manual-baseline-fix-290599d` and
+restore that path in `.multivac-release.json`.
 
 ## Deployment/status impact
 
@@ -247,5 +247,15 @@ canonical commit `39bd3e3` and likewise caused no restart. Proposal 12 is now
 rolled back at runtime and Discord's global tree is restored to 11 commands.
 Behavior proposal 13 promoted canonical commit `0ee9530`, published its smoke
 setting at generation 1, and rolled back at generation 2. All three hotload
-channels are now production-verified end to end while the container remains on
-immutable core release `290599d` with zero restarts.
+channels are production-verified end to end.
+
+On 2026-07-22, bounded reflection commit `97e52be` was pushed to `origin/main`
+and deployed from `/srv/multivac-releases/manual-reflection-97e52be`. The
+networkless production-image gate passed before activation. The recreated bot
+reports Discord ready, zero restarts, and 16 synchronized application commands,
+including all five reflection commands. `/app` is the expected read-only release
+mount; reflection is enabled with the `$1.50` cap, the persistent SQLite database
+exists, configured model tiers are nano/sol/luna, and initial queues and spend are
+zero. `/srv/multivac-releases/manual-baseline-fix-290599d` remains intact as the
+immediate rollback release. The canonical deployment event was reported with
+HTTP 201.
