@@ -38,6 +38,8 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
   shared canonical branch, and successful promotion advances that local ref.
 - Corrected the control channel from runtime-only `0700` ownership to a private
   `2770` setgid directory shared by the deploy supervisor and runtime group.
+- Activated the first owner-approved production tool proposal, `falcon-juniper`,
+  through the signed no-restart channel as registry generation 2.
 
 ## Current behavior
 
@@ -99,6 +101,12 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
 - Promoting the host-only fix did not recreate the Discord container: its start
   timestamp and zero restart count remained unchanged while its canonical
   baseline advanced to `b9839c0`.
+- `falcon-juniper` passed revalidation, the networkless suite, artifact signing,
+  digest verification, registry activation, health checking, and canonical Git
+  promotion. The active SHA-256 matches the immutable artifact and audit row.
+- Tool activation did not recreate or restart the container. Its original start
+  timestamp remains unchanged, and no new Discord gateway connection appeared;
+  the only activation log records generation 2.
 - `git diff --check` passed; Git emitted only LF/CRLF normalization warnings.
 - Existing dependency-version and Python `audioop` warnings remain.
 
@@ -119,6 +127,8 @@ setgid control-directory permissions; this host-side fix does not require a bot
 restart.
 That persistence fix and its regression test are deployed in the host control
 checkout; the live directory is repaired and verified.
+Canonical commit `177311a` adds `live_tools/deployment_smoke.py`; its active
+handler returns the requested static tool-channel smoke result.
 
 ## Unresolved risks
 
@@ -132,18 +142,18 @@ checkout; the live directory is repaired and verified.
 - Discord command activation depends on external global tree sync availability
   and rate limits; failed sync is locally rolled back and followed by restorative
   sync, but the flow has not been exercised against live Discord.
-- Live tool, command, and behavior activation paths have not yet been exercised
-  against harmless production proposals. The infrastructure deployment itself
-  is healthy, and the prior `27f18e7` worktree remains staged for rollback.
+- Live command and behavior activation paths have not yet been exercised against
+  harmless production proposals. Tool activation is proven, but its invocation
+  and proposal-specific rollback still need end-to-end checks.
 - Database schema/data changes remain restart-only and require forward-compatible
   migrations; code rollback alone cannot reverse persisted mutations safely.
 
 ## Next concrete action
 
-Regenerate the harmless tool proposal against the canonical baseline, then
-activate tool, command, and behavior proposals. Confirm no Discord gateway
-reconnect, verify command tree sync, unload each source, and confirm all
-built-ins return.
+Invoke `hotload_deployment_smoke` through a model request, roll back
+`falcon-juniper`, and confirm the source unloads without a reconnect. Then
+activate harmless command and behavior proposals, verify command tree sync,
+unload each source, and confirm all built-ins return.
 
 ## Deployment/status impact
 
@@ -151,5 +161,6 @@ Deployed on 2026-07-22. Production runs commit `290599d` from
 `/srv/multivac-releases/manual-baseline-fix-290599d`. The immediately prior
 `3f71745` release remains at `/srv/multivac-releases/manual-hotload-0c5e723`,
 with `27f18e7` also preserved at the earlier rollback worktree. The host
-supervisor and canonical branch run `b9839c0`; that promotion required no bot
-restart.
+supervisor includes the `b9839c0` permission fix, and the active tool proposal
+promoted canonical commit `177311a`. Both promotions left the Discord container
+on immutable core release `290599d` without a restart.
