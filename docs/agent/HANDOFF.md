@@ -258,4 +258,6 @@ mount; reflection is enabled with the `$1.50` cap, the persistent SQLite databas
 exists, configured model tiers are nano/sol/luna, and initial queues and spend are
 zero. `/srv/multivac-releases/manual-baseline-fix-290599d` remains intact as the
 immediate rollback release. The canonical deployment event was reported with
-HTTP 201.
+HTTP 201. After publishing the deployment handoff, the shared canonical `main`
+ref was atomically fast-forwarded and the running bot resolved that newest
+baseline without a container restart.
