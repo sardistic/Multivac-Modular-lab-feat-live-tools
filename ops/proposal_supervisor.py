@@ -34,6 +34,7 @@ TOOL_ARTIFACTS_DIR = Path(
 ).resolve()
 STATE_DIR = Path(os.environ.get("MULTIVAC_STATE_DIR", str(BASE_DIR))).resolve()
 TOOL_CONTROL_DIR = STATE_DIR / "tool-control"
+TOOL_CONTROL_GID = int(os.environ.get("MULTIVAC_STATE_GID", "65532"))
 DB_PATH = STATE_DIR / "conversation_history.db"
 STATE_PATH = BASE_DIR / ".multivac-release.json"
 OVERRIDE_PATH = BASE_DIR / "ops" / "docker-compose.release.yml"
@@ -76,25 +77,28 @@ def initialize() -> None:
     TOOL_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     TOOL_CONTROL_DIR.mkdir(parents=True, exist_ok=True)
-    # The container runs as 65532:65532 and must atomically write result and
-    # active-state files. The host supervisor remains able to read/write as root.
-    if (
-        os.name != "nt"
-        and hasattr(os, "chown")
-        and hasattr(os, "geteuid")
-        and os.geteuid() == 0
-    ):
+    # The runtime and the unprivileged host supervisor share this directory via
+    # group 65532. Setgid keeps supervisor-created request files in that group;
+    # no access is granted to users outside the deployment/runtime boundary.
+    if os.name != "nt" and hasattr(os, "geteuid"):
         try:
-            os.chown(TOOL_CONTROL_DIR, 65532, 65532)
-            TOOL_CONTROL_DIR.chmod(0o700)
+            if hasattr(os, "chown") and os.geteuid() == 0:
+                os.chown(TOOL_CONTROL_DIR, -1, TOOL_CONTROL_GID)
+            TOOL_CONTROL_DIR.chmod(0o2770)
         except PermissionError:
             # The isolated validation container deliberately drops CAP_CHOWN.
             # Its state root is a disposable /tmp path and never serves the bot.
-            # Production state must still fail closed if ownership cannot be set.
+            # An already-provisioned production directory is also valid when
+            # the service has the required shared-group access but is not owner.
             try:
                 STATE_DIR.relative_to(Path("/tmp").resolve())
             except ValueError:
-                raise
+                if not os.access(TOOL_CONTROL_DIR, os.R_OK | os.W_OK | os.X_OK):
+                    raise
+        if not os.access(TOOL_CONTROL_DIR, os.R_OK | os.W_OK | os.X_OK):
+            raise PermissionError(
+                f"Supervisor cannot access shared control directory: {TOOL_CONTROL_DIR}"
+            )
     with db_connect() as conn:
         conn.executescript(
             """
