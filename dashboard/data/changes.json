@@ -1,7 +1,24 @@
 {
-  "baseline": "fda3b7723064",
-  "generated_at": "2026-07-23T01:02:36.100910+00:00",
+  "baseline": "385ec6487fd9",
+  "generated_at": "2026-07-23T01:08:00.050844+00:00",
   "proposals": [
+    {
+      "activated_at": "2026-07-23T01:04:00.752326+00:00",
+      "baseline": "fda3b7723064",
+      "created_at": "2026-07-23T01:02:43.357292",
+      "deployment_result": "Healthy",
+      "deployment_status": "active",
+      "files": [
+        "live_commands/deployment_smoke.py"
+      ],
+      "finished_at": "2026-07-23T01:04:00.752339+00:00",
+      "id": "mango-wren",
+      "patch": "cf371791bfcc",
+      "reviewed_at": "2026-07-23T01:03:00.705784",
+      "status": "approved",
+      "summary": "add only live_commands/deployment_smoke.py. Define a Cog containing one hybrid command named hotload_command_smoke that replies exactly {\"ok\":true,\"channel\":\"command\",\"version\":\"1\"}. Export async setup(bot) that adds th\u2026",
+      "updated_at": "2026-07-23T01:03:00.705784"
+    },
     {
       "activated_at": "2026-07-23T00:20:16.797661+00:00",
       "baseline": "ecc4f7c1264c",
