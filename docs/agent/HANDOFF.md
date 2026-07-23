@@ -40,6 +40,8 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
   `2770` setgid directory shared by the deploy supervisor and runtime group.
 - Activated the first owner-approved production tool proposal, `falcon-juniper`,
   through the signed no-restart channel as registry generation 2.
+- Invoked its `hotload_deployment_smoke` handler through Discord, received the
+  exact expected JSON result, then rolled proposal 11 back as generation 3.
 
 ## Current behavior
 
@@ -107,6 +109,9 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
 - Tool activation did not recreate or restart the container. Its original start
   timestamp remains unchanged, and no new Discord gateway connection appeared;
   the only activation log records generation 2.
+- Proposal-specific rollback emptied `active-tools.json`, recorded an explicit
+  generation-3 unload, marked the deployment `rolled_back`, retained the signed
+  immutable artifact, and caused no restart or gateway reconnect.
 - `git diff --check` passed; Git emitted only LF/CRLF normalization warnings.
 - Existing dependency-version and Python `audioop` warnings remain.
 
@@ -127,8 +132,9 @@ setgid control-directory permissions; this host-side fix does not require a bot
 restart.
 That persistence fix and its regression test are deployed in the host control
 checkout; the live directory is repaired and verified.
-Canonical commit `177311a` adds `live_tools/deployment_smoke.py`; its active
-handler returns the requested static tool-channel smoke result.
+Canonical commit `177311a` adds `live_tools/deployment_smoke.py`; its handler
+returned the requested static smoke result while active. The source is now
+unloaded, while its signed artifact remains retained for audit and restoration.
 
 ## Unresolved risks
 
@@ -143,17 +149,16 @@ handler returns the requested static tool-channel smoke result.
   and rate limits; failed sync is locally rolled back and followed by restorative
   sync, but the flow has not been exercised against live Discord.
 - Live command and behavior activation paths have not yet been exercised against
-  harmless production proposals. Tool activation is proven, but its invocation
-  and proposal-specific rollback still need end-to-end checks.
+  harmless production proposals. The complete tool path—review, validation,
+  signing, activation, invocation, promotion, unload, and rollback—is proven.
 - Database schema/data changes remain restart-only and require forward-compatible
   migrations; code rollback alone cannot reverse persisted mutations safely.
 
 ## Next concrete action
 
-Invoke `hotload_deployment_smoke` through a model request, roll back
-`falcon-juniper`, and confirm the source unloads without a reconnect. Then
-activate harmless command and behavior proposals, verify command tree sync,
-unload each source, and confirm all built-ins return.
+Activate a harmless command proposal, verify global tree sync and invocation,
+then unload it without a reconnect. Repeat with a harmless behavior component,
+including lifecycle teardown and rollback.
 
 ## Deployment/status impact
 
@@ -162,5 +167,6 @@ Deployed on 2026-07-22. Production runs commit `290599d` from
 `3f71745` release remains at `/srv/multivac-releases/manual-hotload-0c5e723`,
 with `27f18e7` also preserved at the earlier rollback worktree. The host
 supervisor includes the `b9839c0` permission fix, and the active tool proposal
-promoted canonical commit `177311a`. Both promotions left the Discord container
-on immutable core release `290599d` without a restart.
+promoted canonical commit `177311a`. Proposal 11 is now rolled back at runtime;
+all promotions and its unload left the Discord container on immutable core
+release `290599d` without a restart.
