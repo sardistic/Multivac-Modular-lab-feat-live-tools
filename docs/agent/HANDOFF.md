@@ -93,13 +93,19 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
   writable by both the `sardistic` supervisor identity and runtime UID 65532.
 - Expanded suite after the shared-control regression test: 157 passed, 7
   skipped, 84 subtests passed.
+- Shared-control production-image gate: 164 unittest cases passed with 7
+  expected skips. An explicit systemd reconcile then succeeded as `sardistic`,
+  preserved mode `2770`, and both supervisor and runtime access checks passed.
+- Promoting the host-only fix did not recreate the Discord container: its start
+  timestamp and zero restart count remained unchanged while its canonical
+  baseline advanced to `b9839c0`.
 - `git diff --check` passed; Git emitted only LF/CRLF normalization warnings.
 - Existing dependency-version and Python `audioop` warnings remain.
 
 ## Implementation details
 
 The complete tool, command, and behavior hotload stack, deployment-gate fixes,
-and canonical-baseline fix are committed and pushed through `290599d`. The
+canonical-baseline fix, and shared-control fix are pushed through `b9839c0`. The
 supervisor keeps SQLite/control state under `/tmp`
 inside networkless, capability-dropped validation containers while retaining
 fail-closed ownership enforcement for production state. The production-image
@@ -111,8 +117,8 @@ The canonical-baseline fix and its regression tests are deployed.
 The supervisor's persistent initialization contract now preserves the shared
 setgid control-directory permissions; this host-side fix does not require a bot
 restart.
-That persistence fix and its regression test are pending their host control
-checkout promotion; the live directory itself is already repaired.
+That persistence fix and its regression test are deployed in the host control
+checkout; the live directory is repaired and verified.
 
 ## Unresolved risks
 
@@ -129,13 +135,6 @@ checkout promotion; the live directory itself is already repaired.
 - Live tool, command, and behavior activation paths have not yet been exercised
   against harmless production proposals. The infrastructure deployment itself
   is healthy, and the prior `27f18e7` worktree remains staged for rollback.
-- The first harmless tool proposal failed closed because the running detached
-  release recorded its own commit rather than the newer canonical branch. No
-  artifact was activated; regenerate it after the baseline fix is deployed.
-- The second harmless tool proposal passed testing but failed before publication
-  because the host supervisor could not traverse the runtime-owned `0700`
-  control directory. The previous state remained active and permissions are now
-  repaired; regenerate once the host-side contract commit is promoted.
 - Database schema/data changes remain restart-only and require forward-compatible
   migrations; code rollback alone cannot reverse persisted mutations safely.
 
@@ -151,4 +150,6 @@ built-ins return.
 Deployed on 2026-07-22. Production runs commit `290599d` from
 `/srv/multivac-releases/manual-baseline-fix-290599d`. The immediately prior
 `3f71745` release remains at `/srv/multivac-releases/manual-hotload-0c5e723`,
-with `27f18e7` also preserved at the earlier rollback worktree.
+with `27f18e7` also preserved at the earlier rollback worktree. The host
+supervisor and canonical branch run `b9839c0`; that promotion required no bot
+restart.
