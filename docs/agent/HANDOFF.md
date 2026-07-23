@@ -44,6 +44,8 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
   exact expected JSON result, then rolled proposal 11 back as generation 3.
 - Activated owner-approved command proposal `mango-wren` as command generation
   1, adding the managed `DeploymentSmokeCommands` Cog without a restart.
+- Invoked `/hotload_command_smoke` as a native Discord application command,
+  received the expected JSON result, then rolled proposal 12 back as generation 2.
 
 ## Current behavior
 
@@ -119,6 +121,11 @@ restart boundaries for bootstrap, dependencies, and persistent-data migrations.
   12, and Discord reports 12 synchronized application commands.
 - Command activation left the container start timestamp and zero restart count
   unchanged; no new Discord gateway connection was logged.
+- Command rollback emptied `active-commands.json`, synchronized the global tree
+  from 12 back to 11 entries, removed the smoke command from Discord's global
+  API, marked the audit row `rolled_back`, and retained the signed artifact.
+- Native invocation, propagation, and rollback caused no container restart or
+  gateway reconnect.
 - `git diff --check` passed; Git emitted only LF/CRLF normalization warnings.
 - Existing dependency-version and Python `audioop` warnings remain.
 
@@ -143,7 +150,8 @@ Canonical commit `177311a` adds `live_tools/deployment_smoke.py`; its handler
 returned the requested static smoke result while active. The source is now
 unloaded, while its signed artifact remains retained for audit and restoration.
 Canonical commit `39bd3e3` adds `live_commands/deployment_smoke.py`; its managed
-Cog and `hotload_command_smoke` hybrid command are currently active.
+Cog and hybrid command were invoked successfully and are now unloaded. The
+signed command artifact remains retained for audit and restoration.
 
 ## Unresolved risks
 
@@ -158,16 +166,16 @@ Cog and `hotload_command_smoke` hybrid command are currently active.
   and rate limits; failed sync is locally rolled back and followed by restorative
   sync, but the flow has not been exercised against live Discord.
 - Live behavior activation has not yet been exercised against a harmless
-  production proposal. Command activation and sync are proven, but invocation
-  and rollback remain; the complete tool lifecycle is proven.
+  production proposal. The complete tool and command lifecycles—including
+  native application-command registration and removal—are proven.
 - Database schema/data changes remain restart-only and require forward-compatible
   migrations; code rollback alone cannot reverse persisted mutations safely.
 
 ## Next concrete action
 
-Invoke `/hotload_command_smoke`, roll back proposal 12, and confirm the command
-tree returns from 12 to 11 entries without a reconnect. Then repeat with a
-harmless behavior component, including lifecycle teardown and rollback.
+Activate a harmless behavior component, verify its health and generation-scoped
+setting or handler, then roll it back and confirm lifecycle teardown without a
+restart or gateway reconnect.
 
 ## Deployment/status impact
 
@@ -179,4 +187,5 @@ supervisor includes the `b9839c0` permission fix, and the active tool proposal
 promoted canonical commit `177311a`. Proposal 11 is now rolled back at runtime;
 all promotions and its unload left the Discord container on immutable core
 release `290599d` without a restart. Active command proposal 12 promoted
-canonical commit `39bd3e3` and likewise caused no restart.
+canonical commit `39bd3e3` and likewise caused no restart. Proposal 12 is now
+rolled back at runtime and Discord's global tree is restored to 11 commands.
