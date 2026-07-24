@@ -1,7 +1,25 @@
 {
   "baseline": "d275f8926904",
-  "generated_at": "2026-07-24T22:56:53.683462+00:00",
+  "generated_at": "2026-07-24T23:02:15.938169+00:00",
   "proposals": [
+    {
+      "activated_at": null,
+      "baseline": "592a8151e67a",
+      "created_at": "2026-07-24T22:57:09.496870",
+      "deployment_result": null,
+      "deployment_status": null,
+      "files": [
+        "bot/intent_dispatcher.py",
+        "providers/openai_intents.py"
+      ],
+      "finished_at": null,
+      "id": "silver-wren",
+      "patch": null,
+      "reviewed_at": null,
+      "status": "reviewable",
+      "summary": "i have a bootable linuxbased img for sbc with multiple partitions inside the img. It is slightly bigger than my 8gb sd card and i want to edit the partition inside the img to make it fit",
+      "updated_at": "2026-07-24T22:57:52.992917"
+    },
     {
       "activated_at": "2026-07-23T01:21:29.158774+00:00",
       "baseline": "eae965d02802",
