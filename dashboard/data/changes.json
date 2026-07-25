@@ -1,6 +1,6 @@
 {
   "baseline": "d275f8926904",
-  "generated_at": "2026-07-25T21:51:36.888928+00:00",
+  "generated_at": "2026-07-25T21:57:02.771421+00:00",
   "proposals": [
     {
       "activated_at": null,
@@ -15,10 +15,10 @@
       "finished_at": null,
       "id": "silver-wren",
       "patch": null,
-      "reviewed_at": null,
-      "status": "reviewable",
+      "reviewed_at": "2026-07-25T21:55:40.210111",
+      "status": "rejected",
       "summary": "i have a bootable linuxbased img for sbc with multiple partitions inside the img. It is slightly bigger than my 8gb sd card and i want to edit the partition inside the img to make it fit",
-      "updated_at": "2026-07-24T22:57:52.992917"
+      "updated_at": "2026-07-25T21:55:40.210111"
     },
     {
       "activated_at": "2026-07-23T01:21:29.158774+00:00",
