@@ -99,11 +99,21 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
 
     def test_build_video_config_options_includes_veo_when_available(self):
         options = video_handler.build_video_config_options(include_veo=True)
-        values = {option["value"] for option in options}
+        options_by_value = {option["value"]: option for option in options}
 
-        self.assertIn("sora|sora-2-pro|8", values)
-        self.assertIn("veo|veo-3.1-generate-preview|6", values)
-        self.assertIn("veo|veo-3.1-fast-generate-preview|8", values)
+        self.assertEqual(options_by_value["sora|sora-2-pro|8"]["cost"], 2.40)
+        self.assertIn("720p $2.40", options_by_value["sora|sora-2-pro|8"]["label"])
+        self.assertEqual(options_by_value["veo|veo-3.1-generate-preview|6"]["cost"], 2.40)
+        self.assertEqual(options_by_value["veo|veo-3.1-fast-generate-preview|8"]["cost"], 0.80)
+
+    def test_video_cost_message_matches_dropdown_prices(self):
+        message = video_handler._build_video_cost_message("a cinematic sunrise", include_veo=True)
+
+        self.assertIn("Sora estimates (OpenAI 720p pricing)", message)
+        self.assertIn("1024p at $0.50/second", message)
+        self.assertIn("Veo 3.1**: 4s $1.60 | 6s $2.40 | 8s $3.20", message)
+        self.assertIn("Veo 3.1 Fast**: 4s $0.40 | 6s $0.60 | 8s $0.80", message)
+        self.assertIn("native audio is included", message)
 
     @patch("bot.video_handler.check_sora_limit", return_value=True)
     async def test_handle_generate_video_intent_uses_original_message_for_status_handoff(self, _mock_limit):

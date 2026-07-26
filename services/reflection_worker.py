@@ -67,9 +67,13 @@ class ReflectionWorker:
         self.models = ReflectionModels(self.store)
         self.history_fetcher = history_fetcher
         self.enabled = _truthy(os.getenv("REFLECTION_ENABLED"), False)
-        self.window_minutes = max(2, int(os.getenv("REFLECTION_WINDOW_MINUTES", "20")))
+        self.idle_minutes = max(1, int(os.getenv("REFLECTION_IDLE_MINUTES", "5")))
         self.lookback_minutes = max(0, int(os.getenv("REFLECTION_LOOKBACK_MINUTES", "10")))
         self.poll_seconds = max(30, int(os.getenv("REFLECTION_POLL_SECONDS", "120")))
+        self.pulse_workers = max(1, int(os.getenv("REFLECTION_PULSE_WORKERS", "2")))
+        self.pulse_queue_max = max(
+            25, int(os.getenv("REFLECTION_PULSE_QUEUE_MAX", "500"))
+        )
         self.max_sessions_per_tick = max(
             1, int(os.getenv("REFLECTION_MAX_SESSIONS_PER_TICK", "4"))
         )
@@ -91,6 +95,9 @@ class ReflectionWorker:
         self.audit_retention_days = max(
             self.signal_window_days,
             int(os.getenv("REFLECTION_AUDIT_RETENTION_DAYS", "90")),
+        )
+        self._pulse_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
+            maxsize=self.pulse_queue_max
         )
         self._stop = asyncio.Event()
 
@@ -122,9 +129,137 @@ class ReflectionWorker:
             channel_id=str(channel_id),
             user_id=str(user_id),
             message_id=str(message_id),
-            window_minutes=self.window_minutes,
+            idle_minutes=self.idle_minutes,
             lookback_minutes=self.lookback_minutes,
         )
+
+    async def _enqueue_pulse(
+        self,
+        session: dict[str, Any],
+        *,
+        message_id: str,
+        role: str,
+        content: str,
+    ) -> None:
+        safe_role = role if role in {"requester", "participant", "assistant"} else "participant"
+        safe_content = _redact(str(content or "").strip())[:1200]
+        if not safe_content:
+            return
+        await self._pulse_queue.put(
+            {
+                "session": session,
+                "message": {
+                    "message_id": str(message_id),
+                    "role": safe_role,
+                    "content": safe_content,
+                },
+            }
+        )
+
+    async def observe_message(
+        self,
+        *,
+        guild_id: str,
+        channel_id: str,
+        author_id: str,
+        message_id: str,
+        content: str,
+        role: str | None = None,
+    ) -> set[int]:
+        """Extend active channel sessions and queue one tiny reflection per session."""
+        if not self.enabled:
+            return set()
+        message_content = str(content or "").strip() or "[non-text message]"
+        sessions = await asyncio.to_thread(
+            self.store.record_channel_activity,
+            guild_id=str(guild_id),
+            channel_id=str(channel_id),
+            message_id=str(message_id),
+            idle_minutes=self.idle_minutes,
+        )
+        observed: set[int] = set()
+        for session in sessions:
+            session_id = int(session["id"])
+            observed.add(session_id)
+            message_role = role or (
+                "requester"
+                if str(author_id) == str(session["user_id"])
+                else "participant"
+            )
+            await self._enqueue_pulse(
+                session,
+                message_id=str(message_id),
+                role=message_role,
+                content=message_content,
+            )
+        return observed
+
+    async def observe_invocation(
+        self,
+        *,
+        guild_id: str,
+        channel_id: str,
+        user_id: str,
+        message_id: str,
+        content: str,
+        already_observed: set[int] | None = None,
+    ) -> int | None:
+        """Record invocation consent and ensure its triggering message gets one pulse."""
+        session_id = await asyncio.to_thread(
+            self.note_invocation,
+            guild_id=str(guild_id),
+            channel_id=str(channel_id),
+            user_id=str(user_id),
+            message_id=str(message_id),
+        )
+        if session_id is None or session_id in (already_observed or set()):
+            return session_id
+        session = await asyncio.to_thread(self.store.get_session, session_id)
+        if session is not None:
+            await self._enqueue_pulse(
+                session,
+                message_id=str(message_id),
+                role="requester",
+                content=content,
+            )
+        return session_id
+
+    async def _process_pulse(self, pulse: dict[str, Any]) -> None:
+        session = pulse["session"]
+        if not self.store.user_enabled(str(session["user_id"])):
+            return
+        try:
+            result = await self.models.pulse(dict(pulse["message"]))
+            if not result.get("useful"):
+                return
+            summary = " ".join(str(result.get("summary") or "").split())
+            kind = str(result.get("kind") or "behavior_pattern")
+            allowed_kinds = {
+                "pain_point", "behavior_pattern", "feature_request", "success",
+            }
+            if not summary or kind not in allowed_kinds:
+                return
+            self.store.add_insight(
+                session=session,
+                kind=kind,
+                summary=summary,
+                confidence=float(result.get("confidence") or 0),
+                evidence_ids=[str(pulse["message"]["message_id"])],
+                require_user_enabled=True,
+            )
+        except RuntimeError:
+            # Budget exhaustion and Flex unavailability are already recorded.
+            logger.warning("reflection pulse skipped because model capacity is unavailable")
+        except Exception:
+            logger.warning("reflection pulse failed", exc_info=True)
+
+    async def _consume_pulses(self) -> None:
+        while True:
+            pulse = await self._pulse_queue.get()
+            try:
+                await self._process_pulse(pulse)
+            finally:
+                self._pulse_queue.task_done()
 
     @staticmethod
     def _fetch_indexed_evidence(session: dict) -> list[dict]:
@@ -392,15 +527,26 @@ class ReflectionWorker:
         await self._maybe_prune()
 
     async def run_forever(self) -> None:
-        while not self._stop.is_set():
-            try:
-                await self.run_once()
-            except Exception:
-                logger.exception("reflection worker tick failed")
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self.poll_seconds)
-            except asyncio.TimeoutError:
-                pass
+        consumers = [
+            asyncio.create_task(
+                self._consume_pulses(), name=f"multivac-reflection-pulse-{index + 1}"
+            )
+            for index in range(self.pulse_workers)
+        ]
+        try:
+            while not self._stop.is_set():
+                try:
+                    await self.run_once()
+                except Exception:
+                    logger.exception("reflection worker tick failed")
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=self.poll_seconds)
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            for consumer in consumers:
+                consumer.cancel()
+            await asyncio.gather(*consumers, return_exceptions=True)
 
     def stop(self) -> None:
         self._stop.set()
@@ -408,9 +554,12 @@ class ReflectionWorker:
     def status(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
-            "window_minutes": self.window_minutes,
+            "idle_minutes": self.idle_minutes,
             "lookback_minutes": self.lookback_minutes,
+            "pulse_queue": self._pulse_queue.qsize(),
+            "pulse_workers": self.pulse_workers,
             "models": {
+                "pulse": self.models.extract_model,
                 "extract": self.models.extract_model,
                 "plan": self.models.plan_model,
                 "cleanup": self.models.cleanup_model,
@@ -466,6 +615,9 @@ class ReflectionWorker:
             "signal_threshold": 3,
             "active_ideas": active_ideas,
             "cleanup_threshold": 12,
+            "idle_minutes": self.idle_minutes,
+            "pending_sessions": self.store.counts()["pending_sessions"],
+            "pulse_queue": self._pulse_queue.qsize(),
             "next_plan_at": self._next_stage_eligible(
                 "plan", self.plan_interval_hours
             ).isoformat(),

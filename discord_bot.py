@@ -73,7 +73,6 @@ from services.database_utils import (
 from services.code_changes import MAX_PATCH_BYTES, get_baseline_sha, validate_patch
 from services.code_generator import (
     IDEA_CODE_MODEL,
-    code_generation_model,
     generate_code_patch,
     generate_planned_idea_patch,
 )
@@ -86,6 +85,7 @@ from services.tool_control import ToolControlWorker
 from services.tools_registry import TOOL_REGISTRY, ToolModuleLoader
 from services import usage_costs
 from services.reflection_worker import ReflectionErrorHandler, ReflectionWorker
+from services.progress import render_progress_status, start_progress_bar
 from services.user_profile import maybe_refresh_profile
 from providers.claude_utils import ANTHROPIC_API_KEY
 from bot.intent_dispatcher import (
@@ -119,12 +119,9 @@ try:
 except Exception:
     web_search = None
 
-# Streaming niceties (optional)
-try:
-    from services.stream_utils import ThrottledEditor
-    STREAM_OK = True
-except Exception:
-    STREAM_OK = False
+# The shared progress renderer now folds live summaries into the same
+# rate-limited edit loop, so no optional editor dependency is required.
+STREAM_OK = True
 
 # ---- Logging ----
 # Configured centrally by services.logging_config (called from main.py).
@@ -214,11 +211,64 @@ _expansion_locks: set[int] = set()
 _preflight_status_by_message_id: dict[int, discord.Message] = {}
 
 
-def _preflight_bar(step: int, total: int = 3, width: int = 10) -> str:
-    total = max(1, total)
-    step = max(0, min(step, total))
-    filled = int((step / total) * width)
-    return f"[{'█' * filled}{'░' * (width - filled)}]"
+def _preflight_status(step: int, detail: str, total: int = 3) -> str:
+    return render_progress_status(
+        "Preparing",
+        emoji="🧠",
+        progress=max(0, min(step, total)) / max(1, total),
+        phase=step,
+        detail=detail,
+        done=step >= total,
+    )
+
+
+async def _run_context_progress(
+    ctx,
+    *,
+    action_label,
+    emoji: str,
+    coro,
+    duration_estimate: int,
+):
+    """Animate an owner-triggered command, then let the caller replace it."""
+    if ctx.interaction:
+        await ctx.defer()
+    try:
+        status_msg = await ctx.reply(
+            render_progress_status(
+                action_label,
+                emoji=emoji,
+                detail="Starting the reviewed operation…",
+            )
+        )
+    except Exception:
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise
+    task = asyncio.create_task(coro)
+    progress_task = asyncio.create_task(
+        start_progress_bar(
+            status_msg,
+            task,
+            action_label=action_label,
+            emoji=emoji,
+            duration_estimate=duration_estimate,
+        )
+    )
+    try:
+        result = await task
+    except Exception:
+        with contextlib.suppress(Exception):
+            await progress_task
+        with contextlib.suppress(Exception):
+            await status_msg.delete()
+        raise
+    finally:
+        if not progress_task.done():
+            with contextlib.suppress(Exception):
+                await progress_task
+    return status_msg, result
+
 
 async def prompt_for_image_selection(message, image_count: int, timeout: float = 30.0):
     """
@@ -282,22 +332,34 @@ async def _index_message_async(**kwargs) -> Optional[str]:
 
 
 async def _auto_index_bot_message(sent_message, full_text: str, *, original_message=None, reply_to=None, model: Optional[str] = None):
+    src_msg = original_message or reply_to
+    if not src_msg:
+        return
     try:
-        src_msg = original_message or reply_to
-        if src_msg:
-            await _index_message_async(
-                message_id=str(sent_message.id),
-                guild_id=str(src_msg.guild.id) if src_msg.guild else "DM",
-                channel_id=str(src_msg.channel.id),
-                user_id=str(src_msg.author.id),
-                role="assistant",
-                content=full_text,
-                timestamp=_now_iso(),
-                reply_to_id=str(src_msg.id),
-                model=model or "unknown",
-            )
+        await _index_message_async(
+            message_id=str(sent_message.id),
+            guild_id=str(src_msg.guild.id) if src_msg.guild else "DM",
+            channel_id=str(src_msg.channel.id),
+            user_id=str(src_msg.author.id),
+            role="assistant",
+            content=full_text,
+            timestamp=_now_iso(),
+            reply_to_id=str(src_msg.id),
+            model=model or "unknown",
+        )
     except Exception as e:
         logger.warning(f"Failed to auto-index bot message: {e}")
+    try:
+        await _get_reflection_worker().observe_message(
+            guild_id=str(src_msg.guild.id) if src_msg.guild else "DM",
+            channel_id=str(src_msg.channel.id),
+            author_id=str(bot.user.id) if bot.user else "assistant",
+            message_id=str(sent_message.id),
+            content=full_text,
+            role="assistant",
+        )
+    except Exception:
+        logger.warning("Unable to extend reflection session for bot reply", exc_info=True)
 
 
 async def send_or_edit_with_truncation(*args, **kwargs):
@@ -317,8 +379,6 @@ async def live_status_with_progress(*args, **kwargs):
             else:
                 kwargs.setdefault("existing_status_msg", existing)
     kwargs.setdefault("stream_ok", STREAM_OK)
-    if STREAM_OK:
-        kwargs.setdefault("editor_factory", lambda status_msg: ThrottledEditor(status_msg, min_interval_s=1.5, max_len=1300))
     return await ui_live_status_with_progress(*args, **kwargs)
 
 # --------------------------
@@ -525,7 +585,7 @@ async def _fetch_reflection_channel_window(session: dict) -> list[dict]:
         before = datetime.fromisoformat(session["expires_at"])
         rows = []
         async for msg in channel.history(
-            limit=100, after=after, before=before, oldest_first=True
+            limit=100, after=after, before=before, oldest_first=False
         ):
             if msg.author.bot and (not bot.user or msg.author.id != bot.user.id):
                 continue
@@ -541,6 +601,7 @@ async def _fetch_reflection_channel_window(session: dict) -> list[dict]:
             rows.append(
                 {"message_id": str(msg.id), "role": role, "content": content}
             )
+        rows.reverse()
         return rows
     except Exception:
         logger.warning(
@@ -1090,23 +1151,34 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
         )
         proposal = await asyncio.to_thread(get_code_proposal, requester_id, proposal_id)
         proposal_name = proposal.get("public_id") or str(proposal_id)
-        generator_model = code_generation_model(request)
-        if status_msg is not None:
-            with contextlib.suppress(Exception):
-                await status_msg.edit(
-                    content=(
-                        f"[🧩 Proposal {proposal_name}] Selecting relevant source and "
-                        f"generating a patch with **{generator_model}**…"
-                    )
-                )
-        try:
+        generation_phase = {
+            "label": f"Mapping proposal {proposal_name}",
+        }
+
+        async def _generate_and_validate():
+            nonlocal proposal
+            generation_phase["label"] = f"Drafting proposal {proposal_name}"
             patch, generation = await generate_code_patch(request, baseline)
-            await asyncio.to_thread(set_code_proposal_patch, requester_id, proposal_id, patch)
+            generation_phase["label"] = f"Validating proposal {proposal_name}"
+            await asyncio.to_thread(
+                set_code_proposal_patch, requester_id, proposal_id, patch
+            )
             report = await asyncio.to_thread(validate_patch, baseline, patch)
             report["generation"] = generation
             proposal = await asyncio.to_thread(
                 set_code_proposal_validation, requester_id, proposal_id, report
             )
+            return patch, generation, report
+
+        try:
+            status_msg, generated = await live_status_with_progress(
+                message,
+                action_label=lambda: generation_phase["label"],
+                emoji="🧩",
+                coro=_generate_and_validate(),
+                duration_estimate=90,
+            )
+            patch, generation, report = generated
         except (RuntimeError, ValueError) as exc:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(
@@ -1115,10 +1187,16 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
                     "rejected",
                     reviewer_id="generation-failure",
                 )
+            if status_msg is not None:
+                with contextlib.suppress(Exception):
+                    await status_msg.delete()
             await message.reply(
                 f"I recorded proposal `{proposal_name}`, but patch generation failed: {str(exc)[:1200]}"
             )
             return
+        if status_msg is not None:
+            with contextlib.suppress(Exception):
+                await status_msg.delete()
         payload = io.BytesIO(patch.encode("utf-8"))
         if not report["ok"]:
             errors = "; ".join(report.get("errors") or ["Unknown validation error"])
@@ -1295,12 +1373,13 @@ async def code_generate(ctx, proposal_id: int):
     if not proposal or proposal["status"] in {"approved", "rejected"}:
         await ctx.reply("❌ Editable code proposal not found.")
         return
-    if ctx.interaction:
-        await ctx.defer()
-    try:
+    generation_phase = {"label": f"Drafting proposal {proposal_id}"}
+
+    async def _generate_and_validate():
         patch, generation = await generate_code_patch(
             proposal["request"], proposal["baseline_sha"]
         )
+        generation_phase["label"] = f"Validating proposal {proposal_id}"
         await asyncio.to_thread(
             set_code_proposal_patch, str(ctx.author.id), proposal_id, patch
         )
@@ -1308,12 +1387,30 @@ async def code_generate(ctx, proposal_id: int):
             validate_patch, proposal["baseline_sha"], patch
         )
         report["generation"] = generation
-        proposal = await asyncio.to_thread(
+        updated = await asyncio.to_thread(
             set_code_proposal_validation, str(ctx.author.id), proposal_id, report
         )
+        return patch, generation, report, updated
+
+    status_msg = None
+    try:
+        status_msg, generated = await _run_context_progress(
+            ctx,
+            action_label=lambda: generation_phase["label"],
+            emoji="🤖",
+            coro=_generate_and_validate(),
+            duration_estimate=90,
+        )
+        patch, generation, report, proposal = generated
     except (RuntimeError, ValueError) as exc:
+        if status_msg is not None:
+            with contextlib.suppress(Exception):
+                await status_msg.delete()
         await ctx.reply(f"❌ Patch generation failed: {str(exc)[:1200]}")
         return
+    if status_msg is not None:
+        with contextlib.suppress(Exception):
+            await status_msg.delete()
     payload = io.BytesIO(patch.encode("utf-8"))
     files = ", ".join(report["files"])
     if not report["ok"]:
@@ -1614,7 +1711,7 @@ async def reflection_off(ctx):
     await asyncio.to_thread(worker.set_user_enabled, str(ctx.author.id), False)
     await ctx.reply(
         "🧠 Your pending sessions and derived reflection observations were removed. "
-        "Explicitly invoking Multivac again will consent to a new bounded session."
+        "Explicitly invoking Multivac again will consent to a new five-minute-idle session."
     )
 
 
@@ -1630,10 +1727,11 @@ async def reflection_status(ctx):
     await ctx.reply(
         "🧠 **Reflection status**\n"
         f"Enabled: **{status['enabled']}** · invocation-scoped consent: **True**\n"
-        f"Window: {status['lookback_minutes']}m before / {status['window_minutes']}m after invocation\n"
-        f"Queue: {status['pending_sessions']} sessions · {status['new_insights']} new observations · "
+        f"Window: {status['lookback_minutes']}m lookback · closes after {status['idle_minutes']}m idle\n"
+        f"Queue: {status['pending_sessions']} sessions · {status['pulse_queue']} message pulses · "
+        f"{status['new_insights']} new observations · "
         f"{status['active_ideas']} active ideas\n"
-        f"Models: extract `{models['extract']}` · plan `{models['plan']}` · cleanup `{models['cleanup']}`\n"
+        f"Models: pulse/extract `{models['pulse']}` · plan `{models['plan']}` · cleanup `{models['cleanup']}`\n"
         f"Today: ${budget['spent']:.4f} spent + ${budget['reserved']:.4f} reserved · "
         f"${budget['remaining']:.4f} of ${budget['cap']:.2f} remaining"
     )
@@ -1660,6 +1758,11 @@ async def reflection_activity(ctx, limit: int = 5):
     lines = [
         "🧠 **Reflection activity**",
         "_Derived telemetry only; no transcripts, identities, or private model reasoning._",
+        (
+            f"Live sessions: {activity['pending_sessions']} · "
+            f"queued message pulses: {activity['pulse_queue']} · "
+            f"closes after {activity['idle_minutes']}m idle"
+        ),
         (
             f"Planning signals: {activity['signal_strength']}/{activity['signal_threshold']} · "
             f"next time-eligible {_relative_timestamp(activity['next_plan_at'])}"
@@ -1740,8 +1843,6 @@ async def reflection_propose(ctx, idea_id: int):
             f"Finish proposal `{existing.get('public_id') or existing['id']}` before generating another."
         )
         return
-    if ctx.interaction:
-        await ctx.defer()
     request = (
         f"Implement owner-selected reflection idea #{idea['id']}: {idea['title']}. "
         f"Suggested deployment kind: {idea['hotload_kind']}. Problem: {idea['problem']} "
@@ -1755,18 +1856,36 @@ async def reflection_propose(ctx, idea_id: int):
     proposal = await asyncio.to_thread(get_code_proposal, owner_id, proposal_id)
     proposal_name = proposal.get("public_id") or str(proposal_id)
     usage_costs.set_request_context(user_id=owner_id, intent="reflection_code")
-    try:
+    generation_phase = {"label": f"Shaping reflection idea {idea_id}"}
+
+    async def _generate_and_validate():
+        nonlocal proposal
         patch, generation = await generate_planned_idea_patch(
             request,
             baseline,
             context_paths=idea.get("code_paths") or [],
         )
-        await asyncio.to_thread(set_code_proposal_patch, owner_id, proposal_id, patch)
+        generation_phase["label"] = f"Validating proposal {proposal_name}"
+        await asyncio.to_thread(
+            set_code_proposal_patch, owner_id, proposal_id, patch
+        )
         report = await asyncio.to_thread(validate_patch, baseline, patch)
         report["generation"] = generation
         proposal = await asyncio.to_thread(
             set_code_proposal_validation, owner_id, proposal_id, report
         )
+        return patch, generation, report
+
+    status_msg = None
+    try:
+        status_msg, generated = await _run_context_progress(
+            ctx,
+            action_label=lambda: generation_phase["label"],
+            emoji="🧩",
+            coro=_generate_and_validate(),
+            duration_estimate=90,
+        )
+        patch, generation, report = generated
     except (RuntimeError, ValueError) as exc:
         with contextlib.suppress(Exception):
             await asyncio.to_thread(
@@ -1775,11 +1894,17 @@ async def reflection_propose(ctx, idea_id: int):
                 "rejected",
                 reviewer_id="reflection-generation-failure",
             )
+        if status_msg is not None:
+            with contextlib.suppress(Exception):
+                await status_msg.delete()
         await ctx.reply(
             f"Idea `#{idea_id}` was recorded as proposal `{proposal_name}`, but the "
             f"{IDEA_CODE_MODEL} coding pass failed closed: {str(exc)[:1000]}"
         )
         return
+    if status_msg is not None:
+        with contextlib.suppress(Exception):
+            await status_msg.delete()
     payload = io.BytesIO(patch.encode("utf-8"))
     if not report["ok"]:
         await ctx.reply(
@@ -1812,6 +1937,18 @@ async def _builtin_on_message(message: discord.Message):
     if _already_processed(message.id):
         return
 
+    observed_sessions: set[int] = set()
+    try:
+        observed_sessions = await _get_reflection_worker().observe_message(
+            guild_id=str(message.guild.id) if message.guild else "DM",
+            channel_id=str(message.channel.id),
+            author_id=str(message.author.id),
+            message_id=str(message.id),
+            content=message.content or "",
+        )
+    except Exception:
+        logger.warning("Unable to extend active reflection session", exc_info=True)
+
     # Pass-through slash/! commands
     if message.content.startswith(bot.command_prefix):
         await bot.process_commands(message)
@@ -1840,22 +1977,27 @@ async def _builtin_on_message(message: discord.Message):
 
     try:
         reflection = _get_reflection_worker()
-        await asyncio.to_thread(
-            reflection.note_invocation,
+        await reflection.observe_invocation(
             guild_id=str(message.guild.id) if message.guild else "DM",
             channel_id=str(message.channel.id),
             user_id=str(message.author.id),
             message_id=str(message.id),
+            content=message.content or "",
+            already_observed=observed_sessions,
         )
     except Exception:
         logger.warning("Unable to record bounded reflection session", exc_info=True)
 
     preflight_status = None
     try:
-        preflight_status = await message.reply(f"[🧠 Preparing {_preflight_bar(0)}]")
+        preflight_status = await message.reply(
+            _preflight_status(0, "Opening the response path…")
+        )
     except Exception:
         try:
-            preflight_status = await message.channel.send(f"[🧠 Preparing {_preflight_bar(0)}]")
+            preflight_status = await message.channel.send(
+                _preflight_status(0, "Opening the response path…")
+            )
         except Exception:
             preflight_status = None
 
@@ -1879,13 +2021,17 @@ async def _builtin_on_message(message: discord.Message):
     finally:
         if preflight_status is not None:
             with contextlib.suppress(Exception):
-                await preflight_status.edit(content=f"[🧠 Preparing {_preflight_bar(1)}]\nIndexing context…")
+                await preflight_status.edit(
+                    content=_preflight_status(1, "Indexing fresh context…")
+                )
 
     # ---- Search: fast-path ONLY if fully configured; else fall through to tools ----
     if looks_like_search(prompt) and web_search is not None and has_google_search(GOOGLE_API_KEY, GOOGLE_CSE_ID, os.environ):
         if preflight_status is not None:
             with contextlib.suppress(Exception):
-                await preflight_status.edit(content=f"[🧠 Preparing {_preflight_bar(2)}]\nRunning search…")
+                await preflight_status.edit(
+                    content=_preflight_status(2, "Searching for current context…")
+                )
         q = extract_search_query(prompt)
         try:
             results = await asyncio.to_thread(web_search, q, max_results=5)
@@ -1915,7 +2061,9 @@ async def _builtin_on_message(message: discord.Message):
     has_attachments = has_visual_inputs(message, ref_msg) or bool(image_urls or gemini_parts)
     if preflight_status is not None:
         with contextlib.suppress(Exception):
-            await preflight_status.edit(content=f"[🧠 Preparing {_preflight_bar(2)}]\nClassifying intent…")
+            await preflight_status.edit(
+                content=_preflight_status(2, "Reading intent and available inputs…")
+            )
     
     # Attribute all API spend during this message to the requesting user.
     usage_costs.set_request_context(
@@ -1977,7 +2125,9 @@ async def _builtin_on_message(message: discord.Message):
     logger.info(f"Intent identified as: {intent} (has_attachments={has_attachments}, image_inputs={len(image_urls)})")
     if preflight_status is not None:
         with contextlib.suppress(Exception):
-            await preflight_status.edit(content=f"[🧠 Preparing {_preflight_bar(3)}]\nDispatching…")
+            await preflight_status.edit(
+                content=_preflight_status(3, "Routing to the right capability…")
+            )
 
     # Any URL (for summarize)
     general_url_match = re.search(r"https?://[^\s]+", message.content)

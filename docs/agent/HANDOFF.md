@@ -1,9 +1,55 @@
 # Agent Handoff
 
+## 2026-07-26 video pricing correction (not deployed)
+
+- Corrected the video model dropdown and confirmation copy against current
+  provider pricing. Veo 3.1 Standard at 720p is now recorded and displayed at
+  $0.40/second ($1.60/$2.40/$3.20 for 4/6/8 seconds); Veo 3.1 Fast remains
+  $0.10/second.
+- Removed the inaccurate claim that this Gemini API path disables audio. Veo
+  3.1 pricing includes its native audio output.
+- Clarified that the displayed Sora prices are OpenAI's 720p rates and that
+  Sora 2 Pro image references can auto-select the supported 1024p tier at
+  $0.50/second.
+- Added regression assertions for dropdown prices and confirmation text.
+- Validation: `python -m pytest tests/test_video_generation_flow.py
+  tests/test_gemini_veo_config.py -q` passed 17 tests; changed modules compile;
+  `git diff --check` passed with existing line-ending warnings.
+- These changes are local only. Nothing was committed, pushed, or deployed.
+
 ## Active objective
 
-Operate and observe the deployed bounded-reflection subsystem while preserving
-the production-verified hotload runtime and its explicit restart boundaries.
+Validate and release an idle-driven live reflection session while preserving the
+production-verified hotload runtime, privacy boundary, and daily cost ceiling.
+
+## Pending live-session implementation (not deployed)
+
+- Replaces the fixed post-invocation tail with a five-minute sliding idle
+  deadline. Every human message in the active channel and each
+  completed Multivac reply extends the session; temporary progress messages and
+  other bots do not.
+- Queues one bounded in-memory nano/low/Flex pulse per message. Pulses return
+  strict structured conclusions, persist only useful derived observations, and
+  share the existing atomic `$1.50` daily automatic budget. Raw surrounding
+  message text is not added to the reflection database.
+- Keeps the final bounded Discord-history synthesis after idle close, selecting
+  the most recent 100 messages for very long sessions. SQLite evidence IDs are
+  bounded to 200 per session.
+- `/reflection_status` and `/reflection_activity` now expose live-session and
+  pulse-queue counts plus the five-minute idle schedule without exposing
+  transcripts or private model reasoning.
+- Reworked the shared response progress UI into a deterministic breathing scan
+  with elapsed time, phase summaries, and pseudo-progress capped below
+  completion until the underlying task finishes. The shared path covers chat,
+  provider, image, video, weather, URL, and multimodal work; natural code
+  proposals, `/code_generate`, and `/reflection_propose` now use it for their
+  drafting and validation phases. Background reflection stays channel-silent.
+- Targeted reflection validation passes 19 tests and progress rendering passes
+  3 focused tests. The full desktop suite passes 180 tests with 7 expected skips
+  and 84 subtests; changed modules compile and `git diff --check` passes.
+- These changes touch core Discord wiring and require a normal release/container
+  recreation. They are not eligible for standalone hotload and are not currently
+  running in production.
 
 ## Deployed reflection implementation
 
@@ -227,11 +273,12 @@ production. The source is unloaded and its signed behavior artifact is retained.
 
 ## Next concrete action
 
-Invoke `/reflection_status` and `/reflection_activity`, then explicitly mention
-or reply to Multivac and inspect the completed session after its 20-minute tail.
-Monitor the automatic budget and first model-run records. If core health regresses,
-recreate the bot with `/srv/multivac-releases/manual-baseline-fix-290599d` and
-restore that path in `.multivac-release.json`.
+After explicit release approval, commit and deploy the pending idle-driven
+reflection changes as a normal immutable release, then invoke Multivac and watch
+`/reflection_activity` show message-level `pulse` runs, a sliding live-session
+count, and final extraction after five quiet minutes. Keep
+`/srv/multivac-releases/manual-reflection-97e52be` as the immediate rollback
+release.
 
 ## Deployment/status impact
 
@@ -261,3 +308,9 @@ immediate rollback release. The canonical deployment event was reported with
 HTTP 201. After publishing the deployment handoff, the shared canonical `main`
 ref was atomically fast-forwarded and the running bot resolved that newest
 baseline without a container restart.
+
+The idle-driven per-message changes described above are validated only in the
+desktop worktree. Production remains on
+`/srv/multivac-releases/manual-reflection-97e52be`; no deployment, container
+restart, Discord command sync, or external state change was performed for this
+pending revision.

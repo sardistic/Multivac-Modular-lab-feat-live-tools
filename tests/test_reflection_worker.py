@@ -20,6 +20,7 @@ class ReflectionWorkerTests(unittest.IsolatedAsyncioTestCase):
             {
                 "REFLECTION_DB_PATH": db_path,
                 "REFLECTION_ENABLED": "true",
+                "REFLECTION_IDLE_MINUTES": "5",
             },
         )
         self.env.start()
@@ -36,6 +37,68 @@ class ReflectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertIsNotNone(worker.note_invocation(**kwargs))
         self.assertTrue(worker.user_enabled("42"))
+
+    async def test_active_message_extends_idle_window_and_queues_tiny_pulse(self):
+        worker = ReflectionWorker(self.store)
+        session_id = worker.note_invocation(
+            guild_id="1",
+            channel_id="2",
+            user_id="42",
+            message_id="100",
+        )
+        before = datetime.fromisoformat(
+            self.store.get_session(session_id)["expires_at"]
+        )
+
+        observed = await worker.observe_message(
+            guild_id="1",
+            channel_id="2",
+            author_id="77",
+            message_id="101",
+            content="",
+        )
+
+        session = self.store.get_session(session_id)
+        self.assertEqual(observed, {session_id})
+        self.assertEqual(session["message_ids"], ["100", "101"])
+        self.assertGreaterEqual(datetime.fromisoformat(session["expires_at"]), before)
+        pulse = worker._pulse_queue.get_nowait()
+        self.assertEqual(pulse["message"]["role"], "participant")
+        self.assertEqual(pulse["message"]["message_id"], "101")
+        self.assertEqual(pulse["message"]["content"], "[non-text message]")
+
+    async def test_pulse_persists_only_a_structured_conclusion(self):
+        worker = ReflectionWorker(self.store)
+        session_id = worker.note_invocation(
+            guild_id="1",
+            channel_id="2",
+            user_id="42",
+            message_id="100",
+        )
+        worker.models.pulse = AsyncMock(
+            return_value={
+                "useful": True,
+                "kind": "pain_point",
+                "summary": "The failure response lacks an actionable explanation.",
+                "confidence": 0.88,
+            }
+        )
+        raw_message = "my private surrounding chat should not be stored"
+
+        await worker._process_pulse(
+            {
+                "session": self.store.get_session(session_id),
+                "message": {
+                    "message_id": "101",
+                    "role": "requester",
+                    "content": raw_message,
+                },
+            }
+        )
+
+        insight = self.store.pending_insights()[0]
+        self.assertEqual(insight["evidence_ids"], ["101"])
+        self.assertNotIn(raw_message, str(insight))
 
     async def test_session_uses_bounded_surrounding_history_and_stores_only_insight(self):
         history = AsyncMock(
@@ -67,7 +130,7 @@ class ReflectionWorkerTests(unittest.IsolatedAsyncioTestCase):
             channel_id="2",
             user_id="42",
             message_id="100",
-            window_minutes=20,
+            idle_minutes=5,
             lookback_minutes=10,
             at=at,
         )
@@ -148,7 +211,7 @@ class ReflectionWorkerTests(unittest.IsolatedAsyncioTestCase):
             channel_id="2",
             user_id="42",
             message_id="100",
-            window_minutes=20,
+            idle_minutes=5,
             at=at,
         )
         session = self.store.due_sessions()[0]
@@ -203,6 +266,8 @@ class ReflectionWorkerTests(unittest.IsolatedAsyncioTestCase):
         activity = worker.activity(5)
 
         self.assertEqual(activity["signal_threshold"], 3)
+        self.assertEqual(activity["idle_minutes"], 5)
+        self.assertEqual(activity["pulse_queue"], 0)
         self.assertIn("[EMAIL]", activity["observations"][0]["summary"])
         self.assertIn("[URL]", activity["observations"][0]["summary"])
         self.assertNotIn("evidence_ids", activity["observations"][0])
