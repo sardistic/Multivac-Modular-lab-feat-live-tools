@@ -1,6 +1,6 @@
 # Agent Handoff
 
-## 2026-07-26 video pricing correction (not deployed)
+## 2026-07-26 idle reflection and video pricing deployment
 
 - Corrected the video model dropdown and confirmation copy against current
   provider pricing. Veo 3.1 Standard at 720p is now recorded and displayed at
@@ -15,14 +15,27 @@
 - Validation: `python -m pytest tests/test_video_generation_flow.py
   tests/test_gemini_veo_config.py -q` passed 17 tests; changed modules compile;
   `git diff --check` passed with existing line-ending warnings.
-- These changes are local only. Nothing was committed, pushed, or deployed.
+- The combined idle-reflection, progress UI, and video-pricing revision was
+  committed as `5dd15da`, pushed to `origin/main`, and deployed from immutable
+  release `/srv/multivac-releases/manual-idle-reflection-5dd15da`.
+- Desktop validation passed 181 pytest cases with 7 expected skips and 84
+  subtests. The exact detached release passed 188 unittest cases with 7 expected
+  skips in the production image under no-network, read-only,
+  capability-dropped constraints.
+- Only the Multivac container was recreated; Elasticsearch and persistent state
+  remained in place. Discord connected, the bot reached ready state, synchronized
+  16 application commands, and reports zero restarts. The container is read-only,
+  runs as UID/GID 65532, and mounts the expected immutable release.
+- Live inspection confirmed the Veo 3.1 6-second dropdown entry reports `$2.40`.
+  The prior `/srv/multivac-releases/manual-reflection-97e52be` release remains
+  available for immediate rollback.
 
 ## Active objective
 
 Validate and release an idle-driven live reflection session while preserving the
 production-verified hotload runtime, privacy boundary, and daily cost ceiling.
 
-## Pending live-session implementation (not deployed)
+## Idle-driven live-session implementation (deployed)
 
 - Replaces the fixed post-invocation tail with a five-minute sliding idle
   deadline. Every human message in the active channel and each
@@ -47,9 +60,8 @@ production-verified hotload runtime, privacy boundary, and daily cost ceiling.
 - Targeted reflection validation passes 19 tests and progress rendering passes
   3 focused tests. The full desktop suite passes 180 tests with 7 expected skips
   and 84 subtests; changed modules compile and `git diff --check` passes.
-- These changes touch core Discord wiring and require a normal release/container
-  recreation. They are not eligible for standalone hotload and are not currently
-  running in production.
+- These changes touched core Discord wiring and were deployed through the normal
+  immutable release/container recreation path.
 
 ## Deployed reflection implementation
 
@@ -309,8 +321,11 @@ HTTP 201. After publishing the deployment handoff, the shared canonical `main`
 ref was atomically fast-forwarded and the running bot resolved that newest
 baseline without a container restart.
 
-The idle-driven per-message changes described above are validated only in the
-desktop worktree. Production remains on
-`/srv/multivac-releases/manual-reflection-97e52be`; no deployment, container
-restart, Discord command sync, or external state change was performed for this
-pending revision.
+On 2026-07-26, the combined idle-driven reflection, shared progress UI, and
+video-pricing revision was pushed as `5dd15da` and deployed from
+`/srv/multivac-releases/manual-idle-reflection-5dd15da`. The exact release passed
+the production-image gate before activation. The recreated bot reached Discord
+ready state, synchronized 16 application commands, retained its persistent
+state, and reports zero restarts. The prior
+`/srv/multivac-releases/manual-reflection-97e52be` release remains intact as the
+immediate rollback target.
