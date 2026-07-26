@@ -77,6 +77,43 @@ class ReflectionModelTests(unittest.IsolatedAsyncioTestCase):
 
         create.assert_not_awaited()
 
+    async def test_message_pulse_uses_tiny_low_effort_flex_call(self):
+        response = SimpleNamespace(
+            model="gpt-5.4-nano",
+            service_tier="flex",
+            output_text=json.dumps(
+                {
+                    "useful": False,
+                    "kind": "behavior_pattern",
+                    "summary": "",
+                    "confidence": 0,
+                }
+            ),
+            usage={"input_tokens": 80, "output_tokens": 20},
+        )
+        create = AsyncMock(return_value=response)
+        client = SimpleNamespace(responses=SimpleNamespace(create=create))
+        models = ReflectionModels(self.store)
+
+        with patch(
+            "services.reflection_models.get_openai_client", return_value=client
+        ), patch("services.reflection_models.usage_costs.record"):
+            result = await models.pulse(
+                {
+                    "message_id": "1",
+                    "role": "participant",
+                    "content": "ordinary conversation",
+                }
+            )
+
+        self.assertFalse(result["useful"])
+        kwargs = create.await_args.kwargs
+        self.assertEqual(kwargs["model"], models.extract_model)
+        self.assertEqual(kwargs["max_output_tokens"], 220)
+        self.assertEqual(kwargs["reasoning"], {"effort": "low"})
+        self.assertEqual(kwargs["service_tier"], "flex")
+        self.assertFalse(kwargs["store"])
+
     async def test_global_usage_log_failure_does_not_release_charged_budget(self):
         response = SimpleNamespace(
             model="gpt-5.4-nano",

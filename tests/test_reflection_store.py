@@ -28,11 +28,11 @@ class ReflectionStoreTests(unittest.TestCase):
             channel_id="2",
             user_id="42",
             message_id="100",
-            window_minutes=20,
+            idle_minutes=5,
             lookback_minutes=10,
             at=at,
         )
-        session = self.store.due_sessions(now=at + timedelta(minutes=21))[0]
+        session = self.store.due_sessions(now=at + timedelta(minutes=6))[0]
         insight_id = self.store.add_insight(
             session=session,
             kind="pain_point",
@@ -63,14 +63,14 @@ class ReflectionStoreTests(unittest.TestCase):
             [],
         )
 
-    def test_invocation_opens_lookback_and_extends_post_window(self):
+    def test_each_channel_message_extends_five_minute_idle_window(self):
         at = datetime(2026, 7, 22, 12, tzinfo=timezone.utc)
         first = self.store.record_invocation(
             guild_id="1",
             channel_id="2",
             user_id="42",
             message_id="100",
-            window_minutes=20,
+            idle_minutes=5,
             lookback_minutes=10,
             at=at,
         )
@@ -79,22 +79,86 @@ class ReflectionStoreTests(unittest.TestCase):
             channel_id="2",
             user_id="42",
             message_id="101",
-            window_minutes=20,
+            idle_minutes=5,
             lookback_minutes=10,
-            at=at + timedelta(minutes=5),
+            at=at + timedelta(minutes=4),
+        )
+        active = self.store.record_channel_activity(
+            guild_id="1",
+            channel_id="2",
+            message_id="102",
+            idle_minutes=5,
+            at=at + timedelta(minutes=8),
         )
 
         self.assertEqual(first, second)
-        session = self.store.due_sessions(now=at + timedelta(minutes=26))[0]
-        self.assertEqual(session["message_ids"], ["100", "101"])
+        self.assertEqual([item["id"] for item in active], [first])
+        session = self.store.due_sessions(now=at + timedelta(minutes=14))[0]
+        self.assertEqual(session["message_ids"], ["100", "101", "102"])
         self.assertEqual(
             datetime.fromisoformat(session["started_at"]),
             at - timedelta(minutes=10),
         )
         self.assertEqual(
             datetime.fromisoformat(session["expires_at"]),
-            at + timedelta(minutes=25),
+            at + timedelta(minutes=13),
         )
+
+    def test_channel_message_after_idle_expiry_does_not_reopen_session(self):
+        at = datetime(2026, 7, 22, 12, tzinfo=timezone.utc)
+        session_id = self.store.record_invocation(
+            guild_id="1",
+            channel_id="2",
+            user_id="42",
+            message_id="100",
+            idle_minutes=5,
+            at=at,
+        )
+
+        active = self.store.record_channel_activity(
+            guild_id="1",
+            channel_id="2",
+            message_id="101",
+            idle_minutes=5,
+            at=at + timedelta(minutes=6),
+        )
+
+        self.assertEqual(active, [])
+        session = self.store.get_session(session_id)
+        self.assertEqual(session["message_ids"], ["100"])
+
+    def test_final_synthesis_retry_is_not_treated_as_a_live_session(self):
+        now = datetime.now(timezone.utc)
+        session_id = self.store.record_invocation(
+            guild_id="1",
+            channel_id="2",
+            user_id="42",
+            message_id="100",
+            idle_minutes=5,
+            at=now - timedelta(minutes=6),
+        )
+        self.assertTrue(self.store.claim_session(session_id))
+        self.store.retry_session(session_id, "provider unavailable")
+
+        active = self.store.record_channel_activity(
+            guild_id="1",
+            channel_id="2",
+            message_id="101",
+            idle_minutes=5,
+            at=now,
+        )
+        replacement_id = self.store.record_invocation(
+            guild_id="1",
+            channel_id="2",
+            user_id="42",
+            message_id="102",
+            idle_minutes=5,
+            at=now,
+        )
+
+        self.assertEqual(active, [])
+        self.assertNotEqual(replacement_id, session_id)
+        self.assertEqual(self.store.get_session(session_id)["message_ids"], ["100"])
 
     def test_runtime_errors_are_fingerprinted_and_counted(self):
         first = self.store.record_runtime_error(
@@ -145,7 +209,7 @@ class ReflectionStoreTests(unittest.TestCase):
             channel_id="2",
             user_id="42",
             message_id="100",
-            window_minutes=20,
+            idle_minutes=5,
             at=old,
         )
         self.store.finish_session(terminal_id, status="complete")
@@ -154,7 +218,7 @@ class ReflectionStoreTests(unittest.TestCase):
             channel_id="2",
             user_id="42",
             message_id="101",
-            window_minutes=20,
+            idle_minutes=5,
             at=old,
         )
 

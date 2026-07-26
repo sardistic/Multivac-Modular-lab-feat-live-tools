@@ -13,6 +13,8 @@ Multivac is a modular Discord bot with multiple chat providers, image and video 
 - Weather, stock, URL summarization, web search, YouTube transcript, and repo inspection tools
 - User facts, saved behavioral instructions, user-awareness profiles, and time-passage context
 - Owner diagnostic helpers for redacted bot log reads and tool listing
+- Rate-limited live progress with breathing scan frames, honest estimated
+  completion, phase details, and provider/job summaries
 - Optional Elasticsearch/OpenSearch backed memory and timeline recall
 - Explicit, versioned hotloading for trusted model-callable tool modules
 - Signed, rollback-capable hotloading for reviewed Discord command Cogs
@@ -125,12 +127,14 @@ documented in `docs/behavior_hotloading.md`.
 
 The optional reflection worker opens a bounded channel window only after a user
 explicitly mentions or replies to Multivac; that invocation is consent for the
-bounded session. It can inspect a short lookback plus the conversation tail,
-detect recurring sanitized runtime
-errors, and turn corroborated observations into owner-visible improvement
-ideas. Surrounding Discord text is processed ephemerally; the reflection store
-retains derived observations, hashed actor references, message IDs, frequency
-counters, ideas, and cost records rather than a second raw-chat archive.
+bounded session. Each new message in the active channel extends the session;
+a tiny budget-gated nano reflection runs in the background for each message,
+and the session receives one final synthesis after five quiet minutes. It can
+inspect a short lookback, detect recurring sanitized runtime errors, and turn
+corroborated observations into owner-visible improvement ideas. Surrounding
+Discord text is processed ephemerally; the reflection store retains derived
+observations, hashed actor references, message IDs, frequency counters, ideas,
+and cost records rather than a second raw-chat archive.
 
 ```text
 /reflection_off

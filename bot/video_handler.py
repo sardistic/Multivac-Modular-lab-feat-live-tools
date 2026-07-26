@@ -132,7 +132,7 @@ def build_video_config_options(include_veo: bool | None = None):
             {
                 **option,
                 "value": f"sora|{option['model']}|{option['seconds']}",
-                "label": f"{option['provider_label']} - {option['seconds']}s (${option['cost']:.2f})",
+                "label": f"{option['provider_label']} - {option['seconds']}s (720p ${option['cost']:.2f})",
             }
         )
 
@@ -171,16 +171,17 @@ def _build_video_cost_message(prompt: str, include_veo: bool) -> str:
         f"Prompt: *{prompt[:100]}...*",
         "",
         "⚠️ **Select Configuration:**",
-        "Sora estimates:",
+        "Sora estimates (OpenAI 720p pricing):",
         "• **Sora 2 Pro**: 4s $1.20 | 8s $2.40 | 12s $3.60",
         "• **Sora 2**: 4s $0.40 | 8s $0.80 | 12s $1.20",
+        "• Sora 2 Pro image references may auto-select 1024p at $0.50/second.",
     ]
     if include_veo:
         lines.extend(
             [
                 "",
-                "Veo estimates (Google video-only pricing, audio disabled in this path):",
-                "• **Veo 3.1**: 4s $0.80 | 6s $1.20 | 8s $1.60",
+                "Veo estimates (Google 720p pricing; native audio is included):",
+                "• **Veo 3.1**: 4s $1.60 | 6s $2.40 | 8s $3.20",
                 "• **Veo 3.1 Fast**: 4s $0.40 | 6s $0.60 | 8s $0.80",
             ]
         )

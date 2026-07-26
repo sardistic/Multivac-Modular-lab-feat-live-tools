@@ -18,7 +18,7 @@ VEO_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     DEFAULT_VEO_MODEL: {
         "label": "Veo 3.1",
         "emoji": "🎬",
-        "cost_per_second": 0.20,
+        "cost_per_second": 0.40,
         "durations": (4, 6, 8),
         "supports_audio": True,
     },
@@ -63,9 +63,10 @@ def get_veo_model_label(model: str) -> str:
 
 def estimate_veo_cost(model: str, seconds: int, *, generate_audio: bool = False) -> float:
     config = VEO_MODEL_CONFIGS.get(model, {})
-    rate = float(config.get("cost_per_second", 0.20))
-    if generate_audio and config.get("supports_audio"):
-        rate += 0.15 if "fast" not in model else 0.05
+    # Veo 3.1 generates audio natively, and Gemini API pricing includes it.
+    # Keep generate_audio in the signature for existing callers, but do not
+    # apply a separate audio surcharge.
+    rate = float(config.get("cost_per_second", 0.40))
     return round(rate * int(seconds), 2)
 
 

@@ -128,3 +128,17 @@ Owner observability exposes only structured, sanitized activity: observation
 summaries and counts, anonymized actor totals, run outcomes, thresholds,
 schedules, and budget. Raw chat, message/evidence IDs, actor hashes, identities,
 source transcripts, and private model reasoning are not part of that interface.
+
+## 2026-07-22: Make reflection sessions idle-driven and incrementally active
+
+An invocation now starts a channel session that closes after five quiet minutes
+instead of using a fixed post-invocation tail. Every new human message and each
+completed Multivac reply atomically moves that idle deadline and queues one
+small, low-reasoning nano-model pulse. This makes the loop responsive throughout
+the conversation while preserving the explicit invocation boundary.
+
+Pulse text exists only in a bounded in-memory queue. The model returns a strict,
+small structured conclusion; ordinary conversation is discarded, and only a
+useful derived observation may be persisted. A final bounded history synthesis
+still runs after idle close. Pulses share the existing atomic `$1.50` daily
+automatic budget, use Flex only, and stop when the budget is unavailable.

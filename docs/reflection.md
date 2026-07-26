@@ -2,11 +2,12 @@
 
 ## Purpose
 
-Multivac can run a low-frequency background improvement loop without silently
+Multivac can run a cost-bounded background improvement loop without silently
 joining every conversation or autonomously changing itself. The loop observes a
-bounded slice of a channel after a user explicitly invokes the bot, extracts
-product-level conclusions, counts recurring operational errors, reads relevant
-repository source, and prepares evidence-backed ideas for the owner.
+bounded, invocation-started slice of a channel, performs tiny incremental
+reflections as messages arrive, extracts final product-level conclusions, counts
+recurring operational errors, reads relevant repository source, and prepares
+evidence-backed ideas for the owner.
 
 This is structured reflection, not stored chain-of-thought. Model outputs are
 strict JSON conclusions and never become code, approval, or deployment authority.
@@ -24,23 +25,29 @@ An explicit Discord mention or reply to Multivac opens one channel-scoped
 session for that requester:
 
 - ten minutes before the invocation by default;
-- twenty minutes after the invocation by default;
+- until the channel has been idle for five minutes by default;
 - up to 100 non-empty messages and 16,000 characters;
 - only the same guild and channel;
-- later explicit invocations by the same user extend the existing pending window.
+- every new human message or completed Multivac reply extends the idle deadline;
+- later explicit invocations by the same user reuse the existing pending session.
 
-During the open tail, ordinary channel messages can provide context without
-repeatedly mentioning the bot. Other bots are excluded. Roles are reduced to
-`requester`, `participant`, and `assistant`, and the extractor is instructed to
-use participant messages only to assess the bot interaction—not to profile
-participants or infer protected traits.
+During the live session, ordinary channel messages provide context without
+repeatedly mentioning the bot. Each message queues one small nano-model pulse in
+memory; useful structured conclusions can be persisted immediately, while
+ordinary conversation is discarded. Temporary progress messages and other bots
+are excluded. Roles are reduced to `requester`, `participant`, and `assistant`,
+and both pulse and final extractors are instructed to assess only the bot
+interaction—not to profile participants or infer protected traits.
 
-Discord history is fetched when the window closes and processed ephemerally. If
-that fetch is unavailable, the fallback queries Elasticsearch/OpenSearch only
-for the requester's already-indexed trigger messages and the bot replies tied to
-them. The reflection SQLite database does not retain the surrounding message
-text. It retains short derived observations, HMAC-hashed actor references,
-bounded message/session IDs, counts, proposal ideas, run status, and budget rows.
+Discord history is fetched after five quiet minutes (plus at most one polling
+interval) and processed ephemerally for a final synthesis. The most recent 100
+messages are used if a very active session exceeds that bound; per-message
+pulses still covered the earlier messages. If that fetch is unavailable, the
+fallback queries Elasticsearch/OpenSearch only for the requester's already-indexed
+trigger messages and the bot replies tied to them. The in-memory pulse queue and
+final fetch do not create a raw-chat archive. The reflection SQLite database
+retains only short derived observations, HMAC-hashed actor references, bounded
+message/session IDs, counts, proposal ideas, run status, and budget rows.
 Completed session rows are retained for 30 days by default; run, budget, and
 frequency-event metadata is retained for 90 days. Active derived evidence and
 ideas remain until superseded or removed through consent deletion.
@@ -68,6 +75,7 @@ context selection. No local language model service is required.
 Model work uses the Responses API with `store=false`, strict JSON schemas, and
 Flex processing. Defaults are:
 
+- incremental pulse: `gpt-5.4-nano`, low reasoning, once per message in a live session;
 - extraction: `gpt-5.4-nano`, low reasoning, once per completed useful window;
 - planning: `gpt-5.6-sol`, high reasoning, at most once per 24 hours after enough signals;
 - cleanup: `gpt-5.6-luna`, medium reasoning, weekly and only with at least 12 active ideas;
@@ -79,11 +87,12 @@ one per hour by default.
 
 ## Cost controls
 
-Automatic extraction, planning, and cleanup share an atomic daily reservation
-ledger. The default cap is `$1.50` per reporting day. Each call reserves a
-conservative maximum before contacting the provider, records actual token cost,
-and releases unused reservation. Once the cap is unavailable, work is delayed;
-the worker cannot spend through the gate by launching concurrent calls.
+Automatic pulses, extraction, planning, and cleanup share an atomic daily
+reservation ledger. The default cap is `$1.50` per reporting day. Each call
+reserves a conservative maximum before contacting the provider, records actual
+token cost, and releases unused reservation. Once the cap is unavailable,
+additional model thought stops rather than overrunning the ceiling; host-side
+session tracking and expiration continue.
 
 Owner-triggered `/reflection_propose` calls are not background spend. They use
 the low-cost coding model and appear in the ordinary usage ledger as
@@ -101,9 +110,10 @@ identity redaction used for error fingerprints.
 
 `/reflection_ideas` lists active ideas and their evidence counts.
 `/reflection_propose <idea_id>` asks the cheap coding tier to draft a patch from
-the reviewed idea and policy-allowed source context. The result becomes an
-ordinary code proposal on the canonical baseline and must pass static policy
-validation and explicit owner approval.
+the reviewed idea and policy-allowed source context. Its owner-visible progress
+message moves from idea shaping to patch validation without exposing private
+reasoning. The result becomes an ordinary code proposal on the canonical
+baseline and must pass static policy validation and explicit owner approval.
 
 The reflection worker cannot approve, sign, activate, deploy, restart, or roll
 back code. A standalone eligible `live_tools/`, `live_commands/`, or
@@ -116,9 +126,11 @@ release-and-restart work.
 ```text
 REFLECTION_ENABLED=false
 REFLECTION_DAILY_BUDGET_USD=1.50
-REFLECTION_WINDOW_MINUTES=20
+REFLECTION_IDLE_MINUTES=5
 REFLECTION_LOOKBACK_MINUTES=10
 REFLECTION_POLL_SECONDS=120
+REFLECTION_PULSE_WORKERS=2
+REFLECTION_PULSE_QUEUE_MAX=500
 REFLECTION_MAX_SESSIONS_PER_TICK=4
 REFLECTION_SIGNAL_WINDOW_DAYS=7
 REFLECTION_SESSION_RETENTION_DAYS=30

@@ -248,20 +248,20 @@ class ReflectionStore:
         channel_id: str,
         user_id: str,
         message_id: str,
-        window_minutes: int,
+        idle_minutes: int,
         lookback_minutes: int = 10,
         at: datetime | None = None,
     ) -> int:
         current = at or _now()
         observation_start = current - timedelta(minutes=max(0, int(lookback_minutes)))
-        expires = current + timedelta(minutes=max(1, int(window_minutes)))
+        expires = current + timedelta(minutes=max(1, int(idle_minutes)))
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 """
                 SELECT id,message_ids_json FROM reflection_sessions
                 WHERE guild_id=? AND channel_id=? AND user_id=?
-                  AND status='pending' AND expires_at>?
+                  AND status='pending' AND attempts=0 AND expires_at>?
                 ORDER BY id DESC LIMIT 1
                 """,
                 (str(guild_id), str(channel_id), str(user_id), _iso(current)),
@@ -297,6 +297,65 @@ class ReflectionStore:
         item = dict(row)
         item["message_ids"] = _json_list(item.pop("message_ids_json", None))
         return item
+
+    def get_session(self, session_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM reflection_sessions WHERE id=?",
+                (int(session_id),),
+            ).fetchone()
+        return self._session(row) if row else None
+
+    def record_channel_activity(
+        self,
+        *,
+        guild_id: str,
+        channel_id: str,
+        message_id: str,
+        idle_minutes: int,
+        at: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Extend every active session in a channel and attach one evidence ID."""
+        current = at or _now()
+        expires = current + timedelta(minutes=max(1, int(idle_minutes)))
+        updated_ids: list[int] = []
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT * FROM reflection_sessions
+                WHERE guild_id=? AND channel_id=? AND status='pending'
+                  AND attempts=0 AND expires_at>?
+                ORDER BY id
+                """,
+                (str(guild_id), str(channel_id), _iso(current)),
+            ).fetchall()
+            for row in rows:
+                message_ids = _json_list(row["message_ids_json"])
+                if str(message_id) not in message_ids:
+                    message_ids.append(str(message_id))
+                conn.execute(
+                    """
+                    UPDATE reflection_sessions
+                    SET message_ids_json=?,last_activity_at=?,expires_at=?
+                    WHERE id=? AND status='pending'
+                    """,
+                    (
+                        json.dumps(message_ids[-200:]),
+                        _iso(current),
+                        _iso(expires),
+                        int(row["id"]),
+                    ),
+                )
+                updated_ids.append(int(row["id"]))
+            if not updated_ids:
+                return []
+            placeholders = ",".join("?" for _ in updated_ids)
+            updated = conn.execute(
+                f"SELECT * FROM reflection_sessions WHERE id IN ({placeholders}) ORDER BY id",
+                updated_ids,
+            ).fetchall()
+        return [self._session(row) for row in updated]
 
     def due_sessions(self, *, limit: int = 8, now: datetime | None = None) -> list[dict]:
         with self.connect() as conn:

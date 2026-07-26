@@ -7,7 +7,7 @@ from typing import List, Optional
 import discord
 
 from services.database_utils import get_message_expansion, save_message_expansion, set_message_expanded
-from services.progress import _resolve_label, start_progress_bar
+from services.progress import render_progress_status, start_progress_bar
 
 LINE_TRUNCATE_AT = 2
 DISCORD_MESSAGE_LIMIT = 2000
@@ -217,21 +217,27 @@ async def live_status_with_progress(
     existing_status_msg: Optional[discord.Message] = None,
 ):
     status_msg = existing_status_msg
+    initial_status = render_progress_status(
+        action_label,
+        emoji=emoji,
+        progress=0.0,
+        detail="Warming up the response path…",
+    )
     if status_msg is None:
         try:
-            status_msg = await message.reply(f"[{emoji} {_resolve_label(action_label)} ░░░░░░░░░░]")
+            status_msg = await message.reply(initial_status)
         except Exception:
             # Avoid leaking an un-awaited coroutine if reply fails before task creation.
             with contextlib.suppress(Exception):
                 if asyncio.iscoroutine(coro):
                     coro.close()
             with contextlib.suppress(Exception):
-                status_msg = await message.channel.send(f"[{emoji} {_resolve_label(action_label)} ░░░░░░░░░░]")
+                status_msg = await message.channel.send(initial_status)
             if status_msg is None:
                 raise
     else:
         with contextlib.suppress(Exception):
-            await status_msg.edit(content=f"[{emoji} {_resolve_label(action_label)} ░░░░░░░░░░]")
+            await status_msg.edit(content=initial_status)
 
     loop = asyncio.get_event_loop()
     task = loop.create_task(coro)
@@ -243,42 +249,13 @@ async def live_status_with_progress(
             emoji=emoji,
             duration_estimate=duration_estimate,
             progress_tracker=progress_tracker,
+            summarizer=summarizer if stream_ok else None,
         )
     )
-
-    stop_summary = asyncio.Event()
-    summary_task = None
-
-    async def _summary_loop():
-        if not stream_ok or summarizer is None:
-            return
-        editor = editor_factory(status_msg) if editor_factory else None
-        while not task.done():
-            try:
-                s = summarizer()
-                if s:
-                    content = f"[{emoji} {_resolve_label(action_label)} ░░░░░░░░░░]\n{s}"
-                    if editor:
-                        await editor.update(content)
-                    else:
-                        await status_msg.edit(content=content)
-            except Exception:
-                pass
-            try:
-                await asyncio.wait_for(stop_summary.wait(), timeout=1.5)
-            except asyncio.TimeoutError:
-                continue
-
-    if summarizer:
-        summary_task = loop.create_task(_summary_loop())
 
     try:
         result = await task
     finally:
-        if summary_task:
-            stop_summary.set()
-            with contextlib.suppress(Exception):
-                await summary_task
         with contextlib.suppress(Exception):
             await progress_task
 
