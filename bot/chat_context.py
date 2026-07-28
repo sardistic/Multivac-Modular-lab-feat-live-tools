@@ -26,6 +26,18 @@ _MEMORY_TOOLS_BLOCK = (
     "behavior requests replace conflicting old ones."
 )
 
+_WEB_RESEARCH_BLOCK = (
+    "Use web tools as a research loop, not as a raw-results command. If the latest "
+    "request contains an HTTP(S) URL and its contents matter to the answer, open and "
+    "read it before answering; never guess its contents from the URL or surrounding "
+    "text. Decide for yourself whether a web search would materially improve accuracy. "
+    "Search when information may be current, recently changed, niche, uncertain, or "
+    "when the user asks to search, verify, or provide sources. Search results are leads: "
+    "open the most relevant source when its page content is needed, then synthesize a "
+    "direct answer. Do not reply with only a list of search results unless the user "
+    "specifically asks for links or results."
+)
+
 
 def build_chat_context(message, user_id, raw_prompt, ref_msg=None, is_reply_to_bot=False) -> List[Dict[str, Any]]:
     msgs: List[Dict[str, Any]] = []
@@ -41,10 +53,7 @@ def build_chat_context(message, user_id, raw_prompt, ref_msg=None, is_reply_to_b
             "You are aware of time passing between conversations."
         ),
     })
-    msgs.append({
-        "role": "system",
-        "content": "If the user explicitly says 'search', 'look up', or 'news', prefer using the web_search tool with their query.",
-    })
+    msgs.append({"role": "system", "content": _WEB_RESEARCH_BLOCK})
     msgs.append({"role": "system", "content": _MEMORY_TOOLS_BLOCK})
 
     # Who am I talking to: distilled profile, remembered facts, time since last

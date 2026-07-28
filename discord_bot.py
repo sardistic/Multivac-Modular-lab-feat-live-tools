@@ -97,10 +97,7 @@ from bot.intent_dispatcher import (
 from bot.message_inputs import (
     collect_gemini_parts,
     collect_image_inputs,
-    extract_search_query,
-    has_google_search,
     has_visual_inputs,
-    looks_like_search,
     resolve_reference_message,
     strip_mention_and_trigger,
 )
@@ -112,12 +109,6 @@ from bot.ui_messages import (
     send_or_edit_with_truncation as ui_send_or_edit_with_truncation,
     live_status_with_progress as ui_live_status_with_progress,
 )
-
-# NEW: direct search fast-path (kept, but now properly gated)
-try:
-    from services.search_utils import web_search
-except Exception:
-    web_search = None
 
 # The shared progress renderer now folds live summaries into the same
 # rate-limited edit loop, so no optional editor dependency is required.
@@ -2024,37 +2015,6 @@ async def _builtin_on_message(message: discord.Message):
                 await preflight_status.edit(
                     content=_preflight_status(1, "Indexing fresh context…")
                 )
-
-    # ---- Search: fast-path ONLY if fully configured; else fall through to tools ----
-    if looks_like_search(prompt) and web_search is not None and has_google_search(GOOGLE_API_KEY, GOOGLE_CSE_ID, os.environ):
-        if preflight_status is not None:
-            with contextlib.suppress(Exception):
-                await preflight_status.edit(
-                    content=_preflight_status(2, "Searching for current context…")
-                )
-        q = extract_search_query(prompt)
-        try:
-            results = await asyncio.to_thread(web_search, q, max_results=5)
-        except Exception:
-            results = []
-            logger.exception("web_search failed")
-        if results:
-            lines = ["**Top results:**"]
-            for r in results:
-                title = r.get("title") or "(untitled)"
-                url = r.get("url") or ""
-                snippet = (r.get("snippet") or "").strip()
-                if snippet:
-                    snippet = snippet[:300]
-                lines.append(f"- [{title}]({url}) — {snippet}")
-            await send_or_edit_with_truncation("\n".join(lines), target_msg=preflight_status, channel=message.channel, reply_to=message)
-            _preflight_status_by_message_id.pop(message.id, None)
-            return
-        # If configured but the query returned nothing, say so (this path is “real”)
-        await send_or_edit_with_truncation("No results found.", target_msg=preflight_status, channel=message.channel, reply_to=message)
-        _preflight_status_by_message_id.pop(message.id, None)
-        return
-    # If not configured, we do NOT send “No results found” — we let the model’s web_search tool handle it.
 
     image_urls = await collect_image_inputs(message, ref_msg, image_url_to_base64)
     gemini_parts = await collect_gemini_parts(message, ref_msg, image_urls)

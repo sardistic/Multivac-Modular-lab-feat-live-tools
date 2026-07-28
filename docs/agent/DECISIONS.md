@@ -1,5 +1,18 @@
 # Architectural Decisions
 
+## 2026-07-28: Route web lookup through the model's research tool loop
+
+Explicit search wording is no longer a deterministic Discord fast path that
+returns provider snippets. Search and URL access are evidence-gathering tools
+inside the normal chat generation loop. The model decides when fresh information
+is necessary, may search without special trigger words, opens a relevant page
+when snippets are insufficient, and synthesizes the final response.
+
+Dedicated URL-summary intent routing remains for direct summary requests, while
+URL-bearing analytical questions use the same model-directed page reader as
+search follow-ups. Blocking search, fetch, and extraction work runs outside the
+Discord event loop.
+
 ## 2026-07-21: Hotload model-callable tools through immutable registry snapshots
 
 Tool hotloading is limited to explicit, trusted module activation. Each model

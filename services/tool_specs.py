@@ -3,7 +3,11 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the web for fresh information. Returns top results (title, URL, snippet).",
+            "description": (
+                "Search the live web for current or missing information. Returns leads "
+                "(title, URL, snippet); use summarize_url to open a promising result when "
+                "the answer depends on the page, then synthesize the answer."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -56,7 +60,12 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "summarize_url",
-            "description": "Fetch a URL, extract the main article content, and return a condensed text block.",
+            "description": (
+                "Open and read an HTTP/HTTPS URL. Fetches the page, extracts its main "
+                "content, and returns a condensed text block for answering questions, "
+                "checking claims, or summarizing. Use whenever a relevant URL appears in "
+                "the user's request or after web_search identifies a useful source."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -64,7 +73,9 @@ TOOL_SPECS = [
                     "max_len": {
                         "type": "integer",
                         "description": "Max characters of condensed text.",
-                        "default": 3000,
+                        "minimum": 1000,
+                        "maximum": 12000,
+                        "default": 6000,
                     },
                 },
                 "required": ["url"],
