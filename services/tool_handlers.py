@@ -39,6 +39,8 @@ async def handle_get_weather(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def handle_web_search(args: Dict[str, Any]) -> Dict[str, Any] | list:
+    import asyncio
+
     try:
         from services.search_utils import web_search
     except Exception as e:
@@ -51,7 +53,14 @@ async def handle_web_search(args: Dict[str, Any]) -> Dict[str, Any] | list:
     gl = (args or {}).get("gl")
     lr = (args or {}).get("lr")
     safe = (args or {}).get("safe")
-    return web_search(q, max_results=num, gl=gl, lr=lr, safe=safe)
+    return await asyncio.to_thread(
+        web_search,
+        q,
+        max_results=num,
+        gl=gl,
+        lr=lr,
+        safe=safe,
+    )
 
 
 async def handle_get_stock_quote(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -90,14 +99,23 @@ async def handle_get_youtube_transcript(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def handle_summarize_url(args: Dict[str, Any]) -> Dict[str, Any]:
+    import asyncio
+
     url = (args or {}).get("url", "")
-    max_len = int((args or {}).get("max_len", 3000))
+    max_len = max(1000, min(int((args or {}).get("max_len", 6000)), 12000))
     if not url or not url.startswith("http"):
         return {"ok": False, "error": "bad_url"}
     try:
-        html = fetch_url_content(url)
-        title, text = extract_main_text(html)
+        html = await asyncio.to_thread(fetch_url_content, url)
+        title, text = await asyncio.to_thread(extract_main_text, html)
         condensed = reduce_text_length(text, max_chars=max_len)
+        if not condensed.strip():
+            return {
+                "ok": False,
+                "error": "no_readable_content",
+                "title": title,
+                "url": url,
+            }
         return {"ok": True, "title": title, "condensed": condensed, "url": url}
     except Exception as e:
         return {"ok": False, "error": f"fetch_or_extract_failed: {e}"}

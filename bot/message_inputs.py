@@ -4,7 +4,7 @@ import base64
 import logging
 import mimetypes
 import re
-from typing import Any, Dict, List
+from typing import Any, List
 from urllib.parse import urlparse
 
 from google.genai import types
@@ -20,34 +20,6 @@ def strip_mention_and_trigger(raw: str, bot_user_id: int | None) -> str:
     if bot_user_id:
         s = re.sub(f"<@!?{bot_user_id}>", "", s).strip()
     return s
-
-
-def looks_like_search(s: str) -> bool:
-    s = s.lower().strip()
-    return (
-        s.startswith("search ")
-        or s.startswith("look up ")
-        or s.startswith("lookup ")
-        or s.startswith("news ")
-        or " search " in f" {s} "
-        or " news " in f" {s} "
-        or s in {"search", "news"}
-    )
-
-
-def extract_search_query(s: str) -> str:
-    s = s.strip()
-    s = re.sub(r"^(search|lookup|look up|news)\s*[:,-]*\s*", "", s, flags=re.I)
-    return s or "latest"
-
-
-def has_google_search(google_api_key: str | None, google_cse_id: str | None, env: Dict[str, str]) -> bool:
-    ga = google_api_key or env.get("GOOGLE_API_KEY")
-    gc = google_cse_id or env.get("GOOGLE_CSE_ID")
-    ok = bool(ga and gc)
-    if not ok:
-        logger.debug("Google search disabled: GOOGLE_API_KEY=%s, GOOGLE_CSE_ID=%s", bool(ga), bool(gc))
-    return ok
 
 
 async def resolve_reference_message(message, bot_user):
