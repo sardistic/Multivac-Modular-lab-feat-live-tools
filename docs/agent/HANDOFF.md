@@ -1,5 +1,46 @@
 # Agent Handoff
 
+## 2026-07-28 model-directed web research deployment
+
+- Removed the explicit-search fast path from `discord_bot.py`. Requests containing
+  `search`, `look up`, or `news` no longer bypass intent routing and return a raw
+  Google CSE result list; they now reach the normal model tool loop.
+- Added shared research guidance telling chat models to decide when current,
+  changed, niche, uncertain, source-backed, or explicitly verified information
+  needs a live search. Search results are treated as leads, and the model is
+  instructed to open the most relevant result and synthesize an answer rather
+  than returning snippets.
+- URL-bearing prompts now tell the model to call `summarize_url` whenever the
+  page content matters and never infer page contents from the URL. The URL tool
+  description now explicitly covers reading, claim checking, and answering
+  questions in addition to summarization.
+- Increased the default extracted page context from 3,000 to 6,000 characters,
+  bounded it to 1,000-12,000 characters, reports empty extractions explicitly,
+  and moved both Google CSE calls and page fetch/extraction off the Discord event
+  loop.
+- Added regression coverage for a complete search -> source read -> synthesized
+  answer sequence, URL-reading instructions, URL extraction success/failure,
+  and the revised model-facing schemas.
+- Validation: the combined desktop worktree passed 189 tests with 7 expected
+  skips and 84 subtests. The isolated commit passed 186 pytest cases with 7
+  expected skips and 84 subtests, then passed 193 unittest cases with 7 expected
+  skips in the production image under no-network, capability-dropped,
+  resource-limited constraints. Changed modules compile and `git diff --check`
+  passes with only existing line-ending warnings.
+- Search changes were isolated from the unrelated code-generation confirmation
+  gate, committed as `94d87a8`, and pushed to `origin/main`. The confirmation
+  code and its tests remain uncommitted locally.
+- Production runs immutable release
+  `/srv/multivac-releases/manual-web-research-94d87a8`. Only the Multivac bot
+  container was recreated; Elasticsearch and persistent state were preserved.
+  Discord reached ready state, synchronized 16 commands, and reports zero
+  restarts. The container is read-only as UID/GID 65532 and `/app` resolves to
+  the exact pushed SHA.
+- Live tool smoke checks returned two valid Google CSE results and extracted
+  readable content from an HTTP page. The prior
+  `/srv/multivac-releases/manual-idle-reflection-5dd15da` release remains the
+  immediate rollback target. The deployment event was accepted with HTTP 201.
+
 ## 2026-07-26 idle reflection and video pricing deployment
 
 - Corrected the video model dropdown and confirmation copy against current
