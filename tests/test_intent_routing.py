@@ -1,6 +1,7 @@
 import asyncio
 import os
 import unittest
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -13,7 +14,7 @@ from bot.intent_dispatcher import (
     validate_classified_intent,
     wants_gemini,
 )
-from bot.research_policy import requires_fresh_web
+from bot.research_policy import build_fresh_search_query, requires_fresh_web
 
 
 class KeywordRoutingTests(unittest.TestCase):
@@ -237,6 +238,24 @@ class ClassifiedIntentGuardTests(unittest.TestCase):
 
         self.assertEqual(chat_model_for_intent("chat_research"), OPENAI_CHAT_MODEL)
         self.assertEqual(get_duration_estimate("chat_research"), 8)
+
+    def test_fresh_search_query_disambiguates_recurring_result(self):
+        self.assertEqual(
+            build_fresh_search_query(
+                "who won the last world cup",
+                today=date(2026, 7, 29),
+            ),
+            "who won the last world cup 2026 final result winner",
+        )
+
+    def test_fresh_search_query_preserves_explicit_historical_year(self):
+        self.assertEqual(
+            build_fresh_search_query(
+                "who won the 2018 world cup",
+                today=date(2026, 7, 29),
+            ),
+            "who won the 2018 world cup verified result",
+        )
 
 
 class ResearchDispatchTests(unittest.IsolatedAsyncioTestCase):

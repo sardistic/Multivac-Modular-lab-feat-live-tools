@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from providers.openai_client import (
@@ -425,10 +426,12 @@ async def _responses_tool_loop(
     tool_context: Optional[Dict[str, Any]] = None,
     tool_snapshot: ToolSnapshot | None = None,
     active_tools: Optional[list] = None,
+    forced_tool: Optional[str] = None,
+    forced_tool_args: Optional[Dict[str, Any]] = None,
 ):
     resp = first_resp
     current_input = list(messages)
-    for _ in range(max_rounds):
+    for round_index in range(max_rounds):
         uses = _collect_tool_uses(resp)
         if not uses:
             break
@@ -438,6 +441,8 @@ async def _responses_tool_loop(
         elif raw_output:
             current_input.append(raw_output)
         for cid, name, args in uses:
+            if round_index == 0 and name == forced_tool and forced_tool_args:
+                args = {**(args or {}), **forced_tool_args}
             output_text = await _exec_tool(
                 name,
                 args,
@@ -567,6 +572,7 @@ async def generate_openai_messages_response_with_tools(
     max_tokens: int = 700,
     temperature: float = 0.6,
     forced_tool: Optional[str] = None,
+    forced_tool_args: Optional[Dict[str, Any]] = None,
 ) -> str:
     try:
         # Capture schemas and handlers together. A hotload during this request
@@ -599,14 +605,20 @@ async def generate_openai_messages_response_with_tools(
                     "sources."
                 )
             if forced_tool == "web_search" and forced_tool in available_tool_names:
+                research_date = datetime.now(timezone.utc).date().isoformat()
                 instruction_parts.append(
-                    "This request requires a freshness check. Search first, then answer "
-                    "naturally from the retrieved evidence. Do not narrate the tool call or "
-                    "lead with a generic search-results list. Resolve ambiguity using the "
-                    "most likely current interpretation, briefly naming that interpretation "
-                    "when useful, and link the strongest source or sources when they improve "
-                    "the answer. If the search returns no usable current evidence, say that "
-                    "you could not verify the answer instead of silently substituting model "
+                    f"This request requires a freshness check. Today is {research_date} UTC. "
+                    "Search first, then answer naturally from the retrieved evidence. Treat "
+                    "relative words such as latest, last, current, and ongoing relative to "
+                    "that date. Prefer authoritative evidence published after the relevant "
+                    "event or change. If an older result says an event is scheduled or "
+                    "ongoing but its stated completion date is already past, treat that "
+                    "result as stale, search again, and verify the completed outcome. Do not "
+                    "narrate the tool call or lead with a generic search-results list. "
+                    "Resolve ambiguity using the most likely current interpretation, briefly "
+                    "naming that interpretation when useful, and link at least one strong "
+                    "source. If the search returns no usable current evidence, say that you "
+                    "could not verify the answer instead of silently substituting model "
                     "memory."
                 )
             if "summarize_url" in available_tool_names:
@@ -678,6 +690,8 @@ async def generate_openai_messages_response_with_tools(
                 tool_context=tool_context,
                 tool_snapshot=tool_snapshot,
                 active_tools=active_tools,
+                forced_tool=forced_tool if force_available else None,
+                forced_tool_args=forced_tool_args,
             )
             text = _extract_responses_text(resp)
             if text:
@@ -718,13 +732,19 @@ async def generate_openai_messages_response_with_tools(
 
         msg = choice.message
         current_msgs = list(messages_with_instruction)
-        for _ in range(3):
+        for round_index in range(3):
             if not msg.tool_calls:
                 break
             current_msgs.append(msg)
             for tc in msg.tool_calls:
                 try:
                     args = json.loads(tc.function.arguments)
+                    if (
+                        round_index == 0
+                        and tc.function.name == forced_tool
+                        and forced_tool_args
+                    ):
+                        args = {**(args or {}), **forced_tool_args}
                     output = await _exec_tool(
                         tc.function.name,
                         args,

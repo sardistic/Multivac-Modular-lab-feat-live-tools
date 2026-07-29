@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date, datetime, timezone
 
 _EXPLICIT_FRESHNESS_RE = re.compile(
     r"\b(?:latest|current(?:ly)?|today|tonight|tomorrow|now|recent(?:ly)?|"
@@ -54,3 +55,18 @@ def requires_fresh_web(prompt: str) -> bool:
         or _RECURRING_RESULT_RE.search(text)
         or _CURRENT_ROLE_RE.search(text)
     )
+
+
+def build_fresh_search_query(prompt: str, *, today: date | None = None) -> str:
+    """Make the mandatory first lookup explicit enough to avoid stale results."""
+    text = " ".join((prompt or "").split()).strip()
+    current = today or datetime.now(timezone.utc).date()
+    if not text:
+        return f"latest verified information as of {current.isoformat()}"
+    if _EXPLICIT_YEAR_RE.search(text):
+        return f"{text} verified result"
+    if _RECURRING_RESULT_RE.search(text):
+        return f"{text} {current.year} final result winner"
+    if _CURRENT_ROLE_RE.search(text):
+        return f"{text} as of {current.isoformat()} official"
+    return f"{text} latest as of {current.isoformat()}"

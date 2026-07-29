@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from providers.gemini_client import get_gemini_client, types
@@ -344,9 +345,13 @@ def generate_gemini_text(
                 )
         if any(getattr(t, "google_search", None) for t in tools_list):
             if force_web_search:
+                research_date = datetime.now(timezone.utc).date().isoformat()
                 sys_instructions.append(
-                    "This request requires fresh public information. Use google_search, "
-                    "then answer naturally from current evidence without narrating the search."
+                    f"This request requires fresh public information as of {research_date} UTC. "
+                    "Use google_search and interpret latest, last, current, or ongoing relative "
+                    "to that date. If an event's completion date has passed, verify its final "
+                    "outcome from newer authoritative evidence. Then answer naturally without "
+                    "narrating the search and include a strong source."
                 )
             else:
                 sys_instructions.append("You can search the live web using 'google_search'.")

@@ -17,6 +17,13 @@ historical questions are excluded from the safety net unless the user also asks
 for current verification. Gemini's native search fallback follows the same
 policy.
 
+The mandatory first search does not trust the model to preserve freshness in
+its query arguments. Core derives a date-aware query from the user's wording and
+the current UTC date, then overrides only that first `web_search` call. Recurring
+event questions add the current year plus final-result/winner terms; current
+role and other dynamic questions add an explicit as-of date. Later searches
+remain model-directed.
+
 ## 2026-07-28: Route web lookup through the model's research tool loop
 
 Explicit search wording is no longer a deterministic Discord fast path that
