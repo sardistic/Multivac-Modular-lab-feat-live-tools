@@ -1,6 +1,6 @@
 # Agent Handoff
 
-## 2026-07-29 stale research-evidence correction (not deployed)
+## 2026-07-29 stale research-evidence correction deployment
 
 - A live acceptance query reached `chat_research` and forced `web_search`, but
   the model used the vague wording `who won the last world cup`. Google CSE's
@@ -21,11 +21,25 @@
   source. Gemini receives equivalent guidance.
 - Regression tests cover date-aware query construction, historical-year
   preservation, and forced-argument substitution in both OpenAI API paths.
-- Validation: full combined desktop suite passed 197 tests with 7 expected skips
-  and 94 subtests. Changed modules compile and `git diff --check` passes with
-  only existing line-ending warnings.
-- This correction is local only and has not yet been committed, pushed,
-  deployed, or restarted. Production remains on `17c9fbae`.
+- The combined desktop worktree passed 197 pytest cases with 7 expected skips
+  and 94 subtests. The isolated release commit passed 194 pytest cases with 7
+  expected skips and 94 subtests, then passed 201 unittest cases with 7 expected
+  skips in the production image under no-network, capability-dropped,
+  resource-limited constraints. Changed modules compile and `git diff --check`
+  passes with only existing line-ending warnings.
+- The correction was isolated from the unrelated confirmation gate, committed
+  as `16a06c9d`, and pushed to `origin/main`.
+- Production runs immutable release
+  `/srv/multivac-releases/manual-date-aware-research-16a06c9`. Only the Multivac
+  bot container was recreated; Elasticsearch and persistent state were
+  preserved. Discord reached ready state, synchronized 16 commands, and reports
+  zero restarts. The container is read-only as UID/GID 65532 and `/app` resolves
+  to the exact pushed SHA.
+- A live provider probe of the exact failed prompt generated the intended query
+  and answered that Spain beat Argentina 1-0 after extra time in the 2026 final,
+  linking FIFA's tournament page. The prior
+  `/srv/multivac-releases/manual-fresh-research-17c9fba` release remains the
+  immediate rollback target. The deployment event was accepted with HTTP 201.
 
 ## 2026-07-29 forced freshness research deployment
 
