@@ -21,7 +21,7 @@ class ProgressRenderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(very_late, 0.94)
         self.assertLess(very_late, 1)
 
-    def test_render_has_breathing_frame_scan_detail_and_honest_finish(self):
+    def test_render_uses_classic_shaded_bar_without_numeric_telemetry(self):
         active = render_progress_status(
             "Thinking",
             emoji="🧠",
@@ -37,13 +37,14 @@ class ProgressRenderingTests(unittest.IsolatedAsyncioTestCase):
             done=True,
         )
 
-        self.assertIn("◑", active)
-        self.assertIn("•", build_progress_bar(0.42, phase=2))
-        self.assertIn("`42%`", active)
-        self.assertIn("· 8s", active)
+        bar = build_progress_bar(0.42, phase=2)
+        self.assertTrue(bar.startswith("[██████████"))
+        self.assertEqual(len(bar), 26)
+        self.assertNotIn("%", active)
+        self.assertNotIn("8s", active)
+        self.assertNotIn("**Thinking**", active)
         self.assertIn("Connecting the useful pieces", active)
-        self.assertIn("✓", finished)
-        self.assertIn("`100%`", finished)
+        self.assertEqual(finished, f"🧠 Thinking [{'█' * 24}]")
 
     async def test_live_animation_finishes_cleanly(self):
         message = type("Message", (), {"edit": AsyncMock()})()
@@ -62,8 +63,10 @@ class ProgressRenderingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(await task, "done")
         self.assertGreaterEqual(message.edit.await_count, 2)
-        self.assertIn("✓", message.edit.await_args.kwargs["content"])
-        self.assertIn("`100%`", message.edit.await_args.kwargs["content"])
+        self.assertEqual(
+            message.edit.await_args.kwargs["content"],
+            f"💬 Working [{'█' * 24}]",
+        )
 
 
 if __name__ == "__main__":

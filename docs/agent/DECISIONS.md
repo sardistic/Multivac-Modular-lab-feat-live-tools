@@ -1,5 +1,22 @@
 # Architectural Decisions
 
+## 2026-07-29: Force evidence collection for high-confidence fresh-fact queries
+
+Model-directed research remains the default, but `tool_choice: auto` is not a
+freshness guarantee because a model may answer from memory without calling a
+tool. Intent classification now has a semantic `chat_research` route for
+questions whose answers are likely to have changed, supplemented by a narrow
+deterministic safety net for unmistakable freshness, current-role, live-result,
+and recurring-winner query shapes.
+
+Research requests force `web_search` only on the first model turn. Follow-up
+turns return to automatic tool selection so the model can open relevant pages,
+gather enough evidence, and synthesize a normal conversational answer with
+source links instead of exposing a raw search-results list. Explicitly dated
+historical questions are excluded from the safety net unless the user also asks
+for current verification. Gemini's native search fallback follows the same
+policy.
+
 ## 2026-07-28: Route web lookup through the model's research tool loop
 
 Explicit search wording is no longer a deterministic Discord fast path that

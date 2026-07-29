@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timezone
 
 import anthropic
 
@@ -31,6 +32,7 @@ _INTENT_SYSTEM = (
     "- 'chat_light'\n"
     "- 'chat_standard'\n"
     "- 'chat'\n"
+    "- 'chat_research'\n"
     "- 'chat_deep'\n"
     "- 'clarify'\n\n"
     "- 'code_change'\n"
@@ -71,8 +73,15 @@ _INTENT_SYSTEM = (
     "text needing no tools and little reasoning.\n"
     "  * 'chat_standard': moderate general reasoning, comparison, advice, or explanation on one "
     "topic; no current/private facts or external tools required.\n"
-    "  * 'chat': current information, tools/search, private memory, code/repository inspection, "
-    "multi-part analysis, emotionally sensitive advice, or high-stakes judgment.\n"
+    "  * 'chat': private memory, code/repository inspection, multi-part analysis, emotionally "
+    "sensitive advice, or high-stakes judgment that does not require fresh public information.\n"
+    "  * 'chat_research': any answer whose accuracy may depend on fresh public information. "
+    "This includes the latest or most recent result of a recurring event, current officeholders "
+    "or executives, live scores/standings/schedules, news, prices, laws, product availability, "
+    "software versions, recently released media, and requests to search, verify, or cite current "
+    "sources. Treat an unqualified question such as 'who won the World Cup?' as chat_research: "
+    "the newest completed edition may postdate model knowledge. Do not use chat_research for an "
+    "explicitly historical edition such as 'who won the 2018 World Cup?' or for timeless facts.\n"
     "  * 'chat_deep': genuinely difficult multi-stage reasoning, architecture, rigorous synthesis, "
     "advanced technical design, or complex tradeoffs where the strongest model materially helps.\n"
     "Message length and tone do not determine tier. Do not choose 'chat_deep' merely because tools "
@@ -108,6 +117,10 @@ _INTENT_SYSTEM = (
     "'hello' -> chat_tiny\n"
     "'what is a liminal space' -> chat_light\n"
     "'compare TCP and UDP for a new programmer' -> chat_standard\n"
+    "'who won the world cup' -> chat_research\n"
+    "'who is the CEO of Acme' -> chat_research\n"
+    "'what is the latest stable Python release' -> chat_research\n"
+    "'who won the 2018 world cup' -> chat_light\n"
     "'inspect your repository and explain this failure' -> chat\n"
     "'design a fault-tolerant migration across several dependent services' -> chat_deep\n"
     "'can you improve this image prompt for me' -> chat\n"
@@ -129,7 +142,8 @@ _INTENT_SYSTEM = (
 VALID_INTENTS = {
     "edit_image", "generate_image", "summarize_url", "describe_image",
     "get_weather", "get_stock", "gemini_chat", "claude_chat", "generate_video",
-    "chat_tiny", "chat_light", "chat_standard", "chat", "chat_deep", "clarify",
+    "chat_tiny", "chat_light", "chat_standard", "chat", "chat_research",
+    "chat_deep", "clarify",
     "code_change", "code_approve", "code_reject", "code_status", "code_rollback",
 }
 
@@ -253,7 +267,10 @@ async def classify_intent(
         message_text = text.strip()
         if len(message_text) > 1800:
             message_text = message_text[:1200] + "\n[…trimmed…]\n" + message_text[-500:]
-        user_content += f"MESSAGE TO CLASSIFY:\n{message_text}"
+        user_content += (
+            f"CURRENT DATE (UTC): {datetime.now(timezone.utc).date().isoformat()}\n\n"
+            f"MESSAGE TO CLASSIFY:\n{message_text}"
+        )
 
         payload = {
             "model": OPENAI_INTENT_MODEL,

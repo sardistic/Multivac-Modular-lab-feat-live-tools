@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+import re
+
+_EXPLICIT_FRESHNESS_RE = re.compile(
+    r"\b(?:latest|current(?:ly)?|today|tonight|tomorrow|now|recent(?:ly)?|"
+    r"breaking|news|live|up[- ]?to[- ]?date|as of|this (?:week|month|year|season)|"
+    r"verify|fact[- ]?check|look up|search)\b",
+    re.IGNORECASE,
+)
+_DYNAMIC_FACT_RE = re.compile(
+    r"(?:\b(?:what(?:'s| is)|tell me|show me|check)\b.{0,45}\b"
+    r"(?:availability|release date|version|schedule|standings?|score|results?|"
+    r"polls?|odds|forecast)\b|"
+    r"\b(?:what(?:'s| is)|tell me|show me|check)\b.{0,45}\b"
+    r"(?:price|cost)\s+(?:of|for)\b|"
+    r"\bhow much (?:is|are|does|do)\b)",
+    re.IGNORECASE,
+)
+_RECURRING_RESULT_RE = re.compile(
+    r"\b(?:who won|winner of|won the|champion of|champions of)\b.{0,90}\b"
+    r"(?:world cup|super bowl|championship|tournament|league|season|election|"
+    r"award|oscars?|grammys?|emmys?|game|match|race|grand prix)\b",
+    re.IGNORECASE,
+)
+_CURRENT_ROLE_RE = re.compile(
+    r"\b(?:who is|who(?:'s| is) the|name the)\b.{0,60}\b"
+    r"(?:president|prime minister|premier|governor|mayor|senator|representative|"
+    r"secretary|minister|pope|monarch|king|queen|ceo|chief executive|"
+    r"chair(?:man|woman|person)?|head coach|manager)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def requires_fresh_web(prompt: str) -> bool:
+    """Return true for high-confidence requests whose answer can go stale.
+
+    The semantic intent classifier handles broad meaning. This narrow,
+    deterministic safety net catches costly misses without turning every fact
+    question into a search. A named historical year stays on the normal route
+    unless the user also explicitly requests a current verification.
+    """
+    text = " ".join((prompt or "").split())
+    if not text:
+        return False
+    explicit_freshness = bool(_EXPLICIT_FRESHNESS_RE.search(text))
+    if explicit_freshness:
+        return True
+    if _EXPLICIT_YEAR_RE.search(text):
+        return False
+    return bool(
+        _DYNAMIC_FACT_RE.search(text)
+        or _RECURRING_RESULT_RE.search(text)
+        or _CURRENT_ROLE_RE.search(text)
+    )

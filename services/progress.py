@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import math
+import random
 
-FULL_BLOCK = "━"
+FULL_BLOCK = "█"
 PARTIAL_BLOCKS = [
     (0.00, " "),
     (0.125, "▏"),
@@ -17,7 +18,7 @@ PARTIAL_BLOCKS = [
     (0.875, "▉"),
     (1.00, "█"),
 ]
-PULSE_FRAMES = ("◐", "◓", "◑", "◒")
+FADE_BLOCKS = [".", ":", "-", "░", "▒", "▓"]
 
 
 def _resolve_label(action_label) -> str:
@@ -38,26 +39,26 @@ def estimated_progress(elapsed: float, duration_estimate: float) -> float:
 
 def build_progress_bar(
     progress: float,
-    width: int = 18,
+    width: int = 24,
     fancy: bool = True,
     *,
     phase: int = 0,
 ) -> str:
-    """Render a stable fill with one moving scan light in the unfilled area."""
+    """Render the original shaded 24-cell progress bar."""
     progress = max(0.0, min(1.0, float(progress)))
     width = max(4, int(width))
-    if progress >= 1.0:
-        return f"[{FULL_BLOCK * width}]"
-
-    filled = min(width - 1, int(progress * width))
-    cells = [FULL_BLOCK] * filled
-    cells.append("╸")
-    remaining = width - len(cells)
-    cells.extend("·" for _ in range(remaining))
-    if fancy and remaining > 2:
-        scan_start = filled + 1
-        scan_index = scan_start + (int(phase) % remaining)
-        cells[scan_index] = "•"
+    filled_blocks = int(progress * width)
+    partial_ratio = (progress * width) - filled_blocks
+    cells = []
+    for index in range(width):
+        if index < filled_blocks:
+            cells.append(FULL_BLOCK)
+        elif index == filled_blocks:
+            cells.append(select_partial_block(partial_ratio))
+        elif fancy:
+            cells.append(random.choice(FADE_BLOCKS))
+        else:
+            cells.append(random.choice(["░", "▒", "▓"]))
     return f"[{''.join(cells)}]"
 
 
@@ -71,21 +72,18 @@ def render_progress_status(
     elapsed: float | None = None,
     done: bool = False,
     failed: bool = False,
-    width: int = 18,
+    width: int = 24,
 ) -> str:
     label = _resolve_label(action_label)
-    marker = "⚠" if failed else ("✓" if done else PULSE_FRAMES[int(phase) % len(PULSE_FRAMES)])
-    pct = 100 if done and not failed else min(99, max(0, round(progress * 100)))
     bar = build_progress_bar(
         1.0 if done and not failed else progress,
         width=width,
         fancy=not done,
         phase=phase,
     )
-    timing = ""
-    if elapsed is not None and not done:
-        timing = f" · {max(0, int(elapsed))}s"
-    render = f"{emoji} **{label}** {marker}  {bar}  `{pct:02d}%`{timing}"
+    render = f"{emoji} {label} {bar}"
+    if failed:
+        render += " ⚠"
     if detail:
         render += f"\n↳ {str(detail).strip()[:900]}"
     return render
@@ -101,7 +99,7 @@ async def start_progress_bar(
     summarizer=None,
 ):
     """Animate one Discord message without exceeding a conservative edit rate."""
-    animation_update_interval = 0.2
+    animation_update_interval = 0.1
     discord_edit_interval = 1.5
     loop = asyncio.get_running_loop()
     last_discord_edit = -discord_edit_interval

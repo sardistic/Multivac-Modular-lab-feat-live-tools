@@ -89,7 +89,8 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
             create,
         ), patch.object(openai_messages, "execute_tool", execute):
             result = await openai_messages.generate_openai_messages_response_with_tools(
-                [{"role": "user", "content": "What is the latest lunar mission news?"}]
+                [{"role": "user", "content": "What is the latest lunar mission news?"}],
+                forced_tool="web_search",
             )
 
         self.assertEqual(result, "The mission launched yesterday.")
@@ -98,10 +99,52 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
             ["web_search", "summarize_url"],
         )
         first_messages = create.await_args_list[0].kwargs["messages"]
+        self.assertEqual(
+            create.await_args_list[0].kwargs["tool_choice"],
+            {"type": "function", "function": {"name": "web_search"}},
+        )
+        self.assertEqual(create.await_args_list[1].kwargs["tool_choice"], "auto")
         research_instruction = first_messages[0]["content"]
         self.assertIn("Decide for yourself when fresh web research", research_instruction)
         self.assertIn("open the most relevant result", research_instruction)
         self.assertIn("instead of returning a bare list", research_instruction)
+        self.assertIn("requires a freshness check", research_instruction)
+
+    @patch("providers.openai_messages.USE_RESPONSES", True)
+    async def test_responses_api_forces_only_the_initial_search(self):
+        specs = [_tool_spec("web_search"), _tool_spec("summarize_url")]
+        snapshot = SimpleNamespace(tool_specs=lambda: specs)
+        search_call = {
+            "type": "function_call",
+            "call_id": "search-1",
+            "name": "web_search",
+            "arguments": json.dumps({"q": "latest world cup winner"}),
+        }
+        create = AsyncMock(
+            side_effect=[
+                SimpleNamespace(output_text="", output=[search_call]),
+                SimpleNamespace(output_text="researched answer", output=[]),
+            ]
+        )
+        execute = AsyncMock(return_value=[{"title": "Result", "url": "https://example.test"}])
+
+        with patch.object(openai_messages, "get_tool_snapshot", return_value=snapshot), patch.object(
+            openai_messages,
+            "_responses_create",
+            create,
+        ), patch.object(openai_messages, "execute_tool", execute):
+            result = await openai_messages.generate_openai_messages_response_with_tools(
+                [{"role": "user", "content": "Who won the World Cup?"}],
+                forced_tool="web_search",
+            )
+
+        self.assertEqual(result, "researched answer")
+        self.assertEqual(
+            create.await_args_list[0].kwargs["tool_choice"],
+            {"type": "function", "name": "web_search"},
+        )
+        self.assertNotIn("tool_choice", create.await_args_list[1].kwargs)
+        execute.assert_awaited_once()
 
     @patch("providers.openai_messages.USE_RESPONSES", False)
     async def test_url_instruction_requires_reading_relevant_page(self):
