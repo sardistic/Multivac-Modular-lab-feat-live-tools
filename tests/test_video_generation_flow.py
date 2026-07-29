@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from bot import chat_handler, video_handler
+from bot.draft_verifier import DraftVerdict
 from PIL import Image
 from providers import sora_jobs
 from services import tool_handlers
@@ -25,6 +26,11 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(upload, (b"foo", "input_1.png", "image/png"))
 
+    @patch(
+        "bot.chat_handler.verify_chat_draft",
+        new_callable=AsyncMock,
+        return_value=DraftVerdict(),
+    )
     @patch("bot.chat_handler.apply_personality_overrides", side_effect=lambda user_id, *, intent, text: text)
     @patch("bot.chat_handler.generate_openai_messages_response_with_tools", new_callable=AsyncMock)
     @patch("bot.chat_handler.build_chat_context")
@@ -33,6 +39,7 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
         mock_build_chat_context,
         mock_generate,
         _mock_personality,
+        _mock_verifier,
     ):
         mock_build_chat_context.return_value = [{"role": "user", "content": "make a video from this"}]
         mock_generate.return_value = "queued"

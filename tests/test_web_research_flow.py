@@ -66,6 +66,7 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
             ),
         ]
         create = AsyncMock(side_effect=responses)
+        tool_trace = []
         execute = AsyncMock(
             side_effect=[
                 [
@@ -94,6 +95,7 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
                 forced_tool_args={
                     "q": "latest lunar mission news as of 2026-07-29",
                 },
+                tool_trace=tool_trace,
             )
 
         self.assertEqual(result, "The mission launched yesterday.")
@@ -104,6 +106,10 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             execute.await_args_list[0].args[1]["q"],
             "latest lunar mission news as of 2026-07-29",
+        )
+        self.assertEqual(
+            [item["name"] for item in tool_trace],
+            ["web_search", "summarize_url"],
         )
         first_messages = create.await_args_list[0].kwargs["messages"]
         self.assertEqual(
@@ -134,6 +140,7 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         execute = AsyncMock(return_value=[{"title": "Result", "url": "https://example.test"}])
+        tool_trace = []
 
         with patch.object(openai_messages, "get_tool_snapshot", return_value=snapshot), patch.object(
             openai_messages,
@@ -146,6 +153,7 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
                 forced_tool_args={
                     "q": "who won the last world cup 2026 final result winner",
                 },
+                tool_trace=tool_trace,
             )
 
         self.assertEqual(result, "researched answer")
@@ -159,6 +167,7 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
             execute.await_args.args[1]["q"],
             "who won the last world cup 2026 final result winner",
         )
+        self.assertEqual(tool_trace[0]["name"], "web_search")
 
     @patch("providers.openai_messages.USE_RESPONSES", False)
     async def test_url_instruction_requires_reading_relevant_page(self):

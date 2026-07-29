@@ -1,5 +1,44 @@
 # Architectural Decisions
 
+## 2026-07-29: Use a bounded post-draft quality gate for textual chat
+
+Normal textual chat responses receive one structured post-draft review after
+generation. The reviewer returns exactly one of `accept`, `revise`, or
+`research`. It judges whether the answer's length is warranted by both the
+request and the underlying task, whether the voice subtly reflects the user's
+saved preferences, and whether a claim needs fresher evidence. A short prompt
+does not automatically require a short answer, and a long prompt does not
+automatically justify a long one.
+
+Explicit user instructions are strong constraints. The distilled user profile
+is only a soft style preference: it must not be quoted, exposed, or used to
+stereotype the user. A direct revision may reorganize or shorten the draft but
+must preserve its facts, caveats, links, and citations and may not introduce new
+facts. If evidence is needed, the reviewer supplies one targeted query and the
+provider gets one search-enabled regeneration; there is no recursive review or
+unbounded research loop.
+
+The existing reflection loop contributes a second soft signal. The reviewer may
+receive up to four recent, confidence-filtered derived observations associated
+with the current consented user. Repetition and confidence add weight when a
+signal is relevant to the current request, such as avoiding a known interaction
+pain point or preserving a successful response pattern. The latest request,
+factual integrity, and explicit behavioral instruction remain authoritative.
+Reflection signals are never treated as facts or instructions and must not be
+mentioned, quoted, or exposed in the answer.
+
+The request-time reflection view is metadata-only and user-scoped. It excludes
+raw messages, private reasoning, evidence and session IDs, actor hashes, runtime
+errors, dismissed observations, global ideas, and other users' signals. It is
+empty when reflection is disabled or the user has withdrawn consent.
+
+The verdict uses a strict Structured Outputs schema and is charged to the
+`chat_draft_verify` usage label. Review failures accept the original draft so an
+auxiliary quality pass cannot make chat unavailable. Exact code execution and
+test-result paths bypass the prose reviewer, while ordinary OpenAI, Gemini, and
+Claude chat paths use it. Deterministic personality transformations remain the
+last presentation step.
+
 ## 2026-07-29: Force evidence collection for high-confidence fresh-fact queries
 
 Model-directed research remains the default, but `tool_choice: auto` is not a

@@ -428,6 +428,7 @@ async def _responses_tool_loop(
     active_tools: Optional[list] = None,
     forced_tool: Optional[str] = None,
     forced_tool_args: Optional[Dict[str, Any]] = None,
+    tool_trace: Optional[List[Dict[str, Any]]] = None,
 ):
     resp = first_resp
     current_input = list(messages)
@@ -443,6 +444,8 @@ async def _responses_tool_loop(
         for cid, name, args in uses:
             if round_index == 0 and name == forced_tool and forced_tool_args:
                 args = {**(args or {}), **forced_tool_args}
+            if tool_trace is not None:
+                tool_trace.append({"name": name, "args": dict(args or {})})
             output_text = await _exec_tool(
                 name,
                 args,
@@ -573,6 +576,7 @@ async def generate_openai_messages_response_with_tools(
     temperature: float = 0.6,
     forced_tool: Optional[str] = None,
     forced_tool_args: Optional[Dict[str, Any]] = None,
+    tool_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     try:
         # Capture schemas and handlers together. A hotload during this request
@@ -692,6 +696,7 @@ async def generate_openai_messages_response_with_tools(
                 active_tools=active_tools,
                 forced_tool=forced_tool if force_available else None,
                 forced_tool_args=forced_tool_args,
+                tool_trace=tool_trace,
             )
             text = _extract_responses_text(resp)
             if text:
@@ -745,6 +750,10 @@ async def generate_openai_messages_response_with_tools(
                         and forced_tool_args
                     ):
                         args = {**(args or {}), **forced_tool_args}
+                    if tool_trace is not None:
+                        tool_trace.append(
+                            {"name": tc.function.name, "args": dict(args or {})}
+                        )
                     output = await _exec_tool(
                         tc.function.name,
                         args,
