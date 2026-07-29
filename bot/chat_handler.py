@@ -49,6 +49,7 @@ async def handle_chat_intent(
     moderation_view_factory,
     default_model=None,
     clarify_hint: bool = False,
+    force_web_search: bool = False,
 ):
     async def _do_chat_generation(
         model_name=None,
@@ -101,6 +102,7 @@ async def handle_chat_intent(
                     enable_code_execution=False,
                     search_ids=ctx,
                     model_name=selected_model,
+                    force_web_search=force_web_search,
                 )
                 return text_resp
 
@@ -119,9 +121,12 @@ async def handle_chat_intent(
                 msgs,
                 tool_context=ctx,
                 model=selected_model,
+                forced_tool="web_search" if force_web_search else None,
             )
 
         def _summarizer():
+            if force_web_search:
+                return f"• Using {selected_model}…\n• Checking current sources…"
             return f"• Using {selected_model}…\n• Drafting answer…"
 
         try:

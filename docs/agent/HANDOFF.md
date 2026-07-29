@@ -1,5 +1,53 @@
 # Agent Handoff
 
+## 2026-07-29 forced freshness research route (not deployed)
+
+- Diagnosed the live miss from production logs: `who won the world cup` was
+  classified as `chat_light`, routed to `gpt-5.4-mini`, and completed without
+  calling the available search tool because automatic tool choice permits zero
+  tool calls.
+- Added a semantic `chat_research` classifier route with the current UTC date in
+  its decision context. A narrow policy fallback promotes unmistakably dynamic
+  questions about current officeholders, recurring winners, live results,
+  releases, availability, prices, schedules, and explicit freshness or
+  verification wording.
+- Explicitly dated historical questions remain ordinary chat unless the user
+  also asks for fresh verification; this avoids unnecessary searches for stable
+  facts such as the 2018 World Cup winner.
+- Research requests use the full chat model and force `web_search` on the first
+  OpenAI tool turn. Later turns return to automatic selection so the model can
+  read relevant pages and produce a seamless answer with strong source links,
+  rather than narrating the search or returning a result dump.
+- Gemini's native Google Search path now accepts the same forced-freshness signal
+  for both direct Gemini requests and fallback handling.
+- Regression coverage includes intent promotion and historical exclusions,
+  forced tool-choice payloads for both OpenAI APIs, automatic follow-up tool
+  selection, dispatcher propagation, and Gemini search activation.
+- Validation: full desktop suite passed 195 tests with 7 expected skips and 94
+  subtests. `git diff --check` passes with only existing line-ending warnings.
+- This revision is local only and has not been committed, pushed, deployed, or
+  restarted. Production remains on web-research release `94d87a8`; the classic
+  progress restoration and code-generation confirmation gate also remain local.
+
+## 2026-07-28 classic progress-bar restoration (not deployed)
+
+- Restored the pre-`5dd15da` visual style: a 24-cell bar using solid, partial,
+  and randomly shaded fade characters instead of the newer 18-cell scan line.
+- Removed the pulse glyph, bold label, numeric percentage, and elapsed-seconds
+  telemetry from progress messages. Initial response status again uses the old
+  compact `[emoji label ░░░░░░░░░░]` presentation.
+- Preserved the newer shared progress lifecycle, honest sub-completion estimate,
+  callable phase labels, failure indication, rate-limited Discord edits, and
+  optional useful detail below the classic bar.
+- Updated progress regressions to lock in the classic appearance and exact
+  completed bar. Focused progress/chat/video tests passed 17 cases.
+- Validation: full desktop suite passed 189 tests with 7 expected skips and 84
+  subtests; changed modules compile and `git diff --check` passes with only
+  existing line-ending warnings.
+- This restoration is local only and has not been committed, pushed, deployed,
+  or restarted. Production remains on web-research release `94d87a8`; the
+  unrelated code-generation confirmation gate also remains uncommitted locally.
+
 ## 2026-07-28 model-directed web research deployment
 
 - Removed the explicit-search fast path from `discord_bot.py`. Requests containing

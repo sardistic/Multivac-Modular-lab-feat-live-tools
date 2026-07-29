@@ -16,6 +16,7 @@ from providers.openai_utils import (
     generate_openai_messages_response_with_tools,
 )
 from services.behavior_registry import invoke_provider
+from bot.research_policy import requires_fresh_web
 from bot.response_policy import apply_personality_overrides, build_personality_system_message
 from services.memory_utils import build_message_window
 from services.url_utils import extract_main_text, fetch_url_content, reduce_text_length
@@ -181,6 +182,10 @@ async def handle_gemini_chat_intent(
         if personality_msg:
             context_msgs.insert(0, {"role": "system", "content": personality_msg})
 
+    # Base freshness routing on the user's request. A linked video's transcript
+    # may contain incidental terms such as "latest" that should not change it.
+    force_web_search = requires_fresh_web(clean_prompt)
+
     # Ground YouTube links in the real transcript, not the description.
     transcript = await _youtube_transcript_for(clean_prompt)
     if transcript:
@@ -192,6 +197,8 @@ async def handle_gemini_chat_intent(
     status_tracker = {"text": ""}
 
     def _live_code_summarizer():
+        if force_web_search:
+            return status_tracker["text"] or "Checking current sources…"
         return status_tracker["text"] or "Using Gemini 1.5 Flash..."
 
     search_ids = {
@@ -218,6 +225,7 @@ async def handle_gemini_chat_intent(
                     msgs,
                     tool_context=ctx,
                     model=selected_model,
+                    forced_tool="web_search" if force_web_search else None,
                 )
                 return txt, []
 
@@ -231,6 +239,7 @@ async def handle_gemini_chat_intent(
                 enable_code_execution=enable_code_execution,
                 search_ids=search_ids,
                 model_name=selected_model,
+                force_web_search=force_web_search,
             )
 
         try:

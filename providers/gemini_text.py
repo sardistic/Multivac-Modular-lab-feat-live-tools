@@ -160,6 +160,16 @@ def search_elasticsearch_resource(query_string: str, index: str = "discord_chat_
         return f"Error fetching ES resource: {e}"
 
 
+def _should_enable_google_search(prompt: str, *, force_web_search: bool = False) -> bool:
+    if force_web_search:
+        return True
+    search_keywords = [
+        "search", "google", "web", "online", "news",
+        "weather", "stock", "price", "current",
+    ]
+    return any(keyword in (prompt or "").lower() for keyword in search_keywords)
+
+
 def generate_gemini_text(
     prompt: str,
     context: Optional[List[Dict[str, str]]] = None,
@@ -168,6 +178,7 @@ def generate_gemini_text(
     enable_code_execution: bool = False,
     search_ids: Optional[Dict[str, Any]] = None,
     model_name: str = "gemini-3-flash-preview",
+    force_web_search: bool = False,
 ) -> Tuple[Optional[str], List[Tuple[bytes, str]]]:
     client = get_gemini_client()
     if not client or not types:
@@ -285,8 +296,10 @@ def generate_gemini_text(
         )
 
         tools_list = []
-        search_keywords = ["search", "google", "web", "online", "news", "weather", "stock", "price", "current"]
-        is_search_intent = any(k in prompt.lower() for k in search_keywords)
+        is_search_intent = _should_enable_google_search(
+            prompt,
+            force_web_search=force_web_search,
+        )
         should_add_functions = True
         if is_search_intent:
             try:
@@ -330,7 +343,13 @@ def generate_gemini_text(
                     "Do not stop at prose, code blocks, or printed numeric output."
                 )
         if any(getattr(t, "google_search", None) for t in tools_list):
-            sys_instructions.append("You can search the live web using 'google_search'.")
+            if force_web_search:
+                sys_instructions.append(
+                    "This request requires fresh public information. Use google_search, "
+                    "then answer naturally from current evidence without narrating the search."
+                )
+            else:
+                sys_instructions.append("You can search the live web using 'google_search'.")
 
         config = types.GenerateContentConfig(
             system_instruction=" ".join(sys_instructions),

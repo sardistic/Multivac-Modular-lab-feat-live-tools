@@ -7,7 +7,7 @@ from typing import List, Optional
 import discord
 
 from services.database_utils import get_message_expansion, save_message_expansion, set_message_expanded
-from services.progress import render_progress_status, start_progress_bar
+from services.progress import _resolve_label, start_progress_bar
 
 LINE_TRUNCATE_AT = 2
 DISCORD_MESSAGE_LIMIT = 2000
@@ -217,12 +217,7 @@ async def live_status_with_progress(
     existing_status_msg: Optional[discord.Message] = None,
 ):
     status_msg = existing_status_msg
-    initial_status = render_progress_status(
-        action_label,
-        emoji=emoji,
-        progress=0.0,
-        detail="Warming up the response path…",
-    )
+    initial_status = f"[{emoji} {_resolve_label(action_label)} ░░░░░░░░░░]"
     if status_msg is None:
         try:
             status_msg = await message.reply(initial_status)

@@ -5,10 +5,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from bot.intent_dispatcher import (
+    DispatchContext,
+    _dispatch_builtin_intent,
+    chat_model_for_intent,
+    get_duration_estimate,
     resolve_keyword_intent,
     validate_classified_intent,
     wants_gemini,
 )
+from bot.research_policy import requires_fresh_web
 
 
 class KeywordRoutingTests(unittest.TestCase):
@@ -195,6 +200,75 @@ class ClassifiedIntentGuardTests(unittest.TestCase):
                     "get_weather",
                 )
 
+    def test_live_fact_misses_are_promoted_to_research(self):
+        cases = (
+            "who won the world cup",
+            "who won the super bowl",
+            "who is the president of France",
+            "what is the latest Python release",
+            "what's the score of the game",
+            "look up whether that product is available",
+        )
+        for prompt in cases:
+            with self.subTest(prompt=prompt):
+                self.assertTrue(requires_fresh_web(prompt))
+                self.assertEqual(
+                    validate_classified_intent("chat_light", prompt),
+                    "chat_research",
+                )
+
+    def test_historical_and_timeless_facts_stay_on_normal_route(self):
+        cases = (
+            "who won the 2018 world cup",
+            "who won world war two",
+            "what is price elasticity",
+            "who was the first president of France",
+        )
+        for prompt in cases:
+            with self.subTest(prompt=prompt):
+                self.assertFalse(requires_fresh_web(prompt))
+                self.assertEqual(
+                    validate_classified_intent("chat_light", prompt),
+                    "chat_light",
+                )
+
+    def test_research_route_uses_full_chat_model_and_search_duration(self):
+        from providers.openai_client import OPENAI_CHAT_MODEL
+
+        self.assertEqual(chat_model_for_intent("chat_research"), OPENAI_CHAT_MODEL)
+        self.assertEqual(get_duration_estimate("chat_research"), 8)
+
+
+class ResearchDispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_research_intent_forces_search_in_chat_handler(self):
+        context = DispatchContext(
+            intent="chat_research",
+            message=SimpleNamespace(),
+            prompt="who won the world cup",
+            raw_prompt="who won the world cup",
+            user_id=123,
+            bot_user=SimpleNamespace(id=456),
+        )
+        with patch(
+            "bot.intent_dispatcher.handle_chat_intent",
+            new_callable=AsyncMock,
+        ) as handle:
+            result = await _dispatch_builtin_intent(context)
+
+        self.assertTrue(result)
+        self.assertTrue(handle.await_args.kwargs["force_web_search"])
+
+    def test_forced_gemini_research_does_not_depend_on_keywords(self):
+        from providers.gemini_text import _should_enable_google_search
+
+        self.assertFalse(_should_enable_google_search("who won the world cup"))
+        self.assertTrue(
+            _should_enable_google_search(
+                "who won the world cup",
+                force_web_search=True,
+            )
+        )
+
 
 class ClassifierOutageFallbackTests(unittest.TestCase):
     """When the OpenAI classifier can't run, routing must degrade gracefully:
@@ -285,7 +359,9 @@ class EfficientClassifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["messages"][0]["role"], "developer")
         classifier_prompt = kwargs["messages"][0]["content"]
         self.assertIn("cheapest sufficient tier", classifier_prompt)
+        self.assertIn("'chat_research'", classifier_prompt)
         user_prompt = kwargs["messages"][1]["content"]
+        self.assertIn("CURRENT DATE (UTC):", user_prompt)
         self.assertNotIn("user: old", user_prompt)
         self.assertIn("assistant: newer", user_prompt)
         self.assertIn("user: newest", user_prompt)

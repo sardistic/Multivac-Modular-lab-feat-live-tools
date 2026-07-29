@@ -566,6 +566,7 @@ async def generate_openai_messages_response_with_tools(
     model: str = OPENAI_CHAT_MODEL,
     max_tokens: int = 700,
     temperature: float = 0.6,
+    forced_tool: Optional[str] = None,
 ) -> str:
     try:
         # Capture schemas and handlers together. A hotload during this request
@@ -576,6 +577,7 @@ async def generate_openai_messages_response_with_tools(
         chat_tools = active_tools or None
         chat_tool_choice = "auto" if chat_tools else None
         messages_with_instruction = list(messages)
+        available_tool_names = set()
         if active_tools:
             available_tool_names = {
                 tool.get("function", {}).get("name")
@@ -595,6 +597,17 @@ async def generate_openai_messages_response_with_tools(
                     "recently changed, for niche or uncertain facts, and whenever the user "
                     "asks to search, look up, verify, check the latest information, or cite "
                     "sources."
+                )
+            if forced_tool == "web_search" and forced_tool in available_tool_names:
+                instruction_parts.append(
+                    "This request requires a freshness check. Search first, then answer "
+                    "naturally from the retrieved evidence. Do not narrate the tool call or "
+                    "lead with a generic search-results list. Resolve ambiguity using the "
+                    "most likely current interpretation, briefly naming that interpretation "
+                    "when useful, and link the strongest source or sources when they improve "
+                    "the answer. If the search returns no usable current evidence, say that "
+                    "you could not verify the answer instead of silently substituting model "
+                    "memory."
                 )
             if "summarize_url" in available_tool_names:
                 instruction_parts.append(
@@ -625,15 +638,36 @@ async def generate_openai_messages_response_with_tools(
                 0,
                 {"role": "system", "content": " ".join(instruction_parts)},
             )
+        force_available = bool(forced_tool and forced_tool in available_tool_names)
+        if forced_tool and not force_available:
+            logging.warning(
+                "[openai.tools] Requested forced tool %s is unavailable in snapshot",
+                forced_tool,
+            )
+        elif force_available:
+            logging.info("[openai.tools] Forcing initial tool call: %s", forced_tool)
+        responses_tool_choice = (
+            {"type": "function", "name": forced_tool}
+            if force_available
+            else chat_tool_choice
+        )
+        chat_initial_tool_choice = (
+            {"type": "function", "function": {"name": forced_tool}}
+            if force_available
+            else chat_tool_choice
+        )
         if USE_RESPONSES:
             norm = _normalize_messages_for_responses(messages_with_instruction)
-            resp = await _responses_create(
+            response_kwargs = dict(
                 model=model,
                 input=norm,
                 tools=_normalize_tools(active_tools),
                 max_output_tokens=max_tokens,
                 **temperature_kwargs(model, temperature),
             )
+            if responses_tool_choice is not None:
+                response_kwargs["tool_choice"] = responses_tool_choice
+            resp = await _responses_create(**response_kwargs)
             resp, current_input = await _responses_tool_loop(
                 resp,
                 messages=norm,
@@ -674,7 +708,7 @@ async def generate_openai_messages_response_with_tools(
             model=model,
             messages=messages_with_instruction,
             tools=chat_tools,
-            tool_choice=chat_tool_choice,
+            tool_choice=chat_initial_tool_choice,
             max_tokens=max_tokens,
             temperature=temperature,
         )

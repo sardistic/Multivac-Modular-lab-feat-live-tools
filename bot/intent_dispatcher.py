@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
 from bot.chat_handler import handle_chat_intent
+from bot.research_policy import requires_fresh_web
 from bot.image_handler import (
     handle_describe_image_intent,
     handle_edit_image_intent,
@@ -82,7 +83,6 @@ _WEATHER_CUE_RE = re.compile(
     re.I,
 )
 
-
 def validate_classified_intent(intent: str, prompt: str) -> str:
     """Reject code-status guesses based only on conversational context.
 
@@ -98,6 +98,8 @@ def validate_classified_intent(intent: str, prompt: str) -> str:
     text = prompt or ""
     if intent == "get_weather" and not _WEATHER_CUE_RE.search(text):
         return "chat"
+    if intent in {"chat_tiny", "chat_light", "chat_standard", "chat"} and requires_fresh_web(text):
+        return "chat_research"
     if intent != "code_status":
         return intent
     if _CODE_STATUS_CUE_RE.search(text) or _CODE_PROPOSAL_REF_RE.search(text):
@@ -167,6 +169,7 @@ def get_duration_estimate(intent: str) -> int:
         "chat_light": 3,
         "chat_standard": 4,
         "chat": 6,
+        "chat_research": 8,
         "chat_deep": 10,
         "clarify": 3,
         "get_weather": 5,
@@ -193,6 +196,7 @@ def chat_model_for_intent(intent: str) -> str:
         "chat_light": OPENAI_LIGHT_MODEL,
         "chat_standard": OPENAI_STANDARD_MODEL,
         "chat": OPENAI_CHAT_MODEL,
+        "chat_research": OPENAI_CHAT_MODEL,
         "chat_deep": OPENAI_DEEP_MODEL,
         "clarify": OPENAI_LIGHT_MODEL,
     }.get(intent, OPENAI_CHAT_MODEL)
@@ -356,6 +360,7 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
         moderation_view_factory=ctx.moderation_view_factory,
         default_model=chat_model_for_intent(ctx.intent),
         clarify_hint=(ctx.intent == "clarify"),
+        force_web_search=(ctx.intent == "chat_research"),
     )
     return True
 
