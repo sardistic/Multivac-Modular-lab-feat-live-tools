@@ -575,6 +575,51 @@ class ReflectionStore:
             ).fetchall()
         return [self._insight(row) for row in rows]
 
+    def recent_user_signals(
+        self,
+        user_id: str,
+        *,
+        limit: int = 4,
+        recent_days: int = 7,
+        min_confidence: float = 0.55,
+    ) -> list[dict[str, Any]]:
+        """Return bounded derived interaction signals for one consented user.
+
+        This deliberately excludes evidence IDs, session IDs, actor hashes,
+        runtime errors, dismissed observations, and signals belonging only to
+        other users. It never joins raw message content.
+        """
+        recent_since = _iso(_now() - timedelta(days=max(1, int(recent_days))))
+        confidence_floor = max(0.0, min(1.0, float(min_confidence)))
+        with self.connect() as conn:
+            preference = conn.execute(
+                "SELECT enabled FROM reflection_preferences WHERE user_id=?",
+                (str(user_id),),
+            ).fetchone()
+            if not preference or not bool(preference[0]):
+                return []
+            actor_hash = self._actor_hash(str(user_id), conn)
+            rows = conn.execute(
+                """
+                SELECT kind,summary,confidence,occurrences,last_seen_at
+                FROM reflection_insights
+                WHERE status IN ('new','planned')
+                  AND kind IN ('pain_point','behavior_pattern','feature_request','success')
+                  AND confidence>=?
+                  AND last_seen_at>=?
+                  AND actor_hashes_json LIKE ?
+                ORDER BY last_seen_at DESC,confidence DESC,occurrences DESC,id DESC
+                LIMIT ?
+                """,
+                (
+                    confidence_floor,
+                    recent_since,
+                    f'%"{actor_hash}"%',
+                    max(1, min(8, int(limit))),
+                ),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def save_idea(self, idea: dict, insight_ids: list[int]) -> int:
         fingerprint = hashlib.sha256(
             " ".join(f"{idea.get('title','')} {idea.get('proposal','')}".lower().split()).encode()

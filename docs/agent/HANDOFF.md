@@ -1,5 +1,50 @@
 # Agent Handoff
 
+## 2026-07-29 post-draft response verifier (local, not deployed)
+
+- Added a bounded post-draft reviewer to normal textual OpenAI, Gemini, and
+  Claude chat. Its strict verdict is `accept`, `revise`, or `research`.
+- The reviewer considers whether the response length is warranted by both the
+  user's message and the task itself. It treats explicit user instructions as
+  strong style constraints and the distilled user profile as a subtle, soft
+  preference that must never be exposed or used to stereotype the user.
+- The existing reflection loop now provides up to four recent, confidence-
+  filtered interaction signals tied to the current consented user. Relevant
+  repetition and confidence can add weight to correcting a known pain point,
+  honoring a repeated preference, or preserving a successful pattern. The
+  current request and explicit instruction always win.
+- The reflection view is metadata-only and excludes raw messages, private
+  reasoning, evidence/session IDs, actor hashes, runtime errors, global ideas,
+  dismissed observations, and other users' signals. It is empty when reflection
+  is disabled or consent has been withdrawn, and the verifier is forbidden from
+  revealing or alluding to the signals.
+- A revision may improve brevity, structure, and voice but cannot add facts or
+  remove material caveats, links, or citations. A research verdict causes one
+  targeted, date-aware, search-enabled regeneration and then stops; the stale
+  draft is not reused as the final answer.
+- OpenAI tool loops now expose an ephemeral tool trace so the reviewer knows
+  whether the draft already used web evidence. The trace is request-local and
+  is not logged or persisted.
+- Review uses the configured OpenAI light model with a strict Structured
+  Outputs schema and records usage as `chat_draft_verify`. It fails open to the
+  original response if review is unavailable. Gemini code execution and test
+  result paths bypass prose review to preserve exact artifacts.
+- Regression coverage includes profile, reflection, and explicit-instruction
+  context; reflection consent and user isolation; brevity metadata; fail-open
+  behavior; revision ordering before deterministic personality overlays;
+  targeted research repair; provider coverage; and tool tracing. The full
+  worktree passes 205 pytest cases with 7 expected skips and 94 subtests.
+  Changed modules compile and `git diff --check` passes with only line-ending
+  warnings.
+- This verifier is not committed, pushed, or deployed. Production remains at
+  core release `16a06c9d`. The unrelated local code-confirmation gate in
+  `discord_bot.py` and `tests/test_code_confirmation.py` remains uncommitted and
+  must stay isolated from any verifier release.
+- Release observation should track the extra light-model latency and cost.
+  During an OpenAI outage the reviewer deliberately fails open, including for
+  Gemini or Claude drafts. The next action is owner review followed by an
+  explicitly requested isolated commit/push/deployment.
+
 ## 2026-07-29 stale research-evidence correction deployment
 
 - A live acceptance query reached `chat_research` and forced `web_search`, but

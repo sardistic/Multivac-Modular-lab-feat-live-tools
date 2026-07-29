@@ -63,6 +63,48 @@ class ReflectionStoreTests(unittest.TestCase):
             [],
         )
 
+    def test_recent_user_signals_are_consent_scoped_and_metadata_only(self):
+        self.store.set_user_enabled("42", True)
+        self.store.set_user_enabled("99", True)
+        own_session_id = self.store.record_invocation(
+            guild_id="1",
+            channel_id="2",
+            user_id="42",
+            message_id="100",
+            idle_minutes=5,
+        )
+        other_session_id = self.store.record_invocation(
+            guild_id="1",
+            channel_id="2",
+            user_id="99",
+            message_id="200",
+            idle_minutes=5,
+        )
+        self.store.add_insight(
+            session=self.store.get_session(own_session_id),
+            kind="behavior_pattern",
+            summary="The requester repeatedly prefers the answer before background detail.",
+            confidence=0.88,
+            evidence_ids=["100"],
+        )
+        self.store.add_insight(
+            session=self.store.get_session(other_session_id),
+            kind="pain_point",
+            summary="Another requester disliked bullet lists.",
+            confidence=0.99,
+            evidence_ids=["200"],
+        )
+
+        signals = self.store.recent_user_signals("42")
+
+        self.assertEqual(len(signals), 1)
+        self.assertIn("answer before background detail", signals[0]["summary"])
+        self.assertEqual(
+            set(signals[0]),
+            {"kind", "summary", "confidence", "occurrences", "last_seen_at"},
+        )
+        self.assertEqual(self.store.recent_user_signals("unconsented"), [])
+
     def test_each_channel_message_extends_five_minute_idle_window(self):
         at = datetime(2026, 7, 22, 12, tzinfo=timezone.utc)
         first = self.store.record_invocation(

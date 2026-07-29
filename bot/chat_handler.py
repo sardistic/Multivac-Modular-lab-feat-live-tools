@@ -3,6 +3,7 @@ import contextlib
 import logging
 
 from bot.chat_context import build_chat_context
+from bot.draft_verifier import verify_chat_draft
 from bot.research_policy import build_fresh_search_query
 from bot.response_policy import apply_personality_overrides
 from providers.openai_images import DEFAULT_VISION_DETAIL
@@ -57,8 +58,18 @@ async def handle_chat_intent(
         *,
         existing_status_msg=None,
         allow_model_escalation: bool = True,
+        force_research: bool = False,
     ):
         selected_model = model_name or default_model or OPENAI_CHAT_MODEL
+        request_force_web = force_web_search or force_research
+        phase = {
+            "detail": (
+                "Checking current sources…"
+                if request_force_web
+                else "Drafting answer…"
+            )
+        }
+        verifier_requested_research = {"value": request_force_web}
 
         async def _chat_with_es_window():
             # build_chat_context makes several synchronous ES queries (window,
@@ -88,6 +99,7 @@ async def handle_chat_intent(
                 "user_id": user_id,
                 "image_urls": image_urls or [],
             }
+            tool_trace = []
 
             if "gemini" in selected_model.lower():
                 status_res = {"text": ""}
@@ -103,37 +115,116 @@ async def handle_chat_intent(
                     enable_code_execution=False,
                     search_ids=ctx,
                     model_name=selected_model,
-                    force_web_search=force_web_search,
+                    force_web_search=request_force_web,
                 )
-                return text_resp
+                draft = text_resp
+            else:
+                if image_urls:
+                    msgs = list(msgs)
+                    msgs[-1] = {
+                        "role": "user",
+                        "content": [{"type": "text", "text": raw_prompt}] + [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": u, "detail": DEFAULT_VISION_DETAIL},
+                            }
+                            for u in image_urls
+                        ],
+                    }
 
-            if image_urls:
-                msgs = list(msgs)
-                msgs[-1] = {
-                    "role": "user",
-                    "content": [{"type": "text", "text": raw_prompt}] + [
-                        {"type": "image_url", "image_url": {"url": u, "detail": DEFAULT_VISION_DETAIL}} for u in image_urls
-                    ],
-                }
+                draft = await invoke_provider(
+                    "chat.openai",
+                    generate_openai_messages_response_with_tools,
+                    msgs,
+                    tool_context=ctx,
+                    model=selected_model,
+                    forced_tool="web_search" if request_force_web else None,
+                    forced_tool_args=(
+                        {"q": build_fresh_search_query(prompt)}
+                        if request_force_web
+                        else None
+                    ),
+                    tool_trace=tool_trace,
+                )
 
-            return await invoke_provider(
-                "chat.openai",
-                generate_openai_messages_response_with_tools,
-                msgs,
-                tool_context=ctx,
-                model=selected_model,
-                forced_tool="web_search" if force_web_search else None,
-                forced_tool_args=(
-                    {"q": build_fresh_search_query(prompt)}
-                    if force_web_search
-                    else None
+            if not draft or not draft.strip() or _is_openai_outage(draft):
+                return draft
+
+            phase["detail"] = "Reviewing evidence, length, and voice…"
+            verdict = await verify_chat_draft(
+                user_id=user_id,
+                display_name=getattr(message.author, "display_name", None),
+                prompt=raw_prompt,
+                draft=draft,
+                research_used=(
+                    request_force_web
+                    or any(item.get("name") == "web_search" for item in tool_trace)
                 ),
             )
+            logger.info(
+                "Post-draft verdict=%s research_used=%s",
+                verdict.action,
+                request_force_web
+                or any(item.get("name") == "web_search" for item in tool_trace),
+            )
+            if verdict.action == "accept":
+                return draft
+            if verdict.action == "revise":
+                return verdict.revised_answer or draft
+
+            verifier_requested_research["value"] = True
+            phase["detail"] = "Checking stronger current evidence…"
+            search_query = build_fresh_search_query(
+                verdict.research_query or prompt
+            )
+            repair_msgs = list(msgs)
+            repair_msgs.extend(
+                [
+                    {"role": "assistant", "content": draft},
+                    {
+                        "role": "system",
+                        "content": (
+                            "A post-draft verifier found that the answer needs stronger "
+                            "fresh evidence. Discard unsupported or stale claims, search "
+                            "again, and return one corrected final answer. Preserve an "
+                            "appropriate length and the user's established style. Start "
+                            f"with this research query: {search_query}"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": "Return the corrected, source-grounded answer only.",
+                    },
+                ]
+            )
+            if "gemini" in selected_model.lower():
+                repaired, _artifacts = await invoke_provider(
+                    "chat.gemini",
+                    _generate_gemini_threaded,
+                    prompt="Return the corrected, source-grounded answer only.",
+                    context=repair_msgs,
+                    extra_parts=gemini_parts or None,
+                    status_tracker={"text": ""},
+                    enable_code_execution=False,
+                    search_ids=ctx,
+                    model_name=selected_model,
+                    force_web_search=True,
+                )
+                return repaired or draft
+
+            repaired = await invoke_provider(
+                "chat.openai",
+                generate_openai_messages_response_with_tools,
+                repair_msgs,
+                tool_context=ctx,
+                model=selected_model,
+                forced_tool="web_search",
+                forced_tool_args={"q": search_query},
+            )
+            return repaired or draft
 
         def _summarizer():
-            if force_web_search:
-                return f"• Using {selected_model}…\n• Checking current sources…"
-            return f"• Using {selected_model}…\n• Drafting answer…"
+            return f"• Using {selected_model}…\n• {phase['detail']}"
 
         try:
             status_kwargs = {
@@ -162,6 +253,7 @@ async def handle_chat_intent(
                     model_name=GEMINI_FALLBACK_CHAT_MODEL,
                     existing_status_msg=status_msg,
                     allow_model_escalation=False,
+                    force_research=verifier_requested_research["value"],
                 )
             elif response and response.strip():
                 response = apply_personality_overrides(user_id, intent="chat", text=response)
