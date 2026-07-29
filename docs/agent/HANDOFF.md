@@ -1,6 +1,6 @@
 # Agent Handoff
 
-## 2026-07-29 forced freshness research route (not deployed)
+## 2026-07-29 forced freshness research deployment
 
 - Diagnosed the live miss from production logs: `who won the world cup` was
   classified as `chat_light`, routed to `gpt-5.4-mini`, and completed without
@@ -23,13 +23,29 @@
 - Regression coverage includes intent promotion and historical exclusions,
   forced tool-choice payloads for both OpenAI APIs, automatic follow-up tool
   selection, dispatcher propagation, and Gemini search activation.
-- Validation: full desktop suite passed 195 tests with 7 expected skips and 94
-  subtests. `git diff --check` passes with only existing line-ending warnings.
-- This revision is local only and has not been committed, pushed, deployed, or
-  restarted. Production remains on web-research release `94d87a8`; the classic
-  progress restoration and code-generation confirmation gate also remain local.
+- The combined desktop worktree passed 195 pytest cases with 7 expected skips
+  and 94 subtests. The isolated release commit passed 192 pytest cases with 7
+  expected skips and 94 subtests, then passed 199 unittest cases with 7 expected
+  skips in the production image under no-network, capability-dropped,
+  resource-limited constraints. Changed modules compile and `git diff --check`
+  passes with only existing line-ending warnings.
+- The research and progress changes were isolated from the unrelated
+  code-generation confirmation gate, committed as `17c9fbae`, and pushed to
+  `origin/main`. The confirmation code and its test remain uncommitted locally.
+- Production runs immutable release
+  `/srv/multivac-releases/manual-fresh-research-17c9fba`. Only the Multivac bot
+  container was recreated; Elasticsearch and persistent state were preserved.
+  Discord reached ready state, synchronized 16 commands, and reports zero
+  restarts. The container is read-only as UID/GID 65532 and `/app` resolves to
+  the exact pushed SHA.
+- Live inspection confirmed the `chat_research` classifier and forced initial
+  tool-call code are mounted in the running container. No synthetic Discord
+  message was sent; the next natural matching question provides the end-to-end
+  observation point. The prior
+  `/srv/multivac-releases/manual-web-research-94d87a8` release remains the
+  immediate rollback target. The deployment event was accepted with HTTP 201.
 
-## 2026-07-28 classic progress-bar restoration (not deployed)
+## 2026-07-28 classic progress-bar restoration deployment
 
 - Restored the pre-`5dd15da` visual style: a 24-cell bar using solid, partial,
   and randomly shaded fade characters instead of the newer 18-cell scan line.
@@ -41,12 +57,8 @@
   optional useful detail below the classic bar.
 - Updated progress regressions to lock in the classic appearance and exact
   completed bar. Focused progress/chat/video tests passed 17 cases.
-- Validation: full desktop suite passed 189 tests with 7 expected skips and 84
-  subtests; changed modules compile and `git diff --check` passes with only
-  existing line-ending warnings.
-- This restoration is local only and has not been committed, pushed, deployed,
-  or restarted. Production remains on web-research release `94d87a8`; the
-  unrelated code-generation confirmation gate also remains uncommitted locally.
+- The restoration shipped with forced freshness research in commit `17c9fbae`
+  and the immutable `manual-fresh-research-17c9fba` production release.
 
 ## 2026-07-28 model-directed web research deployment
 
@@ -121,8 +133,10 @@
 
 ## Active objective
 
-Validate and release an idle-driven live reflection session while preserving the
-production-verified hotload runtime, privacy boundary, and daily cost ceiling.
+Observe the deployed fresh-research route on natural Discord queries while
+preserving the production-verified hotload runtime. Keep the unrelated
+code-generation confirmation gate local until it receives separate release
+approval.
 
 ## Idle-driven live-session implementation (deployed)
 
