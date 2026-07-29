@@ -91,12 +91,19 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
             result = await openai_messages.generate_openai_messages_response_with_tools(
                 [{"role": "user", "content": "What is the latest lunar mission news?"}],
                 forced_tool="web_search",
+                forced_tool_args={
+                    "q": "latest lunar mission news as of 2026-07-29",
+                },
             )
 
         self.assertEqual(result, "The mission launched yesterday.")
         self.assertEqual(
             [call.args[0] for call in execute.await_args_list],
             ["web_search", "summarize_url"],
+        )
+        self.assertEqual(
+            execute.await_args_list[0].args[1]["q"],
+            "latest lunar mission news as of 2026-07-29",
         )
         first_messages = create.await_args_list[0].kwargs["messages"]
         self.assertEqual(
@@ -136,6 +143,9 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
             result = await openai_messages.generate_openai_messages_response_with_tools(
                 [{"role": "user", "content": "Who won the World Cup?"}],
                 forced_tool="web_search",
+                forced_tool_args={
+                    "q": "who won the last world cup 2026 final result winner",
+                },
             )
 
         self.assertEqual(result, "researched answer")
@@ -145,6 +155,10 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("tool_choice", create.await_args_list[1].kwargs)
         execute.assert_awaited_once()
+        self.assertEqual(
+            execute.await_args.args[1]["q"],
+            "who won the last world cup 2026 final result winner",
+        )
 
     @patch("providers.openai_messages.USE_RESPONSES", False)
     async def test_url_instruction_requires_reading_relevant_page(self):

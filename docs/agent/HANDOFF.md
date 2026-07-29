@@ -1,5 +1,32 @@
 # Agent Handoff
 
+## 2026-07-29 stale research-evidence correction (not deployed)
+
+- A live acceptance query reached `chat_research` and forced `web_search`, but
+  the model used the vague wording `who won the last world cup`. Google CSE's
+  leading results included pages published before the 2026 final, so the model
+  incorrectly said the tournament was still ongoing.
+- Direct comparison confirmed that the date-aware query
+  `who won the last world cup 2026 final result winner` returns the completed
+  Spain-Argentina final and Spain's win.
+- The first forced OpenAI search now overrides model-generated arguments with a
+  deterministic query derived from the user's wording and current UTC date.
+  Recurring events add the current year plus `final result winner`; officeholder
+  and other dynamic queries add an explicit as-of date. Explicit historical
+  years stay historical.
+- Subsequent tool turns remain automatic, preserving model-directed page reads
+  and synthesis. Research instructions now require interpreting relative dates
+  against the current UTC date, rejecting pre-event evidence after a scheduled
+  completion date, checking newer authoritative evidence, and linking a strong
+  source. Gemini receives equivalent guidance.
+- Regression tests cover date-aware query construction, historical-year
+  preservation, and forced-argument substitution in both OpenAI API paths.
+- Validation: full combined desktop suite passed 197 tests with 7 expected skips
+  and 94 subtests. Changed modules compile and `git diff --check` passes with
+  only existing line-ending warnings.
+- This correction is local only and has not yet been committed, pushed,
+  deployed, or restarted. Production remains on `17c9fbae`.
+
 ## 2026-07-29 forced freshness research deployment
 
 - Diagnosed the live miss from production logs: `who won the world cup` was

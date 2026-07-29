@@ -16,7 +16,7 @@ from providers.openai_utils import (
     generate_openai_messages_response_with_tools,
 )
 from services.behavior_registry import invoke_provider
-from bot.research_policy import requires_fresh_web
+from bot.research_policy import build_fresh_search_query, requires_fresh_web
 from bot.response_policy import apply_personality_overrides, build_personality_system_message
 from services.memory_utils import build_message_window
 from services.url_utils import extract_main_text, fetch_url_content, reduce_text_length
@@ -185,6 +185,9 @@ async def handle_gemini_chat_intent(
     # Base freshness routing on the user's request. A linked video's transcript
     # may contain incidental terms such as "latest" that should not change it.
     force_web_search = requires_fresh_web(clean_prompt)
+    fresh_search_query = (
+        build_fresh_search_query(clean_prompt) if force_web_search else None
+    )
 
     # Ground YouTube links in the real transcript, not the description.
     transcript = await _youtube_transcript_for(clean_prompt)
@@ -226,6 +229,7 @@ async def handle_gemini_chat_intent(
                     tool_context=ctx,
                     model=selected_model,
                     forced_tool="web_search" if force_web_search else None,
+                    forced_tool_args={"q": fresh_search_query} if fresh_search_query else None,
                 )
                 return txt, []
 

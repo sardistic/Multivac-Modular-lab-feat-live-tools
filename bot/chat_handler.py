@@ -3,6 +3,7 @@ import contextlib
 import logging
 
 from bot.chat_context import build_chat_context
+from bot.research_policy import build_fresh_search_query
 from bot.response_policy import apply_personality_overrides
 from providers.openai_images import DEFAULT_VISION_DETAIL
 from providers.gemini_utils import GeminiModerationError, generate_gemini_text
@@ -122,6 +123,11 @@ async def handle_chat_intent(
                 tool_context=ctx,
                 model=selected_model,
                 forced_tool="web_search" if force_web_search else None,
+                forced_tool_args=(
+                    {"q": build_fresh_search_query(prompt)}
+                    if force_web_search
+                    else None
+                ),
             )
 
         def _summarizer():
