@@ -1,6 +1,6 @@
 # Agent Handoff
 
-## 2026-07-29 post-draft response verifier (local, not deployed)
+## 2026-07-29 reflection-aware post-draft verifier deployment
 
 - Added a bounded post-draft reviewer to normal textual OpenAI, Gemini, and
   Claude chat. Its strict verdict is `accept`, `revise`, or `research`.
@@ -32,18 +32,34 @@
 - Regression coverage includes profile, reflection, and explicit-instruction
   context; reflection consent and user isolation; brevity metadata; fail-open
   behavior; revision ordering before deterministic personality overlays;
-  targeted research repair; provider coverage; and tool tracing. The full
-  worktree passes 205 pytest cases with 7 expected skips and 94 subtests.
-  Changed modules compile and `git diff --check` passes with only line-ending
-  warnings.
-- This verifier is not committed, pushed, or deployed. Production remains at
-  core release `16a06c9d`. The unrelated local code-confirmation gate in
-  `discord_bot.py` and `tests/test_code_confirmation.py` remains uncommitted and
-  must stay isolated from any verifier release.
+  targeted research repair; provider coverage; and tool tracing. The combined
+  desktop worktree passed 205 pytest cases with 7 expected skips and 94
+  subtests. The isolated release commit passed 202 pytest cases with 7 expected
+  skips and 94 subtests, then passed 209 unittest cases with 7 expected skips
+  in the production image under no-network, capability-dropped,
+  resource-limited constraints. Changed modules compile and `git diff --check`
+  passes with only line-ending warnings.
+- The verifier was isolated from the unrelated local confirmation gate,
+  committed as `f4025315`, and pushed to `origin/main`. The host deployment
+  account cannot use the host-only GitHub credential interactively by design,
+  so the exact pushed SHA was transferred as a verified Git bundle and imported
+  without broadening credential access.
+- Production runs immutable release
+  `/srv/multivac-releases/manual-draft-verifier-f402531`. Only the Multivac bot
+  container was recreated; Elasticsearch and persistent state were preserved.
+  Discord reached ready state, synchronized 16 commands, and reports zero
+  restarts. The container is read-only as UID/GID 65532 and `/app` resolves to
+  the exact pushed SHA.
+- A live synthetic verifier probe returned a normal structured `accept` verdict,
+  confirming the configured API path is available rather than failing open.
+  The prior `/srv/multivac-releases/manual-date-aware-research-16a06c9` release
+  remains the immediate rollback target. The deployment event was accepted with
+  HTTP 201.
 - Release observation should track the extra light-model latency and cost.
   During an OpenAI outage the reviewer deliberately fails open, including for
-  Gemini or Claude drafts. The next action is owner review followed by an
-  explicitly requested isolated commit/push/deployment.
+  Gemini or Claude drafts. The next concrete action is to observe natural chat
+  traffic for `accept`, `revise`, and research-repair rates before tuning the
+  confidence or recurrence weights.
 
 ## 2026-07-29 stale research-evidence correction deployment
 
