@@ -12,6 +12,7 @@ Multivac is a modular Discord bot with multiple chat providers, image and video 
 - Reply-aware video prompts that can turn a replied-to message into the generation brief
 - Weather, stock, URL summarization, web search, YouTube transcript, and repo inspection tools
 - User facts, saved behavioral instructions, user-awareness profiles, and time-passage context
+- Default `Mistake Not…` conversational identity with durable conversation-scoped opt-out and resume controls
 - Owner diagnostic helpers for redacted bot log reads and tool listing
 - Rate-limited live progress with breathing scan frames, honest estimated
   completion, phase details, and provider/job summaries
@@ -91,6 +92,17 @@ When tool-calling is available, current callable functions include:
   Find provider API call sites.
 - `git_repo_info`
   Return repository metadata.
+
+Normal user-facing prose uses the compact `Mistake Not…` identity by default.
+The identity changes voice only; it does not change safety rules, tools, memory,
+model routing, or structured-output behavior. Each user's saved awareness
+profile and active behavioral instruction remain user-scoped and take
+precedence over the default persona whenever they conflict. A user can mention
+or reply to the bot with `drop the persona`, `answer normally`, or
+`disable Mistake Not` to use a neutral voice in that conversation. `resume the
+persona` or `enable Mistake Not` restores it. The setting is stored per
+guild/channel/user (or DM/channel/user) and survives restarts without affecting
+another conversation.
 
 ## Versioned Behavior Changes
 

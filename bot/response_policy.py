@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import logging
 import re
 
+from bot.persona import build_persona_system_message
 from services.database_utils import get_user_instruction
+from services.user_profile import build_user_awareness_block
+
+logger = logging.getLogger("discord_bot")
+
+PERSONALIZATION_PRIORITY_SYSTEM_MESSAGE = (
+    "PERSONALIZATION PRIORITY: The current user's explicit behavioral instruction "
+    "and relevant saved profile preferences take precedence over the default "
+    "Mistake Not… persona whenever they conflict. Treat the persona as a compatible "
+    "fallback voice only. Do not flatten, replace, or argue with the user's individual "
+    "style preferences, and never expose or recite their private profile context."
+)
 
 # Explicit policy for whether an intent should apply user personality/style rules.
 INTENT_POLICY = {
@@ -33,6 +46,74 @@ def build_personality_system_message(user_id: str | int, *, intent: str) -> str 
         "CRITICAL OVERRIDE: The user has set a strict behavioral rule.\n"
         "Follow it in tone/style while still completing the task accurately.\n"
         f"INSTRUCTION: {instr}"
+    )
+
+
+def build_user_style_system_messages(
+    user_id: str | int,
+    *,
+    intent: str,
+    guild_id: str | int | None,
+    channel_id: str | int,
+    awareness: str | None = None,
+) -> list[dict[str, str]]:
+    """Return profile, explicit preference, then fallback product persona.
+
+    Callers append these after their safety/application/task instructions and
+    before conversation history. This preserves the intended prompt priority
+    without copying the persona into stored history or provider payloads twice.
+    """
+    if not uses_personality(intent):
+        return []
+
+    personalization: list[dict[str, str]] = []
+    if awareness and awareness.strip():
+        personalization.append({"role": "system", "content": awareness.strip()})
+
+    personality = build_personality_system_message(user_id, intent=intent)
+    if personality:
+        personalization.append({"role": "system", "content": personality})
+
+    persona = build_persona_system_message(
+        guild_id=guild_id,
+        channel_id=channel_id,
+        user_id=user_id,
+    )
+    if persona:
+        personalization.append({"role": "system", "content": persona})
+    if not personalization:
+        return []
+    return [
+        {"role": "system", "content": PERSONALIZATION_PRIORITY_SYSTEM_MESSAGE},
+        *personalization,
+    ]
+
+
+def build_message_user_style_system_messages(
+    message,
+    *,
+    intent: str,
+    user_id: str | int | None = None,
+) -> list[dict[str, str]]:
+    if not uses_personality(intent):
+        return []
+    author_id = user_id if user_id is not None else message.author.id
+    guild = getattr(message, "guild", None)
+    channel = getattr(message, "channel", None)
+    awareness = None
+    try:
+        awareness = build_user_awareness_block(
+            author_id,
+            display_name=getattr(message.author, "display_name", None),
+        )
+    except Exception as exc:
+        logger.warning("Failed to build user awareness block: %s", exc)
+    return build_user_style_system_messages(
+        author_id,
+        intent=intent,
+        guild_id=getattr(guild, "id", "DM") if guild else "DM",
+        channel_id=getattr(channel, "id", "unknown"),
+        awareness=awareness,
     )
 
 

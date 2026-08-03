@@ -567,6 +567,30 @@ class SQLiteStore:
             ).fetchone()
         return row[0] if row else None
 
+    def get_conversation_persona_enabled(self, scope_key: str) -> bool:
+        with self.logs_conn() as conn:
+            row = conn.execute(
+                "SELECT enabled FROM conversation_personas WHERE scope_key=?",
+                (str(scope_key),),
+            ).fetchone()
+        return True if row is None else bool(row[0])
+
+    def set_conversation_persona_enabled(self, scope_key: str, enabled: bool) -> None:
+        with self.logs_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO conversation_personas
+                    (scope_key, persona, enabled, updated_at)
+                VALUES (?, 'mistake_not', ?, ?)
+                """,
+                (
+                    str(scope_key),
+                    1 if enabled else 0,
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+            conn.commit()
+
     def set_memory_consent(self, user_id, consent: bool) -> None:
         with self.logs_conn() as conn:
             conn.execute(
@@ -931,6 +955,13 @@ class SQLiteStore:
                     key TEXT PRIMARY KEY,
                     last_seen_id TEXT,
                     updated_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS conversation_personas (
+                    scope_key TEXT PRIMARY KEY,
+                    persona TEXT NOT NULL DEFAULT 'mistake_not',
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                    updated_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS user_facts (

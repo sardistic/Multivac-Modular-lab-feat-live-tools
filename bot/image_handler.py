@@ -9,7 +9,7 @@ import re
 import discord
 
 from bot.chat_context import build_chat_context
-from bot.response_policy import apply_personality_overrides
+from bot.response_policy import apply_personality_overrides, build_message_user_style_system_messages
 import urllib.request
 
 from providers.gemini_images import edit_gemini_image
@@ -235,6 +235,7 @@ def _build_image_explanation_messages(
     image_urls,
     reply_context: str,
     retry: bool = False,
+    style_messages=None,
 ):
     msgs = [
         {
@@ -248,6 +249,7 @@ def _build_image_explanation_messages(
             ),
         },
     ]
+    msgs.extend(list(style_messages or []))
     if reply_context:
         msgs.append({"role": "system", "content": reply_context})
 
@@ -287,6 +289,7 @@ def _build_image_repair_messages(
     partial_answer: str,
     image_urls,
     reply_context: str,
+    style_messages=None,
 ):
     msgs = [
         {
@@ -299,6 +302,7 @@ def _build_image_repair_messages(
             ),
         },
     ]
+    msgs.extend(list(style_messages or []))
     if reply_context:
         msgs.append({"role": "system", "content": reply_context})
 
@@ -549,6 +553,11 @@ async def handle_describe_image_intent(
     else:
         reply_context = ""
 
+    style_messages = build_message_user_style_system_messages(
+        message,
+        intent="describe_image",
+    )
+
     async def _describe():
         extracted_notes = await invoke_provider(
             "vision.openai", generate_openai_messages_response,
@@ -571,6 +580,7 @@ async def handle_describe_image_intent(
                 extracted_notes=extracted_notes,
                 image_urls=image_urls,
                 reply_context=reply_context,
+                style_messages=style_messages,
             ),
             model=OPENAI_CHAT_MODEL,
             temperature=0.2,
@@ -588,6 +598,7 @@ async def handle_describe_image_intent(
                     image_urls=image_urls,
                     reply_context=reply_context,
                     retry=True,
+                    style_messages=style_messages,
                 ),
                 model=OPENAI_CHAT_MODEL,
                 temperature=0.2,
@@ -606,6 +617,7 @@ async def handle_describe_image_intent(
                     partial_answer=final_text,
                     image_urls=image_urls,
                     reply_context=reply_context,
+                    style_messages=style_messages,
                 ),
                 model=OPENAI_CHAT_MODEL,
                 temperature=0.1,

@@ -19,7 +19,7 @@ from providers.openai_utils import (
 from services.behavior_registry import invoke_provider
 from bot.draft_verifier import verify_chat_draft
 from bot.research_policy import build_fresh_search_query, requires_fresh_web
-from bot.response_policy import apply_personality_overrides, build_personality_system_message
+from bot.response_policy import apply_personality_overrides, build_message_user_style_system_messages
 from services.memory_utils import build_message_window
 from services.url_utils import extract_main_text, fetch_url_content, reduce_text_length
 from services.youtube_utils import extract_youtube_id, fetch_youtube_transcript
@@ -97,7 +97,6 @@ async def handle_claude_chat_intent(
         ref_author = getattr(getattr(ref_msg, "author", None), "display_name", None) or "earlier message"
         clean_prompt = f'[Replying to {ref_author}: "{ref_content[:1500]}"]\n\n{clean_prompt}'
 
-    personality_msg = build_personality_system_message(message.author.id, intent="claude_chat")
     context_msgs = build_message_window(
         guild_id=message.guild.id if message.guild else "DM",
         channel_id=message.channel.id,
@@ -108,9 +107,21 @@ async def handle_claude_chat_intent(
         m for m in context_msgs
         if not (m.get("role") == "user" and "gemini imagine" in m.get("content", "").lower())
     ]
-    claude_messages = [{"role": "system", "content": "You are Claude, a helpful AI assistant."}]
-    if personality_msg:
-        claude_messages.append({"role": "system", "content": personality_msg})
+    claude_messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are the application's user-facing conversational assistant. "
+                "Answer accurately and preserve all provider safety and tool constraints."
+            ),
+        }
+    ]
+    claude_messages.extend(
+        build_message_user_style_system_messages(
+            message,
+            intent="claude_chat",
+        )
+    )
     claude_messages.extend(context_msgs)
 
     # Attached/replied-to images become Anthropic image blocks so Claude can
@@ -250,7 +261,6 @@ async def handle_gemini_chat_intent(
 
     context_msgs = []
     if not enable_code_execution:
-        personality_msg = build_personality_system_message(message.author.id, intent="gemini_chat")
         context_msgs = build_message_window(
             guild_id=message.guild.id if message.guild else "DM",
             channel_id=message.channel.id,
@@ -261,8 +271,10 @@ async def handle_gemini_chat_intent(
             m for m in context_msgs
             if not (m.get("role") == "user" and "gemini imagine" in m.get("content", "").lower())
         ]
-        if personality_msg:
-            context_msgs.insert(0, {"role": "system", "content": personality_msg})
+        context_msgs = build_message_user_style_system_messages(
+            message,
+            intent="gemini_chat",
+        ) + context_msgs
 
     # Base freshness routing on the user's request. A linked video's transcript
     # may contain incidental terms such as "latest" that should not change it.
@@ -492,13 +504,16 @@ async def handle_summarize_url_intent(
             title, text = extract_main_text(html)
             condensed = reduce_text_length(text, max_chars=3000)
             source_note = ""
-        personality_msg = build_personality_system_message(message.author.id, intent="summarize_url")
         msgs = [
             {"role": "system", "content": "Summarize crisply (bullets ok) and extract key facts/figures. " + source_note},
-            {"role": "user", "content": f"Title: {title or ''}\n\n{condensed}"},
         ]
-        if personality_msg:
-            msgs.insert(0, {"role": "system", "content": personality_msg})
+        msgs.extend(
+            build_message_user_style_system_messages(
+                message,
+                intent="summarize_url",
+            )
+        )
+        msgs.append({"role": "user", "content": f"Title: {title or ''}\n\n{condensed}"})
         summary = await invoke_provider(
             "chat.openai_plain", generate_openai_messages_response, msgs
         )

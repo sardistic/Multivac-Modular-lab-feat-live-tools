@@ -2,9 +2,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from services.database_utils import get_user_instruction
+from bot.response_policy import build_message_user_style_system_messages
 from services.memory_utils import build_message_window, build_timeline_prompt_block, search_history_for_context
-from services.user_profile import build_user_awareness_block
 
 logger = logging.getLogger("discord_bot")
 
@@ -39,7 +38,14 @@ _WEB_RESEARCH_BLOCK = (
 )
 
 
-def build_chat_context(message, user_id, raw_prompt, ref_msg=None, is_reply_to_bot=False) -> List[Dict[str, Any]]:
+def build_chat_context(
+    message,
+    user_id,
+    raw_prompt,
+    ref_msg=None,
+    is_reply_to_bot=False,
+    task_instructions: List[str] | None = None,
+) -> List[Dict[str, Any]]:
     msgs: List[Dict[str, Any]] = []
     msgs.append({
         "role": "system",
@@ -56,17 +62,9 @@ def build_chat_context(message, user_id, raw_prompt, ref_msg=None, is_reply_to_b
     msgs.append({"role": "system", "content": _WEB_RESEARCH_BLOCK})
     msgs.append({"role": "system", "content": _MEMORY_TOOLS_BLOCK})
 
-    # Who am I talking to: distilled profile, remembered facts, time since last
-    # interaction, saved location. SQLite-only, cheap.
-    try:
-        awareness = build_user_awareness_block(
-            user_id,
-            display_name=getattr(message.author, "display_name", None),
-        )
-        if awareness:
-            msgs.append({"role": "system", "content": awareness})
-    except Exception as e:
-        logger.warning(f"Failed to build user awareness block: {e}")
+    for instruction in task_instructions or []:
+        if instruction and instruction.strip():
+            msgs.append({"role": "system", "content": instruction.strip()})
 
     timeline_block = build_timeline_prompt_block(
         guild_id=message.guild.id if message.guild else "DM",
@@ -75,6 +73,16 @@ def build_chat_context(message, user_id, raw_prompt, ref_msg=None, is_reply_to_b
         max_items=12,
     )
     msgs.append({"role": "system", "content": timeline_block})
+
+    # Per-user profile and explicit behavior rules precede the default persona,
+    # which is only a compatible fallback voice.
+    msgs.extend(
+        build_message_user_style_system_messages(
+            message,
+            intent="chat",
+            user_id=user_id,
+        )
+    )
 
     # Include recent turn-by-turn context so provider switching (Claude -> GPT, etc.)
     # keeps the same local conversational memory.
@@ -188,17 +196,6 @@ def build_chat_context(message, user_id, raw_prompt, ref_msg=None, is_reply_to_b
                 })
         except Exception as e:
             logger.warning(f"Universal RAG search failed: {e}")
-
-    persistent_instr = get_user_instruction(user_id)
-    if persistent_instr:
-        msgs.append({
-            "role": "system",
-            "content": (
-                "CRITICAL OVERRIDE: The user has set a strict behavioral rule.\n"
-                "IGNORE the style of previous messages in history if they conflict.\n"
-                f"INSTRUCTION: {persistent_instr}"
-            ),
-        })
 
     msgs.append({"role": "user", "content": raw_prompt})
     return msgs

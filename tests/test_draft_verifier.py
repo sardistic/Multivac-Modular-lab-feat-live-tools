@@ -313,8 +313,8 @@ class ProviderDraftVerifierFlowTests(unittest.IsolatedAsyncioTestCase):
             return_value=[],
         ), patch.object(
             provider_intents,
-            "build_personality_system_message",
-            return_value=None,
+            "build_message_user_style_system_messages",
+            return_value=[],
         ), patch.object(
             provider_intents,
             "verify_chat_draft",

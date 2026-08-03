@@ -69,6 +69,7 @@ from services.database_utils import (
     set_code_proposal_approval_message,
     request_code_rollback,
     request_any_code_rollback,
+    set_conversation_persona_enabled,
 )
 from services.code_changes import MAX_PATCH_BYTES, get_baseline_sha, validate_patch
 from services.code_generator import (
@@ -102,6 +103,7 @@ from bot.message_inputs import (
     strip_mention_and_trigger,
 )
 from bot.moderation_view import ModerationFallbackView
+from bot.persona import PERSONA_NAME, message_persona_scope, parse_persona_toggle
 from bot.ui_messages import (
     EXPAND_EMOJI,
     COLLAPSE_EMOJI,
@@ -1101,6 +1103,75 @@ def _proposal_id_from_text(text: str) -> int | str | None:
     return int(match.group(1)) if match else None
 
 
+class CodeGenerationConfirmationView(discord.ui.View):
+    def __init__(self, author_id: int):
+        super().__init__(timeout=60)
+        self.author_id = int(author_id)
+        self.confirmed: bool | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "This code-generation request belongs to someone else.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Generate proposal", style=discord.ButtonStyle.success)
+    async def confirm_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        self.confirmed = True
+        await interaction.response.edit_message(
+            content="✅ Confirmed. Starting the proposal and code-generation pass…",
+            view=None,
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        self.confirmed = False
+        await interaction.response.edit_message(
+            content="❌ Code proposal cancelled before any generation tokens were spent.",
+            view=None,
+        )
+        self.stop()
+
+
+async def _confirm_code_generation(
+    target,
+    *,
+    author_id: int,
+    request_summary: str,
+    existing_status=None,
+) -> bool:
+    if existing_status is not None:
+        with contextlib.suppress(Exception):
+            await existing_status.delete()
+    summary = " ".join((request_summary or "").split())
+    if len(summary) > 700:
+        summary = summary[:697] + "..."
+    view = CodeGenerationConfirmationView(author_id)
+    confirmation = await target.reply(
+        "⚠️ **Generate a code proposal?**\n"
+        "This will invoke the code-generation model and spend API tokens. "
+        "Nothing will be approved or deployed automatically.\n"
+        f"> {summary}",
+        view=view,
+    )
+    await view.wait()
+    if view.confirmed is None:
+        with contextlib.suppress(Exception):
+            await confirmation.edit(
+                content="⌛ Code proposal confirmation timed out. No generation tokens were spent.",
+                view=None,
+            )
+    return view.confirmed is True
+
+
 async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=None, ref_msg=None) -> None:
     """Conversational front-end for the audited code-change pipeline."""
     is_app_owner = await bot.is_owner(message.author)
@@ -1136,6 +1207,14 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
                 f"You already have open proposal `{open_proposal.get('public_id') or open_proposal['id']}`. Wait for review before proposing another change."
             )
             return
+        if not await _confirm_code_generation(
+            message,
+            author_id=message.author.id,
+            request_summary=request,
+            existing_status=status_msg,
+        ):
+            return
+        status_msg = None
         baseline = await asyncio.to_thread(get_baseline_sha)
         proposal_id = await asyncio.to_thread(
             create_code_proposal, requester_id, request, baseline
@@ -1363,6 +1442,12 @@ async def code_generate(ctx, proposal_id: int):
     proposal = await asyncio.to_thread(get_code_proposal, str(ctx.author.id), proposal_id)
     if not proposal or proposal["status"] in {"approved", "rejected"}:
         await ctx.reply("❌ Editable code proposal not found.")
+        return
+    if not await _confirm_code_generation(
+        ctx,
+        author_id=ctx.author.id,
+        request_summary=proposal["request"],
+    ):
         return
     generation_phase = {"label": f"Drafting proposal {proposal_id}"}
 
@@ -1834,6 +1919,14 @@ async def reflection_propose(ctx, idea_id: int):
             f"Finish proposal `{existing.get('public_id') or existing['id']}` before generating another."
         )
         return
+    if not await _confirm_code_generation(
+        ctx,
+        author_id=ctx.author.id,
+        request_summary=(
+            f"Reflection idea #{idea['id']}: {idea['title']}. {idea['problem']}"
+        ),
+    ):
+        return
     request = (
         f"Implement owner-selected reflection idea #{idea['id']}: {idea['title']}. "
         f"Suggested deployment kind: {idea['hotload_kind']}. Problem: {idea['problem']} "
@@ -2015,6 +2108,48 @@ async def _builtin_on_message(message: discord.Message):
                 await preflight_status.edit(
                     content=_preflight_status(1, "Indexing fresh context…")
                 )
+
+    persona_toggle = parse_persona_toggle(raw_prompt)
+    if persona_toggle is not None:
+        scope_key = message_persona_scope(message, user_id)
+        try:
+            await asyncio.to_thread(
+                set_conversation_persona_enabled,
+                scope_key,
+                persona_toggle,
+            )
+        except Exception:
+            logger.exception("Unable to persist conversation persona setting")
+            failure = "❌ I couldn't save the persona setting for this conversation."
+            if preflight_status is not None:
+                await preflight_status.edit(content=failure)
+            else:
+                await message.reply(failure)
+            _preflight_status_by_message_id.pop(message.id, None)
+            return
+
+        acknowledgement = (
+            f"**{PERSONA_NAME}** resumed for this conversation."
+            if persona_toggle
+            else "Persona disabled for this conversation. I'll answer neutrally until you ask me to resume it."
+        )
+        _preflight_status_by_message_id.pop(message.id, None)
+        if preflight_status is not None:
+            await send_or_edit_with_truncation(
+                acknowledgement,
+                target_msg=preflight_status,
+                original_message=message,
+                model="local",
+            )
+        else:
+            await send_or_edit_with_truncation(
+                acknowledgement,
+                channel=message.channel,
+                reply_to=message,
+                model="local",
+            )
+        await bot.process_commands(message)
+        return
 
     image_urls = await collect_image_inputs(message, ref_msg, image_url_to_base64)
     gemini_parts = await collect_gemini_parts(message, ref_msg, image_urls)

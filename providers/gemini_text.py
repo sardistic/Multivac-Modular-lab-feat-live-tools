@@ -248,9 +248,15 @@ def generate_gemini_text(
                     logger.warning("RAG search failed: %s", e)
 
         base_contents = []
+        context_system_instructions: List[str] = []
         final_prompt_text = (rag_context + prompt) if rag_context else prompt
         if context:
             for msg in context:
+                if msg.get("role") == "system":
+                    content = msg.get("content")
+                    if isinstance(content, str) and content.strip():
+                        context_system_instructions.append(content.strip())
+                    continue
                 role = "user" if msg.get("role") == "user" else "model"
                 base_contents.append(types.Content(role=role, parts=[types.Part(text=msg.get("content"))]))
 
@@ -321,7 +327,7 @@ def generate_gemini_text(
             tools_list.append(types.Tool(function_declarations=[es_tool_spec, general_knowledge_tool]))
 
         sys_instructions = [
-            "You are Multivac, a helpful AI assistant.",
+            "You are the application's user-facing assistant.",
             "You have access to tools. You MUST use a tool to respond.",
         ]
         if any(getattr(t, "function_declarations", None) for t in tools_list):
@@ -356,8 +362,13 @@ def generate_gemini_text(
             else:
                 sys_instructions.append("You can search the live web using 'google_search'.")
 
+        # Application-owned system messages stay authoritative. Previously
+        # these were converted into model-history turns, which weakened both
+        # operational instructions and the persistent user-facing identity.
+        sys_instructions.extend(context_system_instructions)
+
         config = types.GenerateContentConfig(
-            system_instruction=" ".join(sys_instructions),
+            system_instruction="\n\n".join(sys_instructions),
             tools=tools_list,
             safety_settings=[
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},

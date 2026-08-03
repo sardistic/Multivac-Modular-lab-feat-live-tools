@@ -1,5 +1,36 @@
 # Architectural Decisions
 
+## 2026-08-01: Apply one durable, conversation-scoped Mistake Not… identity
+
+User-facing prose uses one checked-in `Mistake Not…` persona fragment owned by
+`bot/persona.py`. The shared style builder emits an application-level
+personalization-priority rule, the current user's awareness/profile block, and
+their active behavioral instruction before the persona. The rule explicitly
+makes individual profile preferences and behavioral instructions authoritative
+over every conflicting persona trait; the persona is only a compatible fallback
+voice. All of this follows provider, application, and task instructions and
+precedes conversation history. The prompt is rebuilt once per applicable
+request and is never copied into stored history, retrieved memory, tool output,
+or user messages.
+
+The applicable paths are normal OpenAI chat, its Gemini fallback and tool
+follow-ups, direct Claude and Gemini chat, URL summaries, and the prose-producing
+vision explanation and repair passes. Each path obtains awareness from the same
+requesting user ID; it does not use another user's profile. Machine-only intent
+and draft classifiers, OCR extraction, reflection, code generation, image/video
+generation, and strict execution paths remain persona-free. Gemini now promotes
+context system messages into its dedicated `system_instruction` field instead
+of representing them as prior model turns; ordinary user and assistant history
+remains content history.
+
+The default is enabled. Explicit standalone requests to disable or resume the
+identity are handled before model routing, preventing the generic behavioral
+memory tool from accidentally turning a conversation-local choice into a global
+user preference. State is persisted in the forward-compatible
+`conversation_personas` SQLite table at guild/channel/user scope (DMs use their
+channel and user), so it survives restarts while remaining isolated from other
+conversations. Missing rows safely mean enabled.
+
 ## 2026-07-29: Use a bounded post-draft quality gate for textual chat
 
 Normal textual chat responses receive one structured post-draft review after

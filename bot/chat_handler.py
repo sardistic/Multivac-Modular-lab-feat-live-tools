@@ -72,6 +72,17 @@ async def handle_chat_intent(
         verifier_requested_research = {"value": request_force_web}
 
         async def _chat_with_es_window():
+            task_instructions = None
+            if clarify_hint:
+                task_instructions = [
+                    (
+                        "The latest user message is vague on its own ('do that', 'make it "
+                        "better'). FIRST try to resolve what they mean from the conversation "
+                        "history below — especially anything you just offered or discussed. "
+                        "If it's resolvable, just do it. Only if genuinely unresolvable, ask "
+                        "ONE short clarifying question."
+                    )
+                ]
             # build_chat_context makes several synchronous ES queries (window,
             # timeline, salient recall) — keep them off the event loop.
             msgs = await asyncio.to_thread(
@@ -81,18 +92,8 @@ async def handle_chat_intent(
                 raw_prompt=raw_prompt,
                 ref_msg=ref_msg,
                 is_reply_to_bot=is_reply_to_bot,
+                task_instructions=task_instructions,
             )
-            if clarify_hint:
-                msgs.append({
-                    "role": "system",
-                    "content": (
-                        "The latest user message is vague on its own ('do that', 'make it "
-                        "better'). FIRST try to resolve what they mean from the conversation "
-                        "history above — especially anything you just offered or discussed. "
-                        "If it's resolvable, just do it. Only if genuinely unresolvable, ask "
-                        "ONE short clarifying question."
-                    ),
-                })
             ctx = {
                 "guild_id": message.guild.id if message.guild else "DM",
                 "channel_id": message.channel.id,

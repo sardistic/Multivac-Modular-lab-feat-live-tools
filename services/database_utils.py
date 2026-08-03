@@ -72,6 +72,14 @@ def get_user_instruction(user_id: str) -> str | None:
     return store.get_user_instruction(user_id)
 
 
+def get_conversation_persona_enabled(scope_key: str) -> bool:
+    return store.get_conversation_persona_enabled(scope_key)
+
+
+def set_conversation_persona_enabled(scope_key: str, enabled: bool) -> None:
+    store.set_conversation_persona_enabled(scope_key, enabled)
+
+
 def propose_behavior_change(user_id: str, instruction: str, *, created_by: str | None = None) -> int:
     return store.propose_behavior_change(user_id, instruction, created_by=created_by)
 
