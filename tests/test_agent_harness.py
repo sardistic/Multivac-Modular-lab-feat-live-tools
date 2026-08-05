@@ -259,6 +259,61 @@ class ProviderHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(create.await_args.kwargs["reasoning"], {"effort": "high"})
         self.assertNotIn("tools", create.await_args.kwargs)
 
+    @patch("providers.openai_messages.USE_RESPONSES", True)
+    async def test_empty_reverse_synthesis_falls_back_to_provider_evidence(self):
+        specs = [_spec("reverse_image_search")]
+        snapshot = SimpleNamespace(generation=1, tool_specs=lambda: specs)
+        reverse_call = SimpleNamespace(
+            type="function_call",
+            call_id="reverse-1",
+            name="reverse_image_search",
+            arguments="{}",
+        )
+        create = AsyncMock(
+            side_effect=[
+                SimpleNamespace(output_text="", output=[reverse_call]),
+                SimpleNamespace(output_text="", output=[]),
+                SimpleNamespace(output_text="", output=[]),
+            ]
+        )
+        lookup = AsyncMock(
+            return_value={
+                "ok": True,
+                "provider": "google_cloud_vision_web_detection",
+                "lookup_type": "reverse_image_search",
+                "match_found": True,
+                "pages_with_matches": [
+                    {
+                        "title": "Futoku no Guild Vol. 17 Ch. 99",
+                        "url": "https://forums.mangadex.org/threads/example.1/",
+                    }
+                ],
+            }
+        )
+        recorder = MagicMock()
+
+        with patch.object(openai_messages, "_responses_create", create), patch.object(
+            openai_messages, "get_tool_snapshot", return_value=snapshot
+        ), patch.object(openai_messages, "execute_tool", lookup), patch.object(
+            openai_messages, "AgentRunRecorder", return_value=recorder
+        ):
+            result = await openai_messages.generate_openai_messages_response_with_tools(
+                [{"role": "user", "content": "what manga is this"}],
+                forced_tool="reverse_image_search",
+                forced_tool_args={"image_index": 0},
+                tool_context={
+                    "request_text": "what manga is this",
+                    "image_urls": ["data:image/png;base64,abc"],
+                },
+                reasoning_effort="high",
+            )
+
+        self.assertIn("Futoku no Guild Vol. 17 Ch. 99", result)
+        self.assertIn("https://forums.mangadex.org/threads/example.1/", result)
+        self.assertEqual(create.await_args_list[-1].kwargs["max_output_tokens"], 1200)
+        self.assertEqual(create.await_args_list[-1].kwargs["reasoning"], {"effort": "low"})
+        recorder.finish.assert_called_with("completed_with_evidence_fallback")
+
     def test_cache_aware_current_pricing(self):
         usage = {
             "input_tokens": 1000,

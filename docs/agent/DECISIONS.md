@@ -366,3 +366,18 @@ authorization. The prompt explicitly forbids merging speakers, applying one
 person's preferences to another, exposing private profiles, or saving another
 participant's statements into the requester's memory. Personal recall/profile
 queries retain their existing user filter.
+
+## 2026-08-05: Preserve reverse-image evidence through final synthesis
+
+Reverse-image requests keep their successful provider result authoritative through the
+final response. If a reasoning model consumes its ordinary output allowance during a
+tool loop, a bounded lower-reasoning synthesis gets a larger allowance; if that still
+returns no prose, the runtime renders a conservative answer directly from the reverse
+provider's structured match, title, and public URL. It never replaces a failed lookup
+with a claim that the attachment was absent.
+
+The generic post-draft prose verifier is skipped after the reverse-image tool runs
+because it does not receive the raw tool evidence and therefore cannot safely rewrite
+that answer. The active requester's existing personality/profile transformation still
+runs afterward, preserving individual user behavior without allowing it to alter the
+provider facts.

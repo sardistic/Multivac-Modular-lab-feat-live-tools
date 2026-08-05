@@ -118,6 +118,97 @@ def _extract_responses_text(resp: Any) -> str:
         return ""
 
 
+def _reverse_image_evidence_fallback(input_items: List[Any]) -> str:
+    """Build a truthful last-resort answer from a completed reverse lookup.
+
+    Reasoning models can spend an entire output allowance on tool planning and
+    return no user-facing text.  The Responses input still contains the exact
+    function result, so preserve that evidence instead of degrading to a
+    generic response that implies the attachment was missing.
+    """
+    result: dict[str, Any] | None = None
+    for item in input_items:
+        item_type = (
+            item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+        )
+        if item_type != "function_call_output":
+            continue
+        raw = item.get("output") if isinstance(item, dict) else getattr(item, "output", None)
+        if isinstance(raw, str):
+            try:
+                payload = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+        elif isinstance(raw, dict):
+            payload = raw
+        else:
+            continue
+        if isinstance(payload, dict) and payload.get("lookup_type") == "reverse_image_search":
+            result = payload
+
+    if result is None:
+        return ""
+
+    provider_names = {
+        "google_cloud_vision_web_detection": "Google Cloud Vision Web Detection",
+        "serpapi_google_lens": "SerpApi Google Lens",
+    }
+    provider = provider_names.get(str(result.get("provider") or ""), "the configured provider")
+    if result.get("ok"):
+        if result.get("match_found"):
+            pages = list(result.get("pages_with_matches") or [])
+            exact = list(result.get("exact_or_partial_matches") or result.get("exact_matches") or [])
+            candidates = pages + exact
+            best = next(
+                (
+                    item
+                    for item in candidates
+                    if isinstance(item, dict)
+                    and str(item.get("url") or "").startswith(("http://", "https://"))
+                ),
+                None,
+            )
+            answer = (
+                f"I ran a genuine reverse-image search through {provider}. "
+                "It found an exact or partial image match."
+            )
+            if best:
+                title = " ".join(str(best.get("title") or "").split())[:240]
+                title = title.replace("@", "@\u200b")
+                title = re.sub(r"([\\`*_{}\[\]()~|>])", r"\\\1", title)
+                url = str(best.get("url") or "")[:2000]
+                if title:
+                    answer += f"\n\nStrongest matching page: **{title}**\n{url}"
+                else:
+                    answer += f"\n\nStrongest matching page: {url}"
+            return answer
+
+        candidate_count = int(bool(result.get("candidate_found")))
+        counts = result.get("result_counts")
+        if isinstance(counts, dict):
+            candidate_count = max(
+                candidate_count,
+                int(counts.get("visually_similar") or counts.get("visual_matches") or 0),
+            )
+        if candidate_count:
+            return (
+                f"I ran a genuine reverse-image search through {provider}. It found "
+                "visually similar images, but no exact or partial source match, so I "
+                "can't verify the manga from that evidence alone."
+            )
+        return (
+            f"I ran a genuine reverse-image search through {provider}, but it returned "
+            "no exact or partial matching page, so I couldn't verify the manga."
+        )
+
+    if result.get("error") == "no_attached_image_in_current_request":
+        return "The reverse-image tool ran, but it did not receive an image in this request."
+    return (
+        "I received the attachment and attempted a genuine reverse-image lookup, but no "
+        "configured provider completed successfully, so I couldn't verify the manga source."
+    )
+
+
 def _responses_incomplete_reason(resp: Any) -> str:
     try:
         details = getattr(resp, "incomplete_details", None)
@@ -769,7 +860,10 @@ async def generate_openai_messages_response_with_tools(
                     "This request explicitly requires a genuine reverse-image lookup. Run it "
                     "before answering. If it finds only visually similar images, say so. If "
                     "the provider is unavailable or returns no matching page, report that "
-                    "plainly instead of guessing from visual inspection."
+                    "plainly instead of guessing from visual inspection. When an exact or "
+                    "partial match includes a titled page that identifies the source, answer "
+                    "from that evidence immediately; do not keep searching for redundant "
+                    "confirmation."
                 )
             if "summarize_url" in available_tool_names:
                 instruction_parts.append(
@@ -856,6 +950,14 @@ async def generate_openai_messages_response_with_tools(
                 if recorder:
                     recorder.finish("completed")
                 return text
+            # Tool-heavy reasoning can consume the whole ordinary output budget
+            # before emitting prose.  Give the no-tools synthesis a bounded,
+            # lower-reasoning allowance so retrieved evidence reliably becomes
+            # a user-facing answer.
+            final_max_tokens = max(max_tokens, 1200) if force_available else max_tokens
+            final_reasoning_effort = (
+                "low" if reasoning_effort in {"medium", "high"} else reasoning_effort
+            )
             final_resp = await _responses_create(
                 model=model,
                 input=current_input
@@ -870,15 +972,24 @@ async def generate_openai_messages_response_with_tools(
                         ],
                     }
                 ],
-                max_output_tokens=max_tokens,
+                max_output_tokens=final_max_tokens,
                 **temperature_kwargs(model, temperature),
-                **reasoning_kwargs(model, reasoning_effort, responses=True),
+                **reasoning_kwargs(model, final_reasoning_effort, responses=True),
             )
             text = _extract_responses_text(final_resp)
             if text:
                 if recorder:
                     recorder.finish("completed")
                 return text
+            evidence_fallback = (
+                _reverse_image_evidence_fallback(current_input)
+                if forced_tool == "reverse_image_search"
+                else ""
+            )
+            if evidence_fallback:
+                if recorder:
+                    recorder.finish("completed_with_evidence_fallback")
+                return evidence_fallback
             if recorder:
                 recorder.finish("empty")
             return "I tried to use my tools but couldn't get a response. Could you rephrase?"
