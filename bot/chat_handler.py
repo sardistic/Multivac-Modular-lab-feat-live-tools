@@ -37,6 +37,16 @@ def _allowed_tools_for_intent(intent: str) -> set[str] | None:
     return None
 
 
+def _tool_call_limits_for_intent(intent: str) -> dict[str, int] | None:
+    if intent == "chat_reverse_image":
+        return {
+            "reverse_image_search": 1,
+            "web_search": 2,
+            "summarize_url": 2,
+        }
+    return None
+
+
 async def _generate_gemini_threaded(*args, **kwargs):
     return await asyncio.to_thread(generate_gemini_text, *args, **kwargs)
 
@@ -61,6 +71,7 @@ async def handle_chat_intent(
     ref_msg,
     is_reply_to_bot: bool,
     image_urls,
+    source_image_urls=None,
     gemini_parts,
     channel_context=None,
     duration_estimate: int,
@@ -131,6 +142,7 @@ async def handle_chat_intent(
                 "channel_id": message.channel.id,
                 "user_id": user_id,
                 "image_urls": image_urls or [],
+                "source_image_urls": source_image_urls or [],
                 "intent": agent_intent,
                 "request_text": raw_prompt,
             }
@@ -184,6 +196,7 @@ async def handle_chat_intent(
                         else None
                     ),
                     tool_trace=tool_trace,
+                    tool_call_limits=_tool_call_limits_for_intent(agent_intent),
                 )
 
             if not draft or not draft.strip() or _is_openai_outage(draft):

@@ -2152,7 +2152,13 @@ async def _builtin_on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    image_urls = await collect_image_inputs(message, ref_msg, image_url_to_base64)
+    source_image_urls = []
+    image_urls = await collect_image_inputs(
+        message,
+        ref_msg,
+        image_url_to_base64,
+        source_image_urls,
+    )
     gemini_parts = await collect_gemini_parts(message, ref_msg, image_urls)
     has_attachments = has_visual_inputs(message, ref_msg) or bool(image_urls or gemini_parts)
     channel_context = await fetch_recent_channel_context(message, bot.user)
@@ -2259,6 +2265,7 @@ async def _builtin_on_message(message: discord.Message):
                 ref_msg=ref_msg,
                 is_reply_to_bot=is_reply_to_bot,
                 image_urls=image_urls,
+                source_image_urls=source_image_urls,
                 gemini_parts=gemini_parts,
                 channel_context=channel_context,
                 general_url_match=general_url_match,

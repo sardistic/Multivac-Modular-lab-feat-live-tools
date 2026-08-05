@@ -245,6 +245,7 @@ class DispatchContext:
     ref_msg: Any = None
     is_reply_to_bot: bool = False
     image_urls: List[Any] = field(default_factory=list)
+    source_image_urls: List[str] = field(default_factory=list)
     gemini_parts: List[Any] = field(default_factory=list)
     channel_context: List[dict[str, str]] = field(default_factory=list)
     general_url_match: Any = None
@@ -284,6 +285,7 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
             live_status_with_progress=ctx.live_status_with_progress,
             send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
             image_urls=ctx.image_urls,
+            source_image_urls=ctx.source_image_urls,
             ref_msg=ctx.ref_msg,
             channel_context=ctx.channel_context,
         )
@@ -384,6 +386,7 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
         ref_msg=ctx.ref_msg,
         is_reply_to_bot=ctx.is_reply_to_bot,
         image_urls=ctx.image_urls,
+        source_image_urls=ctx.source_image_urls,
         gemini_parts=ctx.gemini_parts,
         channel_context=ctx.channel_context,
         duration_estimate=duration_estimate,

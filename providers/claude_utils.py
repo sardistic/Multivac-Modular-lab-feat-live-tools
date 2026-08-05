@@ -7,7 +7,7 @@ import anthropic
 from typing import List, Dict, Any, Optional
 
 from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
-from services.agent_execution import execute_agent_tool, tool_result_text
+from services.agent_execution import consume_tool_call_budget, execute_agent_tool, tool_result_text
 from services.agent_runs import AgentRunRecorder
 from services.tools_registry import ToolSnapshot, get_tool_snapshot
 
@@ -121,6 +121,7 @@ async def generate_claude_response(
     tool_trace: Optional[List[Dict[str, Any]]] = None,
     max_tool_rounds: int | None = None,
     max_tool_seconds: float | None = None,
+    tool_call_limits: Optional[Dict[str, int]] = None,
     temperature: float = 0.7,
     max_tokens: int = 1024,
 ) -> str:
@@ -185,6 +186,12 @@ async def generate_claude_response(
             "State-changing and billable tools require an explicit request in the current user "
             "message. Finish with a direct answer grounded in the returned evidence."
         )
+        if "reverse_image_search" in available_tool_names and tool_call_limits:
+            tool_instruction += (
+                " For this reverse-image request, use the combined reverse lookup once, use no "
+                "more than two targeted web searches afterward, and open a strong candidate page "
+                "when possible instead of repeating unsupported keyword guesses."
+            )
         system_prompt = f"{system_prompt}\n\n{tool_instruction}" if system_prompt else tool_instruction
 
     sanitized_messages = []
@@ -225,6 +232,7 @@ async def generate_claude_response(
         _record_claude_usage(response, selected_model)
         started = time.monotonic()
         step_index = 0
+        tool_call_counts: Dict[str, int] = {}
         for round_index in range(bounded_rounds if anthropic_tools else 0):
             uses = [
                 block
@@ -258,15 +266,31 @@ async def generate_claude_response(
                 step_index += 1
                 if round_index == 0 and name == forced_tool and forced_tool_args:
                     args = {**args, **forced_tool_args}
-                result = await execute_agent_tool(
-                    name,
-                    args,
-                    context=tool_context,
-                    snapshot=tool_snapshot,
-                    recorder=recorder,
-                    trace=tool_trace,
-                    step_index=step_index,
-                )
+                limit_result = consume_tool_call_budget(name, tool_call_limits, tool_call_counts)
+                if limit_result is not None:
+                    result = limit_result
+                    if tool_trace is not None:
+                        tool_trace.append({"name": name, "status": "call_limit_reached"})
+                    if recorder:
+                        recorder.step(
+                            step_index=step_index,
+                            phase="stop",
+                            status="call_limit_reached",
+                            tool_name=name,
+                            args=args,
+                            result=limit_result,
+                            error="tool_call_limit_reached",
+                        )
+                else:
+                    result = await execute_agent_tool(
+                        name,
+                        args,
+                        context=tool_context,
+                        snapshot=tool_snapshot,
+                        recorder=recorder,
+                        trace=tool_trace,
+                        step_index=step_index,
+                    )
                 tool_results.append(
                     {
                         "type": "tool_result",

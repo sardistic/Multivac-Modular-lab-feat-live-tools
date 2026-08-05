@@ -101,47 +101,51 @@ def has_visual_inputs(message, ref_msg=None) -> bool:
     return False
 
 
-async def collect_image_inputs(message, ref_msg, image_url_to_base64) -> List[str]:
+async def collect_image_inputs(
+    message,
+    ref_msg,
+    image_url_to_base64,
+    source_image_urls: List[str] | None = None,
+) -> List[str]:
     image_urls: List[str] = []
+    source_urls: List[str] = []
+
+    async def append_downloaded(url: str) -> None:
+        b64 = await image_url_to_base64(url)
+        if b64:
+            image_urls.append(b64)
+            source_urls.append(url)
+
+    def append_public(url: str) -> None:
+        image_urls.append(url)
+        source_urls.append(url)
 
     if ref_msg and ref_msg.attachments:
         for attachment in ref_msg.attachments:
             if attachment.content_type and attachment.content_type.startswith("image/"):
-                b64 = await image_url_to_base64(attachment.url)
-                if b64:
-                    image_urls.append(b64)
+                await append_downloaded(attachment.url)
 
     if ref_msg and ref_msg.embeds:
         for url in _embed_image_candidates(ref_msg.embeds):
-            b64 = await image_url_to_base64(url)
-            if b64:
-                image_urls.append(b64)
+            await append_downloaded(url)
 
     if message.attachments:
         for attachment in message.attachments:
             if attachment.content_type and attachment.content_type.startswith("image/"):
-                b64 = await image_url_to_base64(attachment.url)
-                if b64:
-                    image_urls.append(b64)
+                await append_downloaded(attachment.url)
 
     if message.embeds:
         for url in _embed_image_candidates(message.embeds):
-            b64 = await image_url_to_base64(url)
-            if b64:
-                image_urls.append(b64)
+            await append_downloaded(url)
 
     # Forwarded posts: images live in message snapshots.
     for snap in _forward_snapshots(message) + _forward_snapshots(ref_msg):
         for attachment in getattr(snap, "attachments", None) or []:
             ctype = getattr(attachment, "content_type", None)
             if ctype and ctype.startswith("image/"):
-                b64 = await image_url_to_base64(attachment.url)
-                if b64:
-                    image_urls.append(b64)
+                await append_downloaded(attachment.url)
         for url in _embed_image_candidates(getattr(snap, "embeds", None)):
-            b64 = await image_url_to_base64(url)
-            if b64:
-                image_urls.append(b64)
+            await append_downloaded(url)
 
     text_candidates: List[str] = []
     if ref_msg:
@@ -153,18 +157,20 @@ async def collect_image_inputs(message, ref_msg, image_url_to_base64) -> List[st
             continue
         lowered = raw_url.lower()
         if "cdn.discordapp.com" in lowered or "media.discordapp.net" in lowered:
-            b64 = await image_url_to_base64(raw_url)
-            if b64:
-                image_urls.append(b64)
-                continue
-        image_urls.append(raw_url)
+            await append_downloaded(raw_url)
+            continue
+        append_public(raw_url)
 
     seen = set()
     unique_urls = []
-    for url in image_urls:
+    unique_sources = []
+    for url, source_url in zip(image_urls, source_urls):
         if url not in seen:
             unique_urls.append(url)
+            unique_sources.append(source_url)
             seen.add(url)
+    if source_image_urls is not None:
+        source_image_urls.extend(unique_sources)
     return unique_urls
 
 

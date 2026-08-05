@@ -82,6 +82,7 @@ async def handle_reverse_image_search(args: Dict[str, Any]) -> Dict[str, Any]:
 
     ctx = (args or {}).get("_context", {})
     images = list(ctx.get("image_urls") or [])
+    source_images = list(ctx.get("source_image_urls") or [])
     try:
         image_index = int((args or {}).get("image_index", 0) or 0)
     except (TypeError, ValueError):
@@ -99,8 +100,15 @@ async def handle_reverse_image_search(args: Dict[str, Any]) -> Dict[str, Any]:
             "error": "image_index_out_of_range",
             "available_images": len(images),
         }
+    source_image_url = (
+        source_images[image_index]
+        if image_index < len(source_images)
+        and str(source_images[image_index]).startswith(("http://", "https://"))
+        else None
+    )
     return await reverse_image_search(
         images[image_index],
+        public_image_url=source_image_url,
         mode=str((args or {}).get("mode") or "all"),
         max_results=(args or {}).get("max_results", 10),
     )

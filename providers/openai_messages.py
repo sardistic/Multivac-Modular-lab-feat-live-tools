@@ -21,7 +21,7 @@ from providers.openai_images import (
     normalize_image_inputs,
 )
 from services import usage_costs
-from services.agent_execution import execute_agent_tool, tool_result_text
+from services.agent_execution import consume_tool_call_budget, execute_agent_tool, tool_result_text
 from services.agent_runs import AgentRunRecorder
 from services.tools_registry import (
     TOOL_SPECS,
@@ -456,11 +456,13 @@ async def _responses_tool_loop(
     reasoning_effort: Optional[str] = None,
     max_elapsed_seconds: float = 45.0,
     max_steps: int = 8,
+    tool_call_limits: Optional[Dict[str, int]] = None,
 ):
     resp = first_resp
     current_input = list(messages)
     started = time.monotonic()
     step_index = 0
+    tool_call_counts: Dict[str, int] = {}
     for round_index in range(max_rounds):
         if time.monotonic() - started >= max_elapsed_seconds:
             if tool_trace is not None:
@@ -496,15 +498,31 @@ async def _responses_tool_loop(
             if round_index == 0 and name == forced_tool and forced_tool_args:
                 args = {**(args or {}), **forced_tool_args}
             step_index += 1
-            output_text = await _exec_tool(
-                name,
-                args,
-                context=tool_context,
-                tool_snapshot=tool_snapshot,
-                recorder=recorder,
-                tool_trace=tool_trace,
-                step_index=step_index,
-            )
+            limit_result = consume_tool_call_budget(name, tool_call_limits, tool_call_counts)
+            if limit_result is not None:
+                output_text = tool_result_text(limit_result)
+                if tool_trace is not None:
+                    tool_trace.append({"name": name, "status": "call_limit_reached"})
+                if recorder:
+                    recorder.step(
+                        step_index=step_index,
+                        phase="stop",
+                        status="call_limit_reached",
+                        tool_name=name,
+                        args=args,
+                        result=limit_result,
+                        error="tool_call_limit_reached",
+                    )
+            else:
+                output_text = await _exec_tool(
+                    name,
+                    args,
+                    context=tool_context,
+                    tool_snapshot=tool_snapshot,
+                    recorder=recorder,
+                    tool_trace=tool_trace,
+                    step_index=step_index,
+                )
             current_input.append({"type": "function_call_output", "call_id": cid, "output": str(output_text)})
         resp = await _responses_create(
             model=model,
@@ -641,6 +659,7 @@ async def generate_openai_messages_response_with_tools(
     reasoning_effort: str | None = None,
     max_tool_rounds: int | None = None,
     max_tool_seconds: float | None = None,
+    tool_call_limits: Optional[Dict[str, int]] = None,
 ) -> str:
     recorder: AgentRunRecorder | None = None
     try:
@@ -714,6 +733,13 @@ async def generate_openai_messages_response_with_tools(
                     "claim a source when the tool reports no match. Use best-guess labels as "
                     "follow-up web-search leads when needed."
                 )
+                if tool_call_limits:
+                    instruction_parts.append(
+                        "For this reverse-image request, use the combined reverse lookup once. "
+                        "Afterward, use no more than two targeted web searches and open a strong "
+                        "candidate page when possible. Do not spend the remaining tool budget on "
+                        "repeated variations of an unsupported keyword guess."
+                    )
             if "get_agent_run_status" in available_tool_names:
                 instruction_parts.append(
                     "When the user asks whether you actually searched, used a tool, or wants "
@@ -823,6 +849,7 @@ async def generate_openai_messages_response_with_tools(
                 reasoning_effort=reasoning_effort,
                 max_elapsed_seconds=bounded_seconds,
                 max_steps=bounded_steps,
+                tool_call_limits=tool_call_limits,
             )
             text = _extract_responses_text(resp)
             if text:
@@ -877,6 +904,7 @@ async def generate_openai_messages_response_with_tools(
         current_msgs = list(messages_with_instruction)
         started = time.monotonic()
         step_index = 0
+        tool_call_counts: Dict[str, int] = {}
         for round_index in range(bounded_rounds):
             if time.monotonic() - started >= bounded_seconds:
                 if tool_trace is not None:
@@ -905,15 +933,37 @@ async def generate_openai_messages_response_with_tools(
                     ):
                         args = {**(args or {}), **forced_tool_args}
                     step_index += 1
-                    output = await _exec_tool(
+                    limit_result = consume_tool_call_budget(
                         tc.function.name,
-                        args,
-                        context=tool_context,
-                        tool_snapshot=tool_snapshot,
-                        recorder=recorder,
-                        tool_trace=tool_trace,
-                        step_index=step_index,
+                        tool_call_limits,
+                        tool_call_counts,
                     )
+                    if limit_result is not None:
+                        output = tool_result_text(limit_result)
+                        if tool_trace is not None:
+                            tool_trace.append(
+                                {"name": tc.function.name, "status": "call_limit_reached"}
+                            )
+                        if recorder:
+                            recorder.step(
+                                step_index=step_index,
+                                phase="stop",
+                                status="call_limit_reached",
+                                tool_name=tc.function.name,
+                                args=args,
+                                result=limit_result,
+                                error="tool_call_limit_reached",
+                            )
+                    else:
+                        output = await _exec_tool(
+                            tc.function.name,
+                            args,
+                            context=tool_context,
+                            tool_snapshot=tool_snapshot,
+                            recorder=recorder,
+                            tool_trace=tool_trace,
+                            step_index=step_index,
+                        )
                 except Exception as e:
                     output = f"Error: {e}"
                 current_msgs.append({"role": "tool", "tool_call_id": tc.id, "content": str(output)})

@@ -154,4 +154,28 @@ def tool_result_text(result: Any) -> str:
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
-__all__ = ["execute_agent_tool", "tool_result_text"]
+def consume_tool_call_budget(
+    name: str,
+    limits: dict[str, int] | None,
+    counts: dict[str, int],
+) -> dict[str, Any] | None:
+    """Consume one provider-loop call slot or return a structured refusal."""
+    if not limits or name not in limits:
+        return None
+    try:
+        limit = max(0, int(limits[name]))
+    except (TypeError, ValueError):
+        return None
+    used = max(0, int(counts.get(name, 0)))
+    if used >= limit:
+        return {
+            "ok": False,
+            "error": "tool_call_limit_reached",
+            "tool": name,
+            "limit": limit,
+        }
+    counts[name] = used + 1
+    return None
+
+
+__all__ = ["consume_tool_call_budget", "execute_agent_tool", "tool_result_text"]

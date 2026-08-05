@@ -62,10 +62,12 @@ TOOL_SPECS = [
             "name": "reverse_image_search",
             "description": (
                 "Perform a genuine content-based reverse-image lookup on an image attached "
-                "to the current Discord request. Returns the provider used, exact/partial "
-                "matches, pages containing matches, visual similarities, and best-guess "
-                "labels. Use this—not web_search or keyword image search—when the user asks "
-                "where an image came from, to find its source, or to identify a matching panel."
+                "to the current Discord request. Auto mode uses Google Cloud Vision first "
+                "and escalates a no-match public URL to configured Google Lens. Returns the "
+                "provider chain, exact/partial matches, source pages, visual candidates, and "
+                "best-guess labels. Use this—not web_search or keyword image search—when the "
+                "user asks where an image came from, to find its source, or to identify a "
+                "matching panel."
             ),
             "parameters": {
                 "type": "object",

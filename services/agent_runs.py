@@ -100,6 +100,12 @@ def _urls(value: Any, *, limit: int = 20) -> list[str]:
                 if str(key).lower() in {"url", "link", "source"} and isinstance(child, str):
                     if child.startswith(("http://", "https://")) and child not in found:
                         found.append(_public_url(child))
+                elif str(key).lower() == "visually_similar_images" and isinstance(
+                    child, (dict, list)
+                ):
+                    # Public provider evidence is safe to retain; raw/data image
+                    # inputs remain excluded by the generic sensitive-key rule.
+                    walk(child)
                 elif not _SENSITIVE_KEY_RE.search(str(key)):
                     walk(child)
         elif isinstance(item, list):
@@ -120,7 +126,17 @@ def _urls(value: Any, *, limit: int = 20) -> list[str]:
 def _result_summary(result: Any) -> dict[str, Any]:
     summary: dict[str, Any] = {"evidence_urls": _urls(result)}
     if isinstance(result, dict):
-        for key in ("ok", "provider", "lookup_type", "match_found", "result_counts", "status"):
+        for key in (
+            "ok",
+            "provider",
+            "provider_chain",
+            "lookup_type",
+            "match_found",
+            "candidate_found",
+            "fallback_reason",
+            "result_counts",
+            "status",
+        ):
             if key in result:
                 summary[key] = result[key]
         if result.get("error"):

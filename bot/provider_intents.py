@@ -85,6 +85,7 @@ async def handle_claude_chat_intent(
     live_status_with_progress,
     send_or_edit_with_truncation,
     image_urls=None,
+    source_image_urls=None,
     ref_msg=None,
     channel_context=None,
 ):
@@ -152,6 +153,7 @@ async def handle_claude_chat_intent(
         "channel_id": message.channel.id,
         "user_id": message.author.id,
         "image_urls": image_urls or [],
+        "source_image_urls": source_image_urls or [],
         "intent": "claude_chat",
         "request_text": user_request_for_review,
     }
@@ -177,6 +179,11 @@ async def handle_claude_chat_intent(
             forced_tool=forced_tool,
             forced_tool_args=forced_tool_args,
             tool_trace=tool_trace,
+            tool_call_limits=(
+                {"reverse_image_search": 1, "web_search": 2, "summarize_url": 2}
+                if force_reverse
+                else None
+            ),
         )
         if not draft or not draft.strip():
             return draft
@@ -234,6 +241,9 @@ async def handle_claude_chat_intent(
             forced_tool="web_search",
             forced_tool_args={"q": query},
             tool_trace=tool_trace,
+            tool_call_limits=(
+                {"web_search": 2, "summarize_url": 2} if force_reverse else None
+            ),
         )
         return repaired or draft
 

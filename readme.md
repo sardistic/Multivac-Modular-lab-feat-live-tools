@@ -60,9 +60,11 @@ When tool-calling is available, current callable functions include:
   Search the web through the configured search backend. Its `image` flag is a
   keyword image search, not reverse-image matching.
 - `reverse_image_search`
-  Submit an attached image to Google Cloud Vision Web Detection, with an
-  optional SerpApi Google Lens fallback for public image URLs. Results identify
-  the provider and separate exact/partial matches from merely similar images.
+  Submit an attached image to Google Cloud Vision Web Detection. When Vision
+  completes without an exact/partial match or source page, auto mode escalates
+  public image URLs—including the original URL retained for a Discord
+  attachment—to SerpApi Google Lens. Results identify the complete provider
+  chain and separate exact matches from visual source candidates.
 - `get_agent_run_status`
   Report completed model/tool runs for only the requesting guild/channel/user,
   including actual tools, retries, approvals, timing, and public evidence URLs.
@@ -108,7 +110,8 @@ and call tools on the supported surface. Set `OPENAI_USE_RESPONSES=false` only
 as an operational rollback. Reasoning and tool exposure are task-shaped:
 tiny/light/standard chat carries no tool schemas; current-information research
 gets the web reader/search set; reverse-image work gets the reverse/search/read
-set and the deep model; difficult general analysis gets the deep model and the
+set and the deep model, with one reverse lookup and at most two targeted web
+searches; difficult general analysis gets the deep model and the
 full registry. Explicit Claude Fable chat uses the same immutable registry
 snapshot and bounded executor rather than a separate hard-coded search path.
 
@@ -224,7 +227,7 @@ Examples:
 - no `STABILITY_KEY`: Stability image backend is unavailable
 - no `GOOGLE_API_KEY` or `GOOGLE_CSE_ID`: Google CSE search is unavailable
 - no Cloud Vision Web Detection access on `GOOGLE_VISION_API_KEY` (or legacy `GOOGLE_API_KEY` fallback): the primary reverse-image provider is unavailable
-- no `SERPAPI_API_KEY`: the optional public-URL Google Lens fallback is unavailable
+- no `SERPAPI_API_KEY`: Vision still runs, but no-match public images cannot escalate to Google Lens
 - no `OPENWEATHER_API_KEY`: weather lookup and weather-widget flows are unavailable
 - no `GEMINI_API_KEY`: Veo video paths are unavailable
 - no OpenSearch server: memory auto-disables and the bot continues running
