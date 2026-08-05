@@ -16,9 +16,78 @@ TOOL_SPECS = [
                     "safe": {"type": "string", "enum": ["off", "active"], "default": "off"},
                     "gl": {"type": "string", "description": "Country code, e.g., 'us'"},
                     "lr": {"type": "string", "description": "Language restrict, e.g., 'lang_en'"},
-                    "image": {"type": "boolean", "description": "Image search", "default": False},
+                    "image": {
+                        "type": "boolean",
+                        "description": (
+                            "Keyword-based image results for q. This is not a reverse-image lookup; "
+                            "use reverse_image_search for an attached image."
+                        ),
+                        "default": False,
+                    },
                 },
                 "required": ["q"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_agent_run_status",
+            "description": (
+                "Retrieve privacy-bounded orchestration status for this user's current "
+                "conversation scope: provider/model, completion state, tools actually run, "
+                "retries, approvals, duration, and public evidence URLs. Use this when the "
+                "user asks whether a search/tool really ran or wants task progress/audit data."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "run_id": {
+                        "type": "string",
+                        "description": "Optional exact run ID. Omit for the latest completed run.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "default": 3,
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reverse_image_search",
+            "description": (
+                "Perform a genuine content-based reverse-image lookup on an image attached "
+                "to the current Discord request. Returns the provider used, exact/partial "
+                "matches, pages containing matches, visual similarities, and best-guess "
+                "labels. Use this—not web_search or keyword image search—when the user asks "
+                "where an image came from, to find its source, or to identify a matching panel."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image_index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0,
+                        "description": "Zero-based attached-image index.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["all", "exact", "visual"],
+                        "default": "all",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "default": 10,
+                    },
+                },
             },
         },
     },

@@ -18,6 +18,24 @@ logger = logging.getLogger("discord_bot")
 # rate limit, connection). Keeps the bot usable during an OpenAI outage.
 GEMINI_FALLBACK_CHAT_MODEL = "gemini-3-flash-preview"
 
+_RESEARCH_TOOL_NAMES = {
+    "web_search",
+    "summarize_url",
+    "get_agent_run_status",
+    "list_available_tools",
+}
+_REVERSE_IMAGE_TOOL_NAMES = _RESEARCH_TOOL_NAMES | {"reverse_image_search"}
+
+
+def _allowed_tools_for_intent(intent: str) -> set[str] | None:
+    if intent in {"chat_tiny", "chat_light", "chat_standard", "clarify"}:
+        return set()
+    if intent == "chat_research":
+        return _RESEARCH_TOOL_NAMES
+    if intent == "chat_reverse_image":
+        return _REVERSE_IMAGE_TOOL_NAMES
+    return None
+
 
 async def _generate_gemini_threaded(*args, **kwargs):
     return await asyncio.to_thread(generate_gemini_text, *args, **kwargs)
@@ -44,14 +62,18 @@ async def handle_chat_intent(
     is_reply_to_bot: bool,
     image_urls,
     gemini_parts,
+    channel_context=None,
     duration_estimate: int,
     stream_ok: bool,
     live_status_with_progress,
     send_or_edit_with_truncation,
     moderation_view_factory,
     default_model=None,
+    agent_intent: str = "chat",
+    reasoning_effort: str | None = None,
     clarify_hint: bool = False,
     force_web_search: bool = False,
+    force_reverse_image_search: bool = False,
 ):
     async def _do_chat_generation(
         model_name=None,
@@ -62,8 +84,17 @@ async def handle_chat_intent(
     ):
         selected_model = model_name or default_model or OPENAI_CHAT_MODEL
         request_force_web = force_web_search or force_research
+        request_force_reverse = force_reverse_image_search
+        forced_tool = (
+            "reverse_image_search"
+            if request_force_reverse
+            else ("web_search" if request_force_web else None)
+        )
         phase = {
             "detail": (
+                "Comparing the attached image against web matches…"
+                if request_force_reverse
+                else
                 "Checking current sources…"
                 if request_force_web
                 else "Drafting answer…"
@@ -93,12 +124,15 @@ async def handle_chat_intent(
                 ref_msg=ref_msg,
                 is_reply_to_bot=is_reply_to_bot,
                 task_instructions=task_instructions,
+                channel_context_messages=channel_context,
             )
             ctx = {
                 "guild_id": message.guild.id if message.guild else "DM",
                 "channel_id": message.channel.id,
                 "user_id": user_id,
                 "image_urls": image_urls or [],
+                "intent": agent_intent,
+                "request_text": raw_prompt,
             }
             tool_trace = []
 
@@ -137,11 +171,15 @@ async def handle_chat_intent(
                     "chat.openai",
                     generate_openai_messages_response_with_tools,
                     msgs,
+                    allowed_tool_names=_allowed_tools_for_intent(agent_intent),
                     tool_context=ctx,
                     model=selected_model,
-                    forced_tool="web_search" if request_force_web else None,
+                    reasoning_effort=reasoning_effort,
+                    forced_tool=forced_tool,
                     forced_tool_args=(
-                        {"q": build_fresh_search_query(prompt)}
+                        {"image_index": 0, "mode": "all", "max_results": 10}
+                        if request_force_reverse
+                        else {"q": build_fresh_search_query(prompt)}
                         if request_force_web
                         else None
                     ),
@@ -159,14 +197,16 @@ async def handle_chat_intent(
                 draft=draft,
                 research_used=(
                     request_force_web
-                    or any(item.get("name") == "web_search" for item in tool_trace)
+                    or request_force_reverse
+                    or any(item.get("name") in {"web_search", "reverse_image_search"} for item in tool_trace)
                 ),
             )
             logger.info(
                 "Post-draft verdict=%s research_used=%s",
                 verdict.action,
                 request_force_web
-                or any(item.get("name") == "web_search" for item in tool_trace),
+                or request_force_reverse
+                or any(item.get("name") in {"web_search", "reverse_image_search"} for item in tool_trace),
             )
             if verdict.action == "accept":
                 return draft
@@ -217,15 +257,22 @@ async def handle_chat_intent(
                 "chat.openai",
                 generate_openai_messages_response_with_tools,
                 repair_msgs,
+                allowed_tool_names=_RESEARCH_TOOL_NAMES,
                 tool_context=ctx,
                 model=selected_model,
+                reasoning_effort=reasoning_effort,
                 forced_tool="web_search",
                 forced_tool_args={"q": search_query},
             )
             return repaired or draft
 
         def _summarizer():
-            return f"• Using {selected_model}…\n• {phase['detail']}"
+            detail = f"• Using {selected_model}…\n• {phase['detail']}"
+            if tool_trace:
+                latest = tool_trace[-1]
+                status = latest.get("status") or "running"
+                detail += f"\n• Tool {latest.get('name', 'unknown')}: {status}"
+            return detail
 
         try:
             status_kwargs = {

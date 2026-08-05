@@ -19,6 +19,7 @@ class OpenAIVisionPayloadTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    @patch("providers.openai_messages.USE_RESPONSES", False)
     @patch("providers.openai_messages._create_chat_completion_with_token_fallback", new_callable=AsyncMock)
     async def test_generate_openai_messages_response_with_tools_respects_empty_tool_list(self, mock_create):
         mock_create.return_value = type(
@@ -47,6 +48,7 @@ class OpenAIVisionPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(mock_create.await_args.kwargs["tools"])
         self.assertIsNone(mock_create.await_args.kwargs["tool_choice"])
 
+    @patch("providers.openai_messages.USE_RESPONSES", False)
     @patch("providers.openai_messages._create_chat_completion_with_token_fallback", new_callable=AsyncMock)
     async def test_generate_openai_messages_response_continues_after_length_finish(self, mock_create):
         mock_create.side_effect = [

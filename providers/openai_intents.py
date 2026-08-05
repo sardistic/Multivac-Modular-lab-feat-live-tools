@@ -33,6 +33,7 @@ _INTENT_SYSTEM = (
     "- 'chat_standard'\n"
     "- 'chat'\n"
     "- 'chat_research'\n"
+    "- 'chat_reverse_image'\n"
     "- 'chat_deep'\n"
     "- 'clarify'\n\n"
     "- 'code_change'\n"
@@ -82,6 +83,9 @@ _INTENT_SYSTEM = (
     "sources. Treat an unqualified question such as 'who won the World Cup?' as chat_research: "
     "the newest completed edition may postdate model knowledge. Do not use chat_research for an "
     "explicitly historical edition such as 'who won the 2018 World Cup?' or for timeless facts.\n"
+    "  * 'chat_reverse_image': an attached image must be submitted to a content-based reverse "
+    "image lookup to find its source, matching pages/panels, or visually similar images. Do not "
+    "use this for ordinary visual description or keyword image search.\n"
     "  * 'chat_deep': genuinely difficult multi-stage reasoning, architecture, rigorous synthesis, "
     "advanced technical design, or complex tradeoffs where the strongest model materially helps.\n"
     "Message length and tone do not determine tier. Do not choose 'chat_deep' merely because tools "
@@ -120,6 +124,7 @@ _INTENT_SYSTEM = (
     "'who won the world cup' -> chat_research\n"
     "'who is the CEO of Acme' -> chat_research\n"
     "'what is the latest stable Python release' -> chat_research\n"
+    "'reverse image search this and find the manga' with an attached image -> chat_reverse_image\n"
     "'who won the 2018 world cup' -> chat_light\n"
     "'inspect your repository and explain this failure' -> chat\n"
     "'design a fault-tolerant migration across several dependent services' -> chat_deep\n"
@@ -143,7 +148,7 @@ VALID_INTENTS = {
     "edit_image", "generate_image", "summarize_url", "describe_image",
     "get_weather", "get_stock", "gemini_chat", "claude_chat", "generate_video",
     "chat_tiny", "chat_light", "chat_standard", "chat", "chat_research",
-    "chat_deep", "clarify",
+    "chat_reverse_image", "chat_deep", "clarify",
     "code_change", "code_approve", "code_reject", "code_status", "code_rollback",
 }
 
@@ -244,6 +249,7 @@ async def classify_intent(
                 + "- 'generate_image' = User wants to CREATE a NEW image from scratch (imagine, generate, draw, paint, create)\n\n"
                 + "IMPORTANT: If the user says 'edit', 'change', 'make', 'transform' -> 'edit_image' (even if it involves text).\n"
                 + "Only use 'describe_image' if they specifically ask what is in the image, or to transcribe/translate text WITHOUT modifying the image.\n"
+                + "Use 'chat_reverse_image' when they ask to reverse-search the attached image, find its source/origin, or find matching pages/panels.\n"
                 + "A bare reaction or compliment about the image ('kino', 'nice', 'lol', 'based') -> 'chat_tiny'; it requests nothing.\n"
                 + "Only use 'chat' if the message is clearly NOT about the attached images."
             )

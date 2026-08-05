@@ -1,5 +1,80 @@
 # Architectural Decisions
 
+## 2026-08-04: Extend the existing registry into a bounded, provider-shared agent harness
+
+Multivac keeps its current intent router, immutable tool-registry snapshots,
+memory boundaries, progress UI, confirmation controls, and post-draft verifier.
+It does not import a second general agent framework. The existing OpenAI loop is
+now the shared execution boundary, and Claude Fable receives the same captured
+tool schemas and matching handlers instead of a one-shot provider wrapper.
+OpenAI's Responses API is the default reasoning/tool surface, with a false
+environment override retained as an operational rollback.
+
+This follows the most useful common patterns in the Hugging Face agent course
+and highly liked Hub Spaces (smolagents computer/browser agents, Jupyter agent,
+AgentFlow, and the data-analyst agent): bounded action loops, explicit
+step/tool/result state, per-session isolation, retries, progress, artifacts or
+evidence, and a final-answer check. It deliberately copies those stable
+capabilities rather than their framework dependencies. Arbitrary Python or
+desktop execution is not added to the credential-bearing bot; existing
+reviewed proposal validation remains the code-execution boundary. Multi-agent
+fan-out remains task-shaped future work for genuinely separable tasks, not a
+default chat behavior.
+
+Cheap chat routes expose no tool schemas. Fresh research exposes only web
+search/page read/status tools. Reverse-image work exposes only reverse lookup,
+web search/page read, and status tools and routes to the configured deep model.
+General difficult work retains the deep model/full registry, and explicit
+Fable requests receive the full shared registry. Reasoning effort is selected
+by intent rather than globally: none for tiny/light, low for ordinary analysis,
+medium for current research, and high for reverse-image and deep tasks.
+
+Every provider loop has configurable round, total-step, and elapsed-time caps.
+Only read-only transient failures are retried, once by default. Mutating or
+billable callable tools are executed only when the current user message
+contains an explicit matching request; otherwise the model receives an
+`approval_required` result. Existing code-generation approval remains separate
+and unchanged. Discord's existing progress summarizer reports structured tool
+status, never hidden reasoning.
+
+Agent-run records are durable in the existing state database and scoped by
+guild/channel/user. They persist provider/model, status, bounded step metadata,
+retry and approval state, timings, result counts, and public evidence URLs.
+They do not persist prompts, transcripts, tool query values, attached images,
+memory contents, user profiles, persona text, credentials, or model chain of
+thought. The model-callable status tool can retrieve only completed runs from
+the requesting scope. Individual awareness profiles and active behavioral
+instructions retain their established priority over the shared Mistake Not…
+persona; the harness adds no profile mutation or cross-user fallback.
+
+## 2026-08-04: Treat reverse-image lookup as a distinct, auditable provider operation
+
+Keyword web/image search is not evidence that image bytes were compared.
+`reverse_image_search` therefore consumes only images attached to the current
+request and returns `lookup_type` plus the provider that actually ran. Google
+Cloud Vision Web Detection is primary because it accepts the bot's existing
+base64 image inputs and builds on the configured Google credential. It reports
+full/partial image matches, pages containing matches, visual similarities,
+entities, and best-guess labels separately. SerpApi Google Lens is an optional
+fallback only when a separate key is configured and the image is a public URL.
+
+Attachment-aware source/match wording deterministically routes to the reverse
+tool and deep model before generic visual-description routing. Provider errors,
+missing configuration, and no-match results remain explicit; visual similarity
+must never be presented as an exact source. Successful provider calls receive
+configurable per-call list-price accounting, separate from model token cost.
+
+## 2026-08-04: Account for cached tokens and current tier pricing
+
+Usage normalization now understands Chat Completions, Responses, and Anthropic
+input/output fields plus nested cache-read and cache-write fields. SQLite usage
+rows migrate forward with separate cached-read and cache-write token columns.
+Cost estimation prices uncached input, cached reads, cache writes, and output
+independently. Default GPT-5.6 Sol/Terra/Luna and Claude Fable rates reflect the
+current public price schedules; two-value operator overrides remain compatible.
+Non-token reverse-image provider calls use explicit metered records with a
+documented list-price/free-tier caveat.
+
 ## 2026-08-01: Apply one durable, conversation-scoped Mistake Not… identity
 
 User-facing prose uses one checked-in `Mistake Not…` persona fragment owned by
@@ -249,3 +324,27 @@ small structured conclusion; ordinary conversation is discarded, and only a
 useful derived observation may be persisted. A final bounded history synthesis
 still runs after idle close. Pulses share the existing atomic `$1.50` daily
 automatic budget, use Flex only, and stop when the budget is unavailable.
+
+## 2026-08-04: Separate shared channel conversation from personal identity state
+
+Discord chat is a multi-speaker channel interaction, not a sequence of isolated
+one-to-one sessions. An explicit mention or reply now opens a bounded read of the
+24 immediately preceding channel messages, capped at 12,000 characters. Turns
+are labelled with display name and stable user ID, Multivac replies remain
+assistant turns, and unrelated bots are excluded. Intent classification and the
+OpenAI, Claude, and Gemini conversational routes receive the same ordered window
+so references and decisions can pass naturally between speakers.
+
+The live window is fetched from Discord and processed ephemerally. It does not
+create another raw transcript archive and never crosses the current guild or
+channel. If Discord history is unavailable, the fallback reads only already
+indexed messages for that exact guild/channel and excludes the current trigger.
+
+Conversational scope and identity scope remain deliberately different. Only the
+active requester's private profile, saved facts, behavioral instruction, persona
+setting, usage attribution, and agent-status records are loaded or mutated.
+Historical participant turns are context rather than active instructions or
+authorization. The prompt explicitly forbids merging speakers, applying one
+person's preferences to another, exposing private profiles, or saving another
+participant's statements into the requester's memory. Personal recall/profile
+queries retain their existing user filter.

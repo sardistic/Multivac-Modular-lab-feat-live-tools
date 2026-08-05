@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
 from bot.chat_handler import handle_chat_intent
-from bot.research_policy import requires_fresh_web
+from bot.research_policy import is_reverse_image_request, requires_fresh_web
 from bot.image_handler import (
     handle_describe_image_intent,
     handle_edit_image_intent,
@@ -83,7 +83,12 @@ _WEATHER_CUE_RE = re.compile(
     re.I,
 )
 
-def validate_classified_intent(intent: str, prompt: str) -> str:
+def validate_classified_intent(
+    intent: str,
+    prompt: str,
+    *,
+    has_attachments: bool = False,
+) -> str:
     """Reject code-status guesses based only on conversational context.
 
     Status lookup defaults to the newest proposal, so a false positive exposes
@@ -96,6 +101,8 @@ def validate_classified_intent(intent: str, prompt: str) -> str:
     else goes to chat, which has a weather tool anyway.
     """
     text = prompt or ""
+    if intent == "chat_reverse_image" and not has_attachments:
+        return "clarify"
     if intent == "get_weather" and not _WEATHER_CUE_RE.search(text):
         return "chat"
     if intent in {"chat_tiny", "chat_light", "chat_standard", "chat"} and requires_fresh_web(text):
@@ -129,6 +136,9 @@ def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) 
 
     if lowered_prompt.startswith("claude") or lowered_raw.startswith("claude"):
         return "claude_chat"
+
+    if is_reverse_image_request(prompt or raw_prompt, has_images=has_attachments):
+        return "chat_reverse_image"
 
     # "imagine ..." is this bot's established image command word — always an
     # image request, with or without a leading provider name. (Provider is
@@ -170,6 +180,7 @@ def get_duration_estimate(intent: str) -> int:
         "chat_standard": 4,
         "chat": 6,
         "chat_research": 8,
+        "chat_reverse_image": 12,
         "chat_deep": 10,
         "clarify": 3,
         "get_weather": 5,
@@ -197,11 +208,28 @@ def chat_model_for_intent(intent: str) -> str:
         "chat_standard": OPENAI_STANDARD_MODEL,
         "chat": OPENAI_CHAT_MODEL,
         "chat_research": OPENAI_CHAT_MODEL,
+        "chat_reverse_image": OPENAI_DEEP_MODEL,
         "chat_deep": OPENAI_DEEP_MODEL,
         "clarify": OPENAI_LIGHT_MODEL,
     }.get(intent, OPENAI_CHAT_MODEL)
     value = get_runtime_setting(f"intent.model.{intent}", default)
     return value if isinstance(value, str) and value.strip() else default
+
+
+def chat_reasoning_for_intent(intent: str) -> str:
+    """Spend reasoning only where the task shape warrants it."""
+    default = {
+        "chat_tiny": "none",
+        "chat_light": "none",
+        "chat_standard": "low",
+        "chat": "low",
+        "chat_research": "medium",
+        "chat_reverse_image": "high",
+        "chat_deep": "high",
+        "clarify": "none",
+    }.get(intent, "low")
+    value = get_runtime_setting(f"intent.reasoning.{intent}", default)
+    return value if value in {"none", "low", "medium", "high", "xhigh", "max"} else default
 
 
 @dataclass
@@ -218,6 +246,7 @@ class DispatchContext:
     is_reply_to_bot: bool = False
     image_urls: List[Any] = field(default_factory=list)
     gemini_parts: List[Any] = field(default_factory=list)
+    channel_context: List[dict[str, str]] = field(default_factory=list)
     general_url_match: Any = None
     stream_ok: bool = False
     # Injected collaborators (Discord-side helpers owned by discord_bot.py)
@@ -256,6 +285,7 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
             send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
             image_urls=ctx.image_urls,
             ref_msg=ctx.ref_msg,
+            channel_context=ctx.channel_context,
         )
         return True
 
@@ -267,6 +297,7 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
             live_status_with_progress=ctx.live_status_with_progress,
             send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
             moderation_view_factory=ctx.moderation_view_factory,
+            channel_context=ctx.channel_context,
         )
         return True
 
@@ -319,6 +350,7 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
             stream_ok=ctx.stream_ok,
             live_status_with_progress=ctx.live_status_with_progress,
             send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
+            channel_context=ctx.channel_context,
         )
         return True
 
@@ -353,14 +385,18 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
         is_reply_to_bot=ctx.is_reply_to_bot,
         image_urls=ctx.image_urls,
         gemini_parts=ctx.gemini_parts,
+        channel_context=ctx.channel_context,
         duration_estimate=duration_estimate,
         stream_ok=ctx.stream_ok,
         live_status_with_progress=ctx.live_status_with_progress,
         send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
         moderation_view_factory=ctx.moderation_view_factory,
         default_model=chat_model_for_intent(ctx.intent),
+        agent_intent=ctx.intent,
+        reasoning_effort=chat_reasoning_for_intent(ctx.intent),
         clarify_hint=(ctx.intent == "clarify"),
         force_web_search=(ctx.intent == "chat_research"),
+        force_reverse_image_search=(ctx.intent == "chat_reverse_image"),
     )
     return True
 

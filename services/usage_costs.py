@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   label             TEXT,
   user_id           TEXT,
   prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+  cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
   total_tokens      INTEGER NOT NULL DEFAULT 0,
   cost_usd          REAL NOT NULL DEFAULT 0.0,
@@ -120,15 +122,16 @@ def get_request_context() -> Dict[str, Any]:
     return dict(_request_ctx.get() or {})
 
 # ----------------------------
-# Pricing (USD per 1M tokens). Best-effort; unknown models record cost 0.
-# Override via env: OPENAI_PRICE_JSON='{"gpt-5.5": [1.25, 10.0]}'
+# Pricing (USD per 1M tokens). Tuples are input, output, cached input,
+# cache-write. Two-value operator overrides remain supported.
+# Override via env: OPENAI_PRICE_JSON='{"gpt-5.6-terra": [2,12,.2,2.5]}'
 # ----------------------------
 _DEFAULT_PRICING: Dict[str, tuple] = {
-    # prefix: (input_per_1m, output_per_1m)
-    "gpt-5.6-sol": (5.00, 30.00),
-    "gpt-5.6-terra": (2.50, 15.00),
-    "gpt-5.6-luna": (1.00, 6.00),
-    "gpt-5.6": (5.00, 30.00),
+    # prefix: (input_per_1m, output_per_1m, cached_input_per_1m, cache_write_per_1m)
+    "gpt-5.6-sol": (5.00, 30.00, 0.50, 6.25),
+    "gpt-5.6-terra": (2.00, 12.00, 0.20, 2.50),
+    "gpt-5.6-luna": (0.20, 1.20, 0.02, 0.25),
+    "gpt-5.6": (5.00, 30.00, 0.50, 6.25),
     "gpt-5.5": (1.25, 10.00),
     "gpt-5.4-mini": (0.75, 4.50),
     "gpt-5.4-nano": (0.20, 1.25),
@@ -136,7 +139,7 @@ _DEFAULT_PRICING: Dict[str, tuple] = {
     "gpt-4o": (2.50, 10.00),
     "gpt-4.1": (2.00, 8.00),
     "gpt-image": (5.00, 32.00),  # gpt-image-1.5: $5/M text-in, $32/M image-out
-    "claude-fable-5": (10.00, 50.00),
+    "claude-fable-5": (10.00, 50.00, 1.00, 12.50),
     "claude-sonnet-5": (2.00, 10.00),
     "claude-sonnet-4": (3.00, 15.00),
     "claude": (3.00, 15.00),
@@ -164,8 +167,22 @@ def estimate_cost(model: str, usage: Dict[str, Any] | None) -> float:
             best = (prefix, rates)
     if not best:
         return 0.0
-    in_rate, out_rate = best[1]
-    return (fields["prompt_tokens"] * in_rate + fields["completion_tokens"] * out_rate) / 1_000_000.0
+    rates = best[1]
+    in_rate, out_rate = rates[:2]
+    cached_rate = rates[2] if len(rates) >= 3 else in_rate
+    write_rate = rates[3] if len(rates) >= 4 else in_rate
+    cached = min(fields["cached_prompt_tokens"], fields["prompt_tokens"])
+    cache_write = min(
+        fields["cache_write_tokens"],
+        max(0, fields["prompt_tokens"] - cached),
+    )
+    uncached = max(0, fields["prompt_tokens"] - cached - cache_write)
+    return (
+        uncached * in_rate
+        + cached * cached_rate
+        + cache_write * write_rate
+        + fields["completion_tokens"] * out_rate
+    ) / 1_000_000.0
 
 # ----------------------------
 # DB helpers
@@ -186,6 +203,14 @@ def _conn_rw():
         cols = {r[1] for r in conn.execute("PRAGMA table_info(usage_logs)")}
         if "user_id" not in cols:
             conn.execute("ALTER TABLE usage_logs ADD COLUMN user_id TEXT")
+        if "cached_prompt_tokens" not in cols:
+            conn.execute(
+                "ALTER TABLE usage_logs ADD COLUMN cached_prompt_tokens INTEGER NOT NULL DEFAULT 0"
+            )
+        if "cache_write_tokens" not in cols:
+            conn.execute(
+                "ALTER TABLE usage_logs ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0"
+            )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_logs (user_id)")
         yield conn
         conn.commit()
@@ -213,12 +238,34 @@ def _usage_fields(usage: Dict[str, Any] | None) -> Dict[str, int]:
     Accepts keys:
       - prompt_tokens / completion_tokens / total_tokens
       - input_tokens  / output_tokens
-    Returns dict with prompt_tokens, completion_tokens, total_tokens.
+    Returns prompt/completion/total plus cached-read and cache-write tokens.
     """
     u = usage or {}
+    details = (
+        u.get("prompt_tokens_details")
+        or u.get("input_tokens_details")
+        or {}
+    )
+    if not isinstance(details, dict):
+        details = {}
+    cache_read = u.get("cached_prompt_tokens")
+    if cache_read is None:
+        cache_read = u.get("cache_read_input_tokens")
+    if cache_read is None:
+        cache_read = details.get("cached_tokens", 0)
+    cache_write = u.get("cache_write_tokens")
+    if cache_write is None:
+        cache_write = u.get("cache_creation_input_tokens")
+    if cache_write is None:
+        cache_write = details.get("cache_write_tokens", 0)
+
     prompt = u.get("prompt_tokens")
     if prompt is None:
         prompt = u.get("input_tokens", 0)
+        # Anthropic reports uncached input and cache read/write as separate
+        # top-level fields. Responses/OpenAI include cached reads in input.
+        if "cache_read_input_tokens" in u or "cache_creation_input_tokens" in u:
+            prompt = (prompt or 0) + (cache_read or 0) + (cache_write or 0)
     completion = u.get("completion_tokens")
     if completion is None:
         completion = u.get("output_tokens", 0)
@@ -227,6 +274,8 @@ def _usage_fields(usage: Dict[str, Any] | None) -> Dict[str, int]:
         total = (prompt or 0) + (completion or 0)
     return {
         "prompt_tokens": _coerce_int(prompt),
+        "cached_prompt_tokens": _coerce_int(cache_read),
+        "cache_write_tokens": _coerce_int(cache_write),
         "completion_tokens": _coerce_int(completion),
         "total_tokens": _coerce_int(total),
     }
@@ -258,17 +307,19 @@ def record(
     meta_json = json.dumps(payload, ensure_ascii=False)
 
     logger.debug(
-        "record(): model=%s label=%s user=%s prompt=%s completion=%s total=%s cost=%s",
-        model, label, user_id, fields["prompt_tokens"], fields["completion_tokens"],
-        fields["total_tokens"], cost
+        "record(): model=%s label=%s user=%s prompt=%s cached=%s cache_write=%s completion=%s total=%s cost=%s",
+        model, label, user_id, fields["prompt_tokens"],
+        fields["cached_prompt_tokens"], fields["cache_write_tokens"],
+        fields["completion_tokens"], fields["total_tokens"], cost
     )
 
     with _conn_rw() as c:
         c.execute(
             """
             INSERT INTO usage_logs
-              (ts_utc, model, label, user_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, meta_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (ts_utc, model, label, user_id, prompt_tokens, cached_prompt_tokens,
+               cache_write_tokens, completion_tokens, total_tokens, cost_usd, meta_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 _now_utc_iso(),
@@ -276,6 +327,8 @@ def record(
                 label,
                 str(user_id) if user_id else None,
                 fields["prompt_tokens"],
+                fields["cached_prompt_tokens"],
+                fields["cache_write_tokens"],
                 fields["completion_tokens"],
                 fields["total_tokens"],
                 _coerce_float(cost),
@@ -305,6 +358,23 @@ def record_response(model: str, response: Any, *, label: Optional[str] = None) -
     except Exception:
         logger.warning("record_response failed", exc_info=True)
 
+
+def record_metered(
+    service: str,
+    cost_usd: float,
+    *,
+    label: Optional[str] = None,
+    meta: Dict[str, Any] | None = None,
+) -> None:
+    """Record a per-call provider charge that is not token-metered."""
+    record(
+        service,
+        {},
+        _coerce_float(cost_usd),
+        label=label or "metered_tool",
+        meta={"metered_call": True, **(meta or {})},
+    )
+
 def last() -> Dict[str, Any]:
     """
     Return the most recent single exchange. If none exist, {}.
@@ -312,7 +382,8 @@ def last() -> Dict[str, Any]:
     with _conn_rw() as c:
         cur = c.execute(
             """
-            SELECT ts_utc, model, label, prompt_tokens, completion_tokens, total_tokens, cost_usd, meta_json
+            SELECT ts_utc, model, label, prompt_tokens, cached_prompt_tokens,
+                   cache_write_tokens, completion_tokens, total_tokens, cost_usd, meta_json
             FROM usage_logs
             ORDER BY id DESC
             LIMIT 1
@@ -327,10 +398,12 @@ def last() -> Dict[str, Any]:
         "model": row[1],
         "label": row[2],
         "prompt_tokens": row[3],
-        "completion_tokens": row[4],
-        "total_tokens": row[5],
-        "cost": float(row[6]),
-        "meta": json.loads(row[7] or "{}"),
+        "cached_prompt_tokens": row[4],
+        "cache_write_tokens": row[5],
+        "completion_tokens": row[6],
+        "total_tokens": row[7],
+        "cost": float(row[8]),
+        "meta": json.loads(row[9] or "{}"),
     }
     logger.debug("last(): %s", out)
     return out
@@ -340,6 +413,8 @@ def _aggregate_where(where_sql: str, args: tuple) -> Dict[str, Any]:
     SELECT
       COUNT(*)                               AS calls,
       COALESCE(SUM(prompt_tokens), 0)        AS prompt_tokens,
+      COALESCE(SUM(cached_prompt_tokens), 0) AS cached_prompt_tokens,
+      COALESCE(SUM(cache_write_tokens), 0)   AS cache_write_tokens,
       COALESCE(SUM(completion_tokens), 0)    AS completion_tokens,
       COALESCE(SUM(total_tokens), 0)         AS total_tokens,
       COALESCE(SUM(cost_usd), 0.0)           AS cost
@@ -348,13 +423,15 @@ def _aggregate_where(where_sql: str, args: tuple) -> Dict[str, Any]:
     """
     with _conn_rw() as c:
         cur = c.execute(sql, args)
-        row = cur.fetchone() or (0, 0, 0, 0, 0.0)
+        row = cur.fetchone() or (0, 0, 0, 0, 0, 0, 0.0)
     out = {
         "calls": row[0],
         "prompt_tokens": row[1],
-        "completion_tokens": row[2],
-        "total_tokens": row[3],
-        "cost": float(row[4]),
+        "cached_prompt_tokens": row[2],
+        "cache_write_tokens": row[3],
+        "completion_tokens": row[4],
+        "total_tokens": row[5],
+        "cost": float(row[6]),
     }
     logger.debug("_aggregate_where(%s, %s): %s", where_sql, args, out)
     return out

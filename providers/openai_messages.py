@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +12,7 @@ from providers.openai_client import (
     OPENAI_CHAT_MODEL,
     USE_RESPONSES,
     get_openai_client,
+    reasoning_kwargs,
     temperature_kwargs,
 )
 from providers.openai_images import (
@@ -18,6 +21,8 @@ from providers.openai_images import (
     normalize_image_inputs,
 )
 from services import usage_costs
+from services.agent_execution import execute_agent_tool, tool_result_text
+from services.agent_runs import AgentRunRecorder
 from services.tools_registry import (
     TOOL_SPECS,
     ToolSnapshot,
@@ -203,11 +208,13 @@ async def _create_chat_completion_with_token_fallback(
     max_tokens: int,
     tools: Optional[list] = None,
     tool_choice: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ):
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,
         **temperature_kwargs(model, temperature),
+        **reasoning_kwargs(model, reasoning_effort, responses=False),
     }
     if tools is not None:
         kwargs["tools"] = tools
@@ -234,11 +241,20 @@ async def _create_chat_completion_with_token_fallback(
                 max_tokens=max_tokens,
                 tools=tools,
                 tool_choice=tool_choice,
+                reasoning_effort=reasoning_effort,
             )
         if "max_completion_tokens" in msg and ("unsupported" in msg or "unknown" in msg):
             resp = await get_openai_client().chat.completions.create(
                 **kwargs,
                 max_tokens=max_tokens,
+            )
+            usage_costs.record_response(model, resp)
+            return resp
+        if "reasoning_effort" in msg and "reasoning_effort" in kwargs:
+            kwargs.pop("reasoning_effort", None)
+            resp = await get_openai_client().chat.completions.create(
+                **kwargs,
+                max_completion_tokens=max_tokens,
             )
             usage_costs.record_response(model, resp)
             return resp
@@ -349,18 +365,25 @@ async def _exec_tool(
     context: Optional[Dict[str, Any]] = None,
     *,
     tool_snapshot: ToolSnapshot | None = None,
+    recorder: AgentRunRecorder | None = None,
+    tool_trace: Optional[List[Dict[str, Any]]] = None,
+    step_index: int = 1,
 ) -> str:
     logging.debug("[openai.tools] Executing %s with args=%s", name, list(args.keys()))
     try:
-        result = await execute_tool(
+        if tool_snapshot is None:
+            tool_snapshot = get_tool_snapshot()
+        result = await execute_agent_tool(
             name,
             args,
             context=context,
             snapshot=tool_snapshot,
+            recorder=recorder,
+            trace=tool_trace,
+            step_index=step_index,
+            executor=execute_tool,
         )
-        if isinstance(result, str):
-            return result
-        return json.dumps(result, ensure_ascii=False)
+        return tool_result_text(result)
     except Exception as e:
         return f"tool_error: {name}: {e}"
 
@@ -429,10 +452,27 @@ async def _responses_tool_loop(
     forced_tool: Optional[str] = None,
     forced_tool_args: Optional[Dict[str, Any]] = None,
     tool_trace: Optional[List[Dict[str, Any]]] = None,
+    recorder: AgentRunRecorder | None = None,
+    reasoning_effort: Optional[str] = None,
+    max_elapsed_seconds: float = 45.0,
+    max_steps: int = 8,
 ):
     resp = first_resp
     current_input = list(messages)
+    started = time.monotonic()
+    step_index = 0
     for round_index in range(max_rounds):
+        if time.monotonic() - started >= max_elapsed_seconds:
+            if tool_trace is not None:
+                tool_trace.append({"name": "agent_limit", "status": "time_limit_reached"})
+            if recorder:
+                recorder.step(
+                    step_index=step_index + 1,
+                    phase="stop",
+                    status="time_limit_reached",
+                    error="max_elapsed_seconds",
+                )
+            break
         uses = _collect_tool_uses(resp)
         if not uses:
             break
@@ -442,15 +482,28 @@ async def _responses_tool_loop(
         elif raw_output:
             current_input.append(raw_output)
         for cid, name, args in uses:
+            if step_index >= max_steps:
+                current_input.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": cid,
+                        "output": '{"ok":false,"error":"agent_step_limit_reached"}',
+                    }
+                )
+                if tool_trace is not None:
+                    tool_trace.append({"name": name, "status": "step_limit_reached"})
+                continue
             if round_index == 0 and name == forced_tool and forced_tool_args:
                 args = {**(args or {}), **forced_tool_args}
-            if tool_trace is not None:
-                tool_trace.append({"name": name, "args": dict(args or {})})
+            step_index += 1
             output_text = await _exec_tool(
                 name,
                 args,
                 context=tool_context,
                 tool_snapshot=tool_snapshot,
+                recorder=recorder,
+                tool_trace=tool_trace,
+                step_index=step_index,
             )
             current_input.append({"type": "function_call_output", "call_id": cid, "output": str(output_text)})
         resp = await _responses_create(
@@ -459,6 +512,7 @@ async def _responses_tool_loop(
             tools=_normalize_tools(active_tools),
             max_output_tokens=max_tokens,
             **temperature_kwargs(model, temperature),
+            **reasoning_kwargs(model, reasoning_effort, responses=True),
         )
     return resp, current_input
 
@@ -473,6 +527,7 @@ async def generate_openai_response(
     model: str = OPENAI_CHAT_MODEL,
     temperature: float = 0.6,
     max_tokens: int = 800,
+    reasoning_effort: str | None = None,
 ) -> str:
     try:
         msgs = [{
@@ -490,6 +545,7 @@ async def generate_openai_response(
                 input=msgs,
                 max_output_tokens=max_tokens,
                 **temperature_kwargs(model, temperature),
+                **reasoning_kwargs(model, reasoning_effort, responses=True),
             )
             text = await _collect_responses_text_with_continuations(
                 messages=msgs,
@@ -506,6 +562,7 @@ async def generate_openai_response(
             messages=msgs,
             temperature=temperature,
             max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
         )
         return await _collect_chat_text_with_continuations(
             messages=msgs,
@@ -527,6 +584,7 @@ async def generate_openai_messages_response(
     model: str = OPENAI_CHAT_MODEL,
     max_tokens: int = 700,
     temperature: float = 0.6,
+    reasoning_effort: str | None = None,
 ) -> str:
     try:
         if USE_RESPONSES:
@@ -536,6 +594,7 @@ async def generate_openai_messages_response(
                 input=norm,
                 max_output_tokens=max_tokens,
                 **temperature_kwargs(model, temperature),
+                **reasoning_kwargs(model, reasoning_effort, responses=True),
             )
             text = await _collect_responses_text_with_continuations(
                 messages=norm,
@@ -551,6 +610,7 @@ async def generate_openai_messages_response(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            reasoning_effort=reasoning_effort,
         )
         return await _collect_chat_text_with_continuations(
             messages=messages,
@@ -570,6 +630,7 @@ async def generate_openai_messages_response_with_tools(
     messages: List[Dict[str, Any]],
     *,
     tools: Optional[list] = None,
+    allowed_tool_names: Optional[set[str]] = None,
     tool_context: Optional[Dict[str, Any]] = None,
     model: str = OPENAI_CHAT_MODEL,
     max_tokens: int = 700,
@@ -577,13 +638,49 @@ async def generate_openai_messages_response_with_tools(
     forced_tool: Optional[str] = None,
     forced_tool_args: Optional[Dict[str, Any]] = None,
     tool_trace: Optional[List[Dict[str, Any]]] = None,
+    reasoning_effort: str | None = None,
+    max_tool_rounds: int | None = None,
+    max_tool_seconds: float | None = None,
 ) -> str:
+    recorder: AgentRunRecorder | None = None
     try:
         # Capture schemas and handlers together. A hotload during this request
         # is visible to the next request, while this one remains internally
         # consistent through every tool-call round.
         tool_snapshot = get_tool_snapshot()
         active_tools = tool_snapshot.tool_specs() if tools is None else tools
+        if allowed_tool_names is not None:
+            active_tools = [
+                tool
+                for tool in active_tools
+                if tool.get("function", {}).get("name") in allowed_tool_names
+            ]
+        bounded_rounds = max(
+            1,
+            min(
+                int(max_tool_rounds or os.getenv("AGENT_MAX_TOOL_ROUNDS", "4")),
+                8,
+            ),
+        )
+        bounded_seconds = max(
+            5.0,
+            min(float(max_tool_seconds or os.getenv("AGENT_MAX_TOOL_SECONDS", "45")), 120.0),
+        )
+        bounded_steps = max(
+            1,
+            min(int(os.getenv("AGENT_MAX_TOOL_STEPS", "8")), 16),
+        )
+        if active_tools:
+            recorder = AgentRunRecorder(
+                provider="openai",
+                model=model,
+                context=tool_context,
+                max_steps=bounded_steps,
+                metadata={
+                    "responses_api": bool(USE_RESPONSES),
+                    "tool_generation": getattr(tool_snapshot, "generation", None),
+                },
+            )
         chat_tools = active_tools or None
         chat_tool_choice = "auto" if chat_tools else None
         messages_with_instruction = list(messages)
@@ -608,6 +705,22 @@ async def generate_openai_messages_response_with_tools(
                     "asks to search, look up, verify, check the latest information, or cite "
                     "sources."
                 )
+            if "reverse_image_search" in available_tool_names:
+                instruction_parts.append(
+                    "When the user asks to find the source, origin, or match for an attached "
+                    "image, call `reverse_image_search`. Keyword image search and ordinary "
+                    "web search are not substitutes. State which provider actually ran, "
+                    "distinguish exact/partial matches from merely similar images, and never "
+                    "claim a source when the tool reports no match. Use best-guess labels as "
+                    "follow-up web-search leads when needed."
+                )
+            if "get_agent_run_status" in available_tool_names:
+                instruction_parts.append(
+                    "When the user asks whether you actually searched, used a tool, or wants "
+                    "the status/evidence of an earlier task, call `get_agent_run_status`. It "
+                    "returns only that user's current conversation scope. Do not infer tool "
+                    "execution from prose when an audit record is available."
+                )
             if forced_tool == "web_search" and forced_tool in available_tool_names:
                 research_date = datetime.now(timezone.utc).date().isoformat()
                 instruction_parts.append(
@@ -624,6 +737,13 @@ async def generate_openai_messages_response_with_tools(
                     "source. If the search returns no usable current evidence, say that you "
                     "could not verify the answer instead of silently substituting model "
                     "memory."
+                )
+            if forced_tool == "reverse_image_search" and forced_tool in available_tool_names:
+                instruction_parts.append(
+                    "This request explicitly requires a genuine reverse-image lookup. Run it "
+                    "before answering. If it finds only visually similar images, say so. If "
+                    "the provider is unavailable or returns no matching page, report that "
+                    "plainly instead of guessing from visual inspection."
                 )
             if "summarize_url" in available_tool_names:
                 instruction_parts.append(
@@ -677,12 +797,14 @@ async def generate_openai_messages_response_with_tools(
             response_kwargs = dict(
                 model=model,
                 input=norm,
-                tools=_normalize_tools(active_tools),
                 max_output_tokens=max_tokens,
                 **temperature_kwargs(model, temperature),
+                **reasoning_kwargs(model, reasoning_effort, responses=True),
             )
             if responses_tool_choice is not None:
                 response_kwargs["tool_choice"] = responses_tool_choice
+            if active_tools:
+                response_kwargs["tools"] = _normalize_tools(active_tools)
             resp = await _responses_create(**response_kwargs)
             resp, current_input = await _responses_tool_loop(
                 resp,
@@ -690,16 +812,22 @@ async def generate_openai_messages_response_with_tools(
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                max_rounds=3,
+                max_rounds=bounded_rounds,
                 tool_context=tool_context,
                 tool_snapshot=tool_snapshot,
                 active_tools=active_tools,
                 forced_tool=forced_tool if force_available else None,
                 forced_tool_args=forced_tool_args,
                 tool_trace=tool_trace,
+                recorder=recorder,
+                reasoning_effort=reasoning_effort,
+                max_elapsed_seconds=bounded_seconds,
+                max_steps=bounded_steps,
             )
             text = _extract_responses_text(resp)
             if text:
+                if recorder:
+                    recorder.finish("completed")
                 return text
             final_resp = await _responses_create(
                 model=model,
@@ -717,10 +845,15 @@ async def generate_openai_messages_response_with_tools(
                 ],
                 max_output_tokens=max_tokens,
                 **temperature_kwargs(model, temperature),
+                **reasoning_kwargs(model, reasoning_effort, responses=True),
             )
             text = _extract_responses_text(final_resp)
             if text:
+                if recorder:
+                    recorder.finish("completed")
                 return text
+            if recorder:
+                recorder.finish("empty")
             return "I tried to use my tools but couldn't get a response. Could you rephrase?"
 
         resp = await _create_chat_completion_with_token_fallback(
@@ -730,6 +863,11 @@ async def generate_openai_messages_response_with_tools(
             tool_choice=chat_initial_tool_choice,
             max_tokens=max_tokens,
             temperature=temperature,
+            reasoning_effort=(
+                "none"
+                if (model or "").lower().startswith("gpt-5.6") and chat_tools
+                else reasoning_effort
+            ),
         )
         choice = resp.choices[0]
         if choice.finish_reason == "content_filter":
@@ -737,28 +875,44 @@ async def generate_openai_messages_response_with_tools(
 
         msg = choice.message
         current_msgs = list(messages_with_instruction)
-        for round_index in range(3):
+        started = time.monotonic()
+        step_index = 0
+        for round_index in range(bounded_rounds):
+            if time.monotonic() - started >= bounded_seconds:
+                if tool_trace is not None:
+                    tool_trace.append({"name": "agent_limit", "status": "time_limit_reached"})
+                break
             if not msg.tool_calls:
                 break
             current_msgs.append(msg)
             for tc in msg.tool_calls:
                 try:
                     args = json.loads(tc.function.arguments)
+                    if step_index >= bounded_steps:
+                        output = '{"ok":false,"error":"agent_step_limit_reached"}'
+                        if tool_trace is not None:
+                            tool_trace.append(
+                                {"name": tc.function.name, "status": "step_limit_reached"}
+                            )
+                        current_msgs.append(
+                            {"role": "tool", "tool_call_id": tc.id, "content": str(output)}
+                        )
+                        continue
                     if (
                         round_index == 0
                         and tc.function.name == forced_tool
                         and forced_tool_args
                     ):
                         args = {**(args or {}), **forced_tool_args}
-                    if tool_trace is not None:
-                        tool_trace.append(
-                            {"name": tc.function.name, "args": dict(args or {})}
-                        )
+                    step_index += 1
                     output = await _exec_tool(
                         tc.function.name,
                         args,
                         context=tool_context,
                         tool_snapshot=tool_snapshot,
+                        recorder=recorder,
+                        tool_trace=tool_trace,
+                        step_index=step_index,
                     )
                 except Exception as e:
                     output = f"Error: {e}"
@@ -770,17 +924,26 @@ async def generate_openai_messages_response_with_tools(
                 max_tokens=max_tokens,
                 tool_choice=chat_tool_choice,
                 tools=chat_tools,
+                reasoning_effort=(
+                    "none"
+                    if (model or "").lower().startswith("gpt-5.6") and chat_tools
+                    else reasoning_effort
+                ),
             )
             msg = resp.choices[0].message
             if resp.choices[0].finish_reason == "content_filter":
                 raise OpenAIModerationError("Response blocked by OpenAI content filter.")
         text = (msg.content or "").strip()
         _check_soft_refusal(text)
+        if recorder:
+            recorder.finish("completed" if text else "empty")
         return text
     except Exception as e:
         if isinstance(e, OpenAIModerationError):
             raise
         logging.exception("[openai.tools] error")
+        if recorder:
+            recorder.finish("failed")
         return f"⚠️ OpenAI tools error: {str(e)[:200]}"
 
 
@@ -807,8 +970,16 @@ async def generate_openai_response_tools(
     messages.append({"role": "user", "content": build_user_content_chat(prompt, image_list)})
     return await generate_openai_messages_response_with_tools(
         messages,
-        tool_context={"conversation_id": conversation_id, "user_id": str(user_id), "image_urls": image_list or []},
+        tool_context={
+            "conversation_id": conversation_id,
+            "user_id": str(user_id),
+            "image_urls": image_list or [],
+            "request_text": prompt,
+            "intent": "chat",
+        },
         model=OPENAI_CHAT_MODEL,
         max_tokens=max_tokens,
         temperature=temperature,
+        reasoning_effort="low",
+        max_tool_rounds=max_tool_rounds,
     )

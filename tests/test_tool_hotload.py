@@ -180,7 +180,9 @@ class ProviderToolSnapshotTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         create = AsyncMock(return_value=response)
-        with patch.object(openai_messages, "get_tool_snapshot", return_value=registry.snapshot()), patch.object(
+        with patch.object(openai_messages, "USE_RESPONSES", False), patch.object(
+            openai_messages, "get_tool_snapshot", return_value=registry.snapshot()
+        ), patch.object(
             openai_messages,
             "_create_chat_completion_with_token_fallback",
             create,

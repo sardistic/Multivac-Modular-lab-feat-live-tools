@@ -12,6 +12,7 @@ from services.memory_client import (
     runtime,
 )
 from services.memory_queries import (
+    build_channel_message_window,
     build_message_window,
     build_timeline_from_docs,
     build_timeline_prompt_block,
@@ -30,6 +31,7 @@ __all__ = [
     "OS_PASS",
     "OS_USER",
     "OS_VERIFY",
+    "build_channel_message_window",
     "build_message_window",
     "build_timeline_from_docs",
     "build_timeline_prompt_block",

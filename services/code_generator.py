@@ -70,6 +70,7 @@ async def _generate_code_response(
         model=selected_model,
         max_tokens=max_tokens,
         temperature=0.1,
+        reasoning_effort="high",
     )
     if response.startswith("⚠️ OpenAI"):
         raise RuntimeError(response)
