@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from providers import claude_utils, openai_messages
-from services.agent_execution import execute_agent_tool
+from services.agent_execution import consume_tool_call_budget, execute_agent_tool
 from services.agent_runs import AgentRunStore
 from services.tool_handlers import handle_get_agent_run_status
 from services import usage_costs
@@ -54,7 +54,15 @@ class AgentRunStoreTests(unittest.IsolatedAsyncioTestCase):
             tool_name="reverse_image_search",
             status="completed",
             args={"query": "private manga title", "image_index": 0},
-            result={"ok": True, "pages_with_matches": [{"url": "https://source.test/page"}]},
+            result={
+                "ok": True,
+                "provider_chain": [
+                    {"provider": "google_cloud_vision_web_detection", "status": "completed"},
+                    {"provider": "serpapi_google_lens", "status": "completed"},
+                ],
+                "pages_with_matches": [{"url": "https://source.test/page"}],
+                "visually_similar_images": [{"url": "https://similar.test/panel"}],
+            },
         )
         store.finish(run_id, "completed")
 
@@ -65,6 +73,8 @@ class AgentRunStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(b"private manga title", raw)
         step = store.steps(run_id)[0]
         self.assertIn("https://source.test/page", step["result_json"])
+        self.assertIn("https://similar.test/panel", step["result_json"])
+        self.assertIn("serpapi_google_lens", step["result_json"])
         metadata = json.loads(store.recent(limit=1)[0]["metadata_json"])
         self.assertIn("request_sha256", metadata)
 
@@ -121,6 +131,16 @@ class AgentRunStoreTests(unittest.IsolatedAsyncioTestCase):
         recorder.retry.assert_called_once()
         self.assertEqual([item["status"] for item in trace], ["failed", "completed"])
 
+    def test_per_tool_call_budget_blocks_only_after_allowed_calls(self):
+        counts = {}
+        limits = {"web_search": 2}
+        self.assertIsNone(consume_tool_call_budget("web_search", limits, counts))
+        self.assertIsNone(consume_tool_call_budget("web_search", limits, counts))
+        blocked = consume_tool_call_budget("web_search", limits, counts)
+        self.assertEqual(blocked["error"], "tool_call_limit_reached")
+        self.assertEqual(blocked["limit"], 2)
+        self.assertIsNone(consume_tool_call_budget("summarize_url", limits, counts))
+
     async def test_status_tool_is_scoped_to_current_user_and_conversation(self):
         with patch("services.agent_runs._state_db_path", return_value=self.path):
             store = AgentRunStore()
@@ -145,6 +165,44 @@ class AgentRunStoreTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProviderHarnessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_responses_loop_enforces_per_tool_call_budget(self):
+        calls = [
+            SimpleNamespace(
+                type="function_call",
+                call_id=f"call-{index}",
+                name="web_search",
+                arguments='{"q":"candidate"}',
+            )
+            for index in range(3)
+        ]
+        first = SimpleNamespace(output=calls)
+        final = SimpleNamespace(output=[], output_text="done")
+        trace = []
+        recorder = MagicMock()
+        with patch.object(
+            openai_messages,
+            "_responses_create",
+            new=AsyncMock(return_value=final),
+        ), patch.object(
+            openai_messages,
+            "_exec_tool",
+            new=AsyncMock(return_value='{"ok":true}'),
+        ) as execute:
+            _response, current_input = await openai_messages._responses_tool_loop(
+                first,
+                [{"role": "user", "content": "find it"}],
+                active_tools=[],
+                tool_snapshot=SimpleNamespace(),
+                recorder=recorder,
+                tool_trace=trace,
+                tool_call_limits={"web_search": 2},
+            )
+
+        self.assertEqual(execute.await_count, 2)
+        self.assertEqual(trace[-1], {"name": "web_search", "status": "call_limit_reached"})
+        self.assertIn("tool_call_limit_reached", current_input[-1]["output"])
+        recorder.step.assert_called_once()
+
     async def test_fable_uses_shared_tool_loop_and_returns_final_text(self):
         use = SimpleNamespace(type="tool_use", id="tool-1", name="web_search", input={"q": "old"})
         first = SimpleNamespace(

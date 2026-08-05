@@ -57,6 +57,13 @@ base64 image inputs and builds on the configured Google credential. It reports
 full/partial image matches, pages containing matches, visual similarities,
 entities, and best-guess labels separately. SerpApi Google Lens is an optional
 fallback only when a separate key is configured and the image is a public URL.
+Auto mode escalates not only provider failures but also successful Vision
+responses with no exact/partial match or source page; a technically successful
+no-match must not suppress the stronger Lens provider.
+Discord images retain an index-aligned original attachment URL only in the
+request's tool context while their data URL continues to feed the vision model;
+this lets Lens fetch the public image without persisting or exposing raw image
+content in agent-run evidence.
 
 Vision prefers a dedicated `GOOGLE_VISION_API_KEY`, falling back to the legacy
 shared `GOOGLE_API_KEY` only for compatibility. This keeps Cloud Vision and
@@ -68,6 +75,12 @@ tool and deep model before generic visual-description routing. Provider errors,
 missing configuration, and no-match results remain explicit; visual similarity
 must never be presented as an exact source. Successful provider calls receive
 configurable per-call list-price accounting, separate from model token cost.
+The result and durable run evidence retain a bounded provider chain with match
+semantics and counts. Lens exact matches remain distinct from visual candidates;
+the model must open or independently corroborate a candidate page before naming
+it as a verified source. Reverse-image runs permit one combined reverse lookup,
+at most two targeted web searches, and at most two page reads so weak keyword
+guesses cannot consume the entire general agent budget.
 
 ## 2026-08-04: Account for cached tokens and current tier pricing
 
