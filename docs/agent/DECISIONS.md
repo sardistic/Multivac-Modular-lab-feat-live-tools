@@ -58,6 +58,11 @@ full/partial image matches, pages containing matches, visual similarities,
 entities, and best-guess labels separately. SerpApi Google Lens is an optional
 fallback only when a separate key is configured and the image is a public URL.
 
+Vision prefers a dedicated `GOOGLE_VISION_API_KEY`, falling back to the legacy
+shared `GOOGLE_API_KEY` only for compatibility. This keeps Cloud Vision and
+Custom Search API restrictions independently least-privileged when Google does
+not permit the services on the same restricted key.
+
 Attachment-aware source/match wording deterministically routes to the reverse
 tool and deep model before generic visual-description routing. Provider errors,
 missing configuration, and no-match results remain explicit; visual similarity

@@ -1,10 +1,12 @@
 """Provider-transparent reverse-image lookup.
 
-Google Cloud Vision Web Detection is the primary path because Multivac already
-has a Google API credential and Discord images are collected as data URLs. An
-optional SerpApi Google Lens path is used only when configured and the image is
-available as a public HTTP(S) URL. No provider result is described as a match
-unless the provider returned a matching image or page.
+Google Cloud Vision Web Detection is the primary path because Discord images
+are collected as data URLs. It prefers a dedicated Vision credential so Google
+Custom Search restrictions can remain isolated, with the legacy shared key as
+a compatibility fallback. An optional SerpApi Google Lens path is used only
+when configured and the image is available as a public HTTP(S) URL. No provider
+result is described as a match unless the provider returned a matching image
+or page.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from config import GOOGLE_API_KEY, SERPAPI_API_KEY
+from config import GOOGLE_VISION_API_KEY, SERPAPI_API_KEY
 
 
 logger = logging.getLogger("reverse_image_search")
@@ -150,7 +152,7 @@ def _vision_result(data: dict[str, Any], limit: int) -> dict[str, Any]:
 
 
 async def _google_vision(image_input: str, limit: int) -> dict[str, Any]:
-    if not GOOGLE_API_KEY:
+    if not GOOGLE_VISION_API_KEY:
         return {"ok": False, "error": "google_api_key_not_configured"}
     content = await _image_base64(image_input)
     payload = {
@@ -165,7 +167,7 @@ async def _google_vision(image_input: str, limit: int) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
             _VISION_URL,
-            headers={"x-goog-api-key": GOOGLE_API_KEY},
+            headers={"x-goog-api-key": GOOGLE_VISION_API_KEY},
             json=payload,
         )
     if response.status_code != 200:
@@ -291,7 +293,7 @@ async def reverse_image_search(
         "error": "no_reverse_image_provider_succeeded",
         "attempts": attempts,
         "configuration": {
-            "google_vision_available": bool(GOOGLE_API_KEY),
+            "google_vision_available": bool(GOOGLE_VISION_API_KEY),
             "serpapi_lens_available": bool(SERPAPI_API_KEY),
         },
     }

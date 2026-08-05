@@ -69,7 +69,7 @@ class ReverseImageSearchTests(unittest.IsolatedAsyncioTestCase):
         captured = {}
         response = _Response({"responses": [{"webDetection": {}}]})
         data_url = "data:image/png;base64," + base64.b64encode(b"image-bytes").decode()
-        with patch.object(reverse, "GOOGLE_API_KEY", "test-key"), patch.object(
+        with patch.object(reverse, "GOOGLE_VISION_API_KEY", "test-key"), patch.object(
             reverse.httpx,
             "AsyncClient",
             return_value=_AsyncClient(response, captured),
