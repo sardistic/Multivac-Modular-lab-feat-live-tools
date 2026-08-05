@@ -9,6 +9,7 @@ from config import (
     OPENAI_CODE_MODEL as _CONFIG_CODE_MODEL,
     OPENAI_DEEP_MODEL as _CONFIG_DEEP_MODEL,
     OPENAI_DEFAULT_MODEL,
+    OPENAI_USE_RESPONSES,
     OPENAI_INTENT_MODEL as _CONFIG_INTENT_MODEL,
     OPENAI_STANDARD_MODEL as _CONFIG_STANDARD_MODEL,
     OPENAI_TINY_MODEL as _CONFIG_TINY_MODEL,
@@ -23,7 +24,7 @@ def get_openai_client() -> AsyncOpenAI:
     return openai_client
 
 
-USE_RESPONSES = os.getenv("OPENAI_USE_RESPONSES", "").lower() in {"1", "true", "yes", "y", "on"}
+USE_RESPONSES = OPENAI_USE_RESPONSES
 OPENAI_CHAT_MODEL = OPENAI_DEFAULT_MODEL
 OPENAI_CODE_MODEL = _CONFIG_CODE_MODEL
 OPENAI_DEEP_MODEL = _CONFIG_DEEP_MODEL
@@ -52,3 +53,18 @@ def temperature_kwargs(model: str, temperature: float | None) -> dict:
     if temperature is None or not model_supports_temperature(model):
         return {}
     return {"temperature": temperature}
+
+
+def reasoning_kwargs(model: str, effort: str | None, *, responses: bool) -> dict:
+    """Return the endpoint-specific reasoning control for supported models."""
+    if not effort or not is_reasoning_model(model):
+        return {}
+    normalized = effort.strip().lower()
+    allowed = {"low", "medium", "high"}
+    if (model or "").lower().startswith("gpt-5.6"):
+        allowed.update({"none", "xhigh", "max"})
+    if normalized not in allowed:
+        return {}
+    if responses:
+        return {"reasoning": {"effort": normalized}}
+    return {"reasoning_effort": normalized}

@@ -1,6 +1,6 @@
 # discord_bot.py
 # Discord bot triggered by mentions/replies: classifies intent, then routes to
-# chat (ES-backed per-user context), search, weather/stock, URL summarize,
+# chat (bounded multi-speaker channel context plus per-user memory), search, weather/stock, URL summarize,
 # image/video generation and editing. Replies use a live progress bar and
 # expand/collapse UI.
 
@@ -95,6 +95,7 @@ from bot.intent_dispatcher import (
     resolve_keyword_intent,
     validate_classified_intent,
 )
+from bot.channel_context import fetch_recent_channel_context
 from bot.message_inputs import (
     collect_gemini_parts,
     collect_image_inputs,
@@ -2154,6 +2155,7 @@ async def _builtin_on_message(message: discord.Message):
     image_urls = await collect_image_inputs(message, ref_msg, image_url_to_base64)
     gemini_parts = await collect_gemini_parts(message, ref_msg, image_urls)
     has_attachments = has_visual_inputs(message, ref_msg) or bool(image_urls or gemini_parts)
+    channel_context = await fetch_recent_channel_context(message, bot.user)
     if preflight_status is not None:
         with contextlib.suppress(Exception):
             await preflight_status.edit(
@@ -2178,25 +2180,32 @@ async def _builtin_on_message(message: discord.Message):
 
     intent = resolve_keyword_intent(raw_prompt, prompt, has_attachments)
     if intent is None:
-        # Give the classifier the last few real turns (user AND assistant) so
-        # "do that" right after the bot offered something routes to chat, not
-        # to a blind clarification.
+        # Give the classifier the last few real channel turns, including other
+        # speakers, so a follow-up can resolve the shared topic without
+        # collapsing the channel into the requester's private history.
         recent_turns = None
+        if channel_context:
+            recent_turns = [
+                f"{m.get('role', 'user')}: {(m.get('content') or '')[:300]}"
+                for m in channel_context[-4:]
+                if (m.get("content") or "").strip()
+            ] or None
         try:
             from services.memory_utils import build_message_window
 
-            window = await asyncio.to_thread(
-                build_message_window,
-                guild_id=message.guild.id if message.guild else "DM",
-                channel_id=message.channel.id,
-                user_id=user_id,
-                limit_msgs=4,
-            )
-            recent_turns = [
-                f"{m.get('role', 'user')}: {(m.get('content') or '')[:200]}"
-                for m in (window or [])
-                if (m.get("content") or "").strip()
-            ] or None
+            if not recent_turns:
+                window = await asyncio.to_thread(
+                    build_message_window,
+                    guild_id=message.guild.id if message.guild else "DM",
+                    channel_id=message.channel.id,
+                    user_id=user_id,
+                    limit_msgs=4,
+                )
+                recent_turns = [
+                    f"{m.get('role', 'user')}: {(m.get('content') or '')[:200]}"
+                    for m in (window or [])
+                    if (m.get("content") or "").strip()
+                ] or None
         except Exception:
             logger.warning("classifier context window failed", exc_info=True)
         if not recent_turns and seen and seen.get("last_prompt"):
@@ -2208,7 +2217,11 @@ async def _builtin_on_message(message: discord.Message):
             recent_turns=recent_turns,
             prev_intent=seen.get("last_intent") if seen else None,
         )
-        intent = validate_classified_intent(intent, prompt)
+        intent = validate_classified_intent(
+            intent,
+            prompt,
+            has_attachments=has_attachments,
+        )
 
     usage_costs.set_request_context(
         user_id=str(user_id),
@@ -2247,6 +2260,7 @@ async def _builtin_on_message(message: discord.Message):
                 is_reply_to_bot=is_reply_to_bot,
                 image_urls=image_urls,
                 gemini_parts=gemini_parts,
+                channel_context=channel_context,
                 general_url_match=general_url_match,
                 stream_ok=STREAM_OK,
                 get_location_details=get_location_details,

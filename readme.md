@@ -10,7 +10,9 @@ Multivac is a modular Discord bot with multiple chat providers, image and video 
 - Image generation, image editing, image description, and multimodal file analysis
 - Sora and Veo video generation, including image-to-video references and Sora remix flow
 - Reply-aware video prompts that can turn a replied-to message into the generation brief
-- Weather, stock, URL summarization, web search, YouTube transcript, and repo inspection tools
+- Weather, stock, URL summarization, web search, genuine reverse-image lookup, YouTube transcript, and repo inspection tools
+- Responses-first OpenAI orchestration plus the same bounded tool loop for Claude Fable
+- Durable, user-scoped agent-run status with step/retry/approval/evidence audit data
 - User facts, saved behavioral instructions, user-awareness profiles, and time-passage context
 - Default `Mistake Not…` conversational identity with durable conversation-scoped opt-out and resume controls
 - Owner diagnostic helpers for redacted bot log reads and tool listing
@@ -55,7 +57,15 @@ The bot is designed to boot with partial configuration. Missing keys disable onl
 When tool-calling is available, current callable functions include:
 
 - `web_search`
-  Search the web through the configured search backend.
+  Search the web through the configured search backend. Its `image` flag is a
+  keyword image search, not reverse-image matching.
+- `reverse_image_search`
+  Submit an attached image to Google Cloud Vision Web Detection, with an
+  optional SerpApi Google Lens fallback for public image URLs. Results identify
+  the provider and separate exact/partial matches from merely similar images.
+- `get_agent_run_status`
+  Report completed model/tool runs for only the requesting guild/channel/user,
+  including actual tools, retries, approvals, timing, and public evidence URLs.
 - `get_weather`
   Resolve current or ranged weather requests.
 - `get_stock_quote`
@@ -92,6 +102,39 @@ When tool-calling is available, current callable functions include:
   Find provider API call sites.
 - `git_repo_info`
   Return repository metadata.
+
+OpenAI uses the Responses API by default so current reasoning models can reason
+and call tools on the supported surface. Set `OPENAI_USE_RESPONSES=false` only
+as an operational rollback. Reasoning and tool exposure are task-shaped:
+tiny/light/standard chat carries no tool schemas; current-information research
+gets the web reader/search set; reverse-image work gets the reverse/search/read
+set and the deep model; difficult general analysis gets the deep model and the
+full registry. Explicit Claude Fable chat uses the same immutable registry
+snapshot and bounded executor rather than a separate hard-coded search path.
+
+Every tool loop has independent round, step, and elapsed-time caps. Read-only
+transient failures retry once. State-changing or billable model tools require
+an explicit matching request in the current user message. The existing
+post-draft verifier remains the final answer check. Durable traces contain
+orchestration metadata and public evidence links, not prompts, transcripts,
+attached image bytes, user profiles, memories, credentials, or private model
+reasoning. The trace/status scope follows the same guild/channel/user boundary
+as conversation personalization.
+
+Chat context is channel-aware rather than pretending every Discord exchange is
+one-to-one. When a user mentions or replies to Multivac, the bot reads a bounded
+window of the immediately preceding channel conversation (up to 24 messages and
+12,000 characters), labels every human speaker by display name and stable user
+ID, excludes unrelated bots, and supplies the same shared context to intent
+routing, OpenAI, Claude, and Gemini. This live window is processed ephemerally;
+the bot's existing indexed trigger/reply history is only a fallback if Discord
+history cannot be read. The window never crosses the current guild/channel.
+
+Shared conversation does not mean shared identity. Only the latest speaker's
+profile, saved memories, behavioral instruction, and persona setting are loaded.
+Earlier participant messages help resolve topics, references, and what Multivac
+said to somebody else, but they are not active instructions or authorization and
+are never written into the current requester's personal memory.
 
 Normal user-facing prose uses the compact `Mistake Not…` identity by default.
 The identity changes voice only; it does not change safety rules, tools, memory,
@@ -180,6 +223,8 @@ Examples:
 - no `ANTHROPIC_API_KEY`: Claude path is unavailable
 - no `STABILITY_KEY`: Stability image backend is unavailable
 - no `GOOGLE_API_KEY` or `GOOGLE_CSE_ID`: Google CSE search is unavailable
+- no Cloud Vision Web Detection access on `GOOGLE_API_KEY`: the primary reverse-image provider is unavailable
+- no `SERPAPI_API_KEY`: the optional public-URL Google Lens fallback is unavailable
 - no `OPENWEATHER_API_KEY`: weather lookup and weather-widget flows are unavailable
 - no `GEMINI_API_KEY`: Veo video paths are unavailable
 - no OpenSearch server: memory auto-disables and the bot continues running
@@ -207,6 +252,7 @@ ANTHROPIC_API_KEY=...
 STABILITY_KEY=...
 GOOGLE_API_KEY=...
 GOOGLE_CSE_ID=...
+SERPAPI_API_KEY=...
 OPENWEATHER_API_KEY=...
 OPENSEARCH_HOST=...
 OPENSEARCH_USER=...
@@ -215,7 +261,19 @@ OPENSEARCH_VERIFY_CERTS=false
 OPENSEARCH_ENABLED=true
 REFLECTION_ENABLED=false
 REFLECTION_DAILY_BUDGET_USD=1.50
+OPENAI_USE_RESPONSES=true
+AGENT_TRACE_ENABLED=true
+AGENT_MAX_TOOL_ROUNDS=4
+AGENT_MAX_TOOL_STEPS=8
+AGENT_MAX_TOOL_SECONDS=45
 ```
+
+Reverse-image provider call estimates use configurable list-price values before
+free tiers: `GOOGLE_VISION_WEB_COST_PER_CALL_USD` defaults to `0.0035`, and
+`SERPAPI_LENS_COST_PER_CALL_USD` defaults to `0.025`. Token accounting separates
+ordinary input, cache reads, cache writes, and output for the current GPT-5.6
+and Claude Fable rates. Override price tables with `OPENAI_PRICE_JSON` when a
+provider changes rates or an account has custom pricing.
 
 ## Install
 

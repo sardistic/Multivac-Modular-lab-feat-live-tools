@@ -53,6 +53,20 @@ async def handle_web_search(args: Dict[str, Any]) -> Dict[str, Any] | list:
     gl = (args or {}).get("gl")
     lr = (args or {}).get("lr")
     safe = (args or {}).get("safe")
+    if bool((args or {}).get("image")):
+        try:
+            from services.google_search import google_web_search
+
+            return await google_web_search(
+                q,
+                num=num,
+                gl=gl,
+                lr=lr,
+                safe=safe or "off",
+                image=True,
+            )
+        except Exception as e:
+            return {"ok": False, "error": f"keyword_image_search_failed: {e}"}
     return await asyncio.to_thread(
         web_search,
         q,
@@ -61,6 +75,95 @@ async def handle_web_search(args: Dict[str, Any]) -> Dict[str, Any] | list:
         lr=lr,
         safe=safe,
     )
+
+
+async def handle_reverse_image_search(args: Dict[str, Any]) -> Dict[str, Any]:
+    from services.reverse_image_search import reverse_image_search
+
+    ctx = (args or {}).get("_context", {})
+    images = list(ctx.get("image_urls") or [])
+    try:
+        image_index = int((args or {}).get("image_index", 0) or 0)
+    except (TypeError, ValueError):
+        image_index = 0
+    if not images:
+        return {
+            "ok": False,
+            "lookup_type": "reverse_image_search",
+            "error": "no_attached_image_in_current_request",
+        }
+    if image_index < 0 or image_index >= len(images):
+        return {
+            "ok": False,
+            "lookup_type": "reverse_image_search",
+            "error": "image_index_out_of_range",
+            "available_images": len(images),
+        }
+    return await reverse_image_search(
+        images[image_index],
+        mode=str((args or {}).get("mode") or "all"),
+        max_results=(args or {}).get("max_results", 10),
+    )
+
+
+async def handle_get_agent_run_status(args: Dict[str, Any]) -> Dict[str, Any]:
+    import json
+
+    from services.agent_runs import AgentRunStore
+
+    ctx = (args or {}).get("_context", {})
+    guild = str(ctx.get("guild_id") or "DM")
+    channel = str(ctx.get("channel_id") or ctx.get("conversation_id") or "")
+    user_id = str(ctx.get("user_id") or "")
+    if not channel or not user_id:
+        return {"ok": False, "error": "missing_context_for_agent_status"}
+    scope_key = f"{guild}:{channel}:{user_id}"
+    requested = str((args or {}).get("run_id") or "").strip()
+    try:
+        limit = max(1, min(int((args or {}).get("limit", 3)), 10))
+    except (TypeError, ValueError):
+        limit = 3
+    store = AgentRunStore()
+    rows = store.recent(scope_key=scope_key, limit=max(limit * 3, 10))
+    rows = [row for row in rows if row.get("status") != "running"]
+    if requested:
+        rows = [row for row in rows if row.get("run_id") == requested]
+    rows = rows[:limit]
+    runs = []
+    for row in rows:
+        steps = []
+        for step in store.steps(row["run_id"]):
+            try:
+                result = json.loads(step.get("result_json") or "{}")
+            except Exception:
+                result = {}
+            steps.append(
+                {
+                    "step": step.get("step_index"),
+                    "phase": step.get("phase"),
+                    "tool": step.get("tool_name"),
+                    "status": step.get("status"),
+                    "attempt": step.get("attempt"),
+                    "duration_ms": step.get("duration_ms"),
+                    "evidence": result,
+                    "error": step.get("error"),
+                }
+            )
+        runs.append(
+            {
+                "run_id": row.get("run_id"),
+                "created_at": row.get("created_at"),
+                "provider": row.get("provider"),
+                "model": row.get("model"),
+                "intent": row.get("intent"),
+                "status": row.get("status"),
+                "steps": row.get("step_count"),
+                "retries": row.get("retry_count"),
+                "approval": row.get("approval_state"),
+                "trace": steps,
+            }
+        )
+    return {"ok": True, "scope": "current_conversation_user", "runs": runs}
 
 
 async def handle_get_stock_quote(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -468,6 +571,8 @@ async def handle_list_available_tools(args: Dict[str, Any]) -> Dict[str, Any]:
 
 TOOL_HANDLERS = {
     "web_search": handle_web_search,
+    "reverse_image_search": handle_reverse_image_search,
+    "get_agent_run_status": handle_get_agent_run_status,
     "get_weather": handle_get_weather,
     "get_stock_quote": handle_get_stock_quote,
     "summarize_url": handle_summarize_url,

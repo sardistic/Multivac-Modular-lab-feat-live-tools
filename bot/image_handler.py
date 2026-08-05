@@ -8,7 +8,7 @@ import re
 
 import discord
 
-from bot.chat_context import build_chat_context
+from bot.chat_context import build_chat_context, build_shared_channel_system_message
 from bot.response_policy import apply_personality_overrides, build_message_user_style_system_messages
 import urllib.request
 
@@ -544,6 +544,7 @@ async def handle_describe_image_intent(
     stream_ok: bool,
     live_status_with_progress,
     send_or_edit_with_truncation,
+    channel_context=None,
 ):
     if ref_msg and (ref_msg.content or "").strip():
         if is_reply_to_bot:
@@ -553,10 +554,14 @@ async def handle_describe_image_intent(
     else:
         reply_context = ""
 
-    style_messages = build_message_user_style_system_messages(
-        message,
-        intent="describe_image",
-    )
+    style_messages = [
+        build_shared_channel_system_message(message),
+        *build_message_user_style_system_messages(
+            message,
+            intent="describe_image",
+        ),
+        *list(channel_context or []),
+    ]
 
     async def _describe():
         extracted_notes = await invoke_provider(

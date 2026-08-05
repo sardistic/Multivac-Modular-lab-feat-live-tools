@@ -82,13 +82,15 @@ FINNHUB_API_TOKEN       = get_metadata("FINNHUB_API_TOKEN")
 # NEW: Google Programmable Search (Custom Search JSON API)
 GOOGLE_API_KEY          = get_metadata("GOOGLE_API_KEY")     # <-- required by web_search
 GOOGLE_CSE_ID           = get_metadata("GOOGLE_CSE_ID")      # <-- required by web_search
+SERPAPI_API_KEY         = get_metadata("SERPAPI_API_KEY")    # optional Google Lens fallback
 GEMINI_API_KEY          = get_metadata("GEMINI_API_KEY")     # <-- for Gemini image gen
 ANTHROPIC_API_KEY       = get_metadata("ANTHROPIC_API_KEY")  # <-- for Claude
 ANTHROPIC_MODEL         = get_metadata("ANTHROPIC_MODEL", "claude-fable-5")
 ANTHROPIC_INTENT_MODEL  = get_metadata("ANTHROPIC_INTENT_MODEL", "claude-sonnet-5")
 
-# Optional toggle for Responses API
-OPENAI_USE_RESPONSES    = _truthy(get_metadata("OPENAI_USE_RESPONSES", "false"))
+# Responses is the supported reasoning + tool surface for current GPT-5.6
+# models. Operators can still set this false for a bounded rollback.
+OPENAI_USE_RESPONSES    = _truthy(get_metadata("OPENAI_USE_RESPONSES", "true"), True)
 
 # --- OpenSearch ---
 OPENSEARCH_HOST         = get_metadata("OPENSEARCH_HOST", "https://localhost:9200")

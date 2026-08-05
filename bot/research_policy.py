@@ -32,6 +32,19 @@ _CURRENT_ROLE_RE = re.compile(
     re.IGNORECASE,
 )
 _EXPLICIT_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+_REVERSE_IMAGE_RE = re.compile(
+    r"(?:\breverse(?:[- ]image)?\s+search\b|"
+    r"\bsearch\s+(?:for\s+)?(?:this|that|the)\s+(?:image|picture|photo|panel)\b|"
+    r"\bfind\s+(?:me\s+)?(?:the\s+)?(?:source|origin|match)\b|"
+    r"\bwhere\s+(?:is|was|did)\s+(?:this|that|the\s+(?:image|picture|photo|panel))\b.{0,25}\bfrom\b|"
+    r"\bidentify\s+(?:the\s+)?(?:source|manga|comic|anime|art(?:ist|work)?)\b)",
+    re.IGNORECASE,
+)
+
+
+def is_reverse_image_request(prompt: str, *, has_images: bool) -> bool:
+    """Require both content-search wording and an image in this request."""
+    return bool(has_images and _REVERSE_IMAGE_RE.search(prompt or ""))
 
 
 def requires_fresh_web(prompt: str) -> bool:

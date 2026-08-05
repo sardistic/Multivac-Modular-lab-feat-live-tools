@@ -256,7 +256,7 @@ class ProviderDraftVerifierFlowTests(unittest.IsolatedAsyncioTestCase):
             generate,
         ), patch.object(
             provider_intents,
-            "build_message_window",
+            "build_channel_message_window",
             return_value=[],
         ), patch.object(
             provider_intents,
@@ -309,7 +309,7 @@ class ProviderDraftVerifierFlowTests(unittest.IsolatedAsyncioTestCase):
             generate,
         ), patch.object(
             provider_intents,
-            "build_message_window",
+            "build_channel_message_window",
             return_value=[],
         ), patch.object(
             provider_intents,
@@ -344,9 +344,11 @@ class ProviderDraftVerifierFlowTests(unittest.IsolatedAsyncioTestCase):
                 ref_msg=None,
             )
 
-        search.assert_awaited_once()
-        read.assert_awaited_once()
+        search.assert_not_awaited()
+        read.assert_not_awaited()
         self.assertEqual(generate.await_count, 2)
+        self.assertEqual(generate.await_args.kwargs["forced_tool"], "web_search")
+        self.assertIn("2026 world cup final winner", generate.await_args.kwargs["forced_tool_args"]["q"])
         self.assertEqual(send.await_args.args[0], "Spain won.")
 
 

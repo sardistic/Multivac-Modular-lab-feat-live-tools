@@ -124,6 +124,67 @@ def build_message_window(
     return [{"role": (h.get("role") or "user"), "content": (h.get("content") or "")} for h in hits]
 
 
+def build_channel_message_window(
+    *,
+    guild_id: str | int,
+    channel_id: str | int,
+    current_user_id: str | int,
+    current_display_name: str | None = None,
+    exclude_message_id: str | int | None = None,
+    limit_msgs: int = 24,
+) -> List[Dict[str, str]]:
+    """Return indexed shared-channel turns with stable speaker attribution.
+
+    This is intentionally separate from ``build_message_window``. The latter
+    remains user-scoped for personal recall/profile behavior; this function is
+    only the fallback conversational window when live Discord history cannot
+    be read.
+    """
+    filters = [
+        {"term": {"guild_id": str(guild_id)}},
+        {"term": {"channel_id": str(channel_id)}},
+    ]
+    resp = search_raw(
+        {"bool": {"filter": filters}},
+        size=max(1, min(int(limit_msgs), 50)),
+        source=["role", "content", "timestamp", "user_id", "message_id", "reply_to_id"],
+        sort=[{"timestamp": {"order": "desc"}}],
+    )
+    hits = [h.get("_source", {}) for h in resp.get("hits", {}).get("hits", [])]
+    hits.reverse()
+    current_id = str(current_user_id)
+    current_name = " ".join(str(current_display_name or "").split())[:80]
+    turns: List[Dict[str, str]] = []
+    for source in hits:
+        if exclude_message_id is not None and str(source.get("message_id") or "") == str(exclude_message_id):
+            continue
+        content = str(source.get("content") or "").strip()
+        if not content:
+            continue
+        speaker_id = str(source.get("user_id") or "unknown")
+        reply_to = source.get("reply_to_id")
+        reply_suffix = f"; reply_to_message_id={reply_to}" if reply_to else ""
+        role = str(source.get("role") or "user")
+        if role == _ROLE_ASSISTANT:
+            labelled = (
+                f"[Multivac in shared channel; response_scope_user_id={speaker_id}"
+                f"{reply_suffix}]\n{content}"
+            )
+            turns.append({"role": "assistant", "content": labelled})
+            continue
+        label = current_name if speaker_id == current_id and current_name else f"user-{speaker_id}"
+        turns.append(
+            {
+                "role": "user",
+                "content": (
+                    f"[Channel speaker: {label}; user_id={speaker_id}{reply_suffix}]\n"
+                    f"{content}"
+                ),
+            }
+        )
+    return turns
+
+
 def _quantize_ago(dt: datetime, now: Optional[datetime] = None) -> str:
     now = now or _now_utc()
     delta = now - dt

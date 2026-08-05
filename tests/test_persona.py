@@ -105,7 +105,7 @@ class PersonaPromptAssemblyTests(unittest.TestCase):
             chat_context, "build_timeline_prompt_block", return_value="stored timeline"
         ), patch.object(
             chat_context,
-            "build_message_window",
+            "build_channel_message_window",
             return_value=[{"role": "assistant", "content": "older reply"}],
         ), patch.object(
             chat_context, "search_history_for_context", return_value=None
@@ -271,7 +271,7 @@ class ProviderPromptCoverageTests(unittest.IsolatedAsyncioTestCase):
         verdict = SimpleNamespace(action="accept", revised_answer=None)
         style = [{"role": "system", "content": MISTAKE_NOT_PERSONA_PROMPT}]
 
-        with patch.object(provider_intents, "build_message_window", return_value=[]), patch.object(
+        with patch.object(provider_intents, "build_channel_message_window", return_value=[]), patch.object(
             provider_intents,
             "build_message_user_style_system_messages",
             return_value=style,
@@ -293,7 +293,7 @@ class ProviderPromptCoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(claude_payload.count(MISTAKE_NOT_PERSONA_PROMPT), 1)
 
         gemini_invoke = AsyncMock(return_value=("Gemini answer", []))
-        with patch.object(provider_intents, "build_message_window", return_value=[]), patch.object(
+        with patch.object(provider_intents, "build_channel_message_window", return_value=[]), patch.object(
             provider_intents,
             "build_message_user_style_system_messages",
             return_value=style,

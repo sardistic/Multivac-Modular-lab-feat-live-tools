@@ -161,6 +161,10 @@ class WebResearchToolLoopTests(unittest.IsolatedAsyncioTestCase):
             create.await_args_list[0].kwargs["tool_choice"],
             {"type": "function", "name": "web_search"},
         )
+        self.assertEqual(
+            create.await_args_list[0].kwargs["tools"][0]["name"],
+            "web_search",
+        )
         self.assertNotIn("tool_choice", create.await_args_list[1].kwargs)
         execute.assert_awaited_once()
         self.assertEqual(
