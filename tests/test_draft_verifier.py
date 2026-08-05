@@ -172,6 +172,61 @@ class DraftVerifierChatFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(send.await_args.args[0], "styled:Short answer.")
 
+    async def test_reverse_image_evidence_skips_ungrounded_draft_rewrite(self):
+        async def generate(*args, **kwargs):
+            kwargs["tool_trace"].append(
+                {"name": "reverse_image_search", "status": "completed"}
+            )
+            return "Grounded provider match."
+
+        verifier = AsyncMock(
+            return_value=DraftVerdict(
+                action="revise",
+                revised_answer="Incorrectly claim that no image was attached.",
+            )
+        )
+        send = AsyncMock()
+
+        with patch.object(
+            chat_handler,
+            "build_chat_context",
+            return_value=[{"role": "user", "content": "what manga is this?"}],
+        ), patch.object(
+            chat_handler,
+            "generate_openai_messages_response_with_tools",
+            side_effect=generate,
+        ), patch.object(
+            chat_handler,
+            "verify_chat_draft",
+            verifier,
+        ), patch.object(
+            chat_handler,
+            "apply_personality_overrides",
+            side_effect=lambda user_id, *, intent, text: f"styled:{text}",
+        ):
+            await chat_handler.handle_chat_intent(
+                message=self._message(),
+                prompt="what manga is this?",
+                raw_prompt="what manga is this?",
+                user_id=123,
+                ref_msg=None,
+                is_reply_to_bot=False,
+                image_urls=["data:image/png;base64,abc"],
+                source_image_urls=["https://cdn.example.test/panel.png"],
+                gemini_parts=[],
+                duration_estimate=1,
+                stream_ok=False,
+                live_status_with_progress=self._live_status,
+                send_or_edit_with_truncation=send,
+                moderation_view_factory=Mock(),
+                agent_intent="chat_reverse_image",
+                reasoning_effort="high",
+                force_reverse_image_search=True,
+            )
+
+        verifier.assert_not_awaited()
+        self.assertEqual(send.await_args.args[0], "styled:Grounded provider match.")
+
     async def test_research_verdict_discards_draft_and_forces_targeted_search(self):
         generate = AsyncMock(
             side_effect=[

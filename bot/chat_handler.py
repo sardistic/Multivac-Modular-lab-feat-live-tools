@@ -202,6 +202,17 @@ async def handle_chat_intent(
             if not draft or not draft.strip() or _is_openai_outage(draft):
                 return draft
 
+            # The generic prose verifier does not receive raw tool results. For
+            # reverse-image work, rewriting a grounded provider answer without
+            # that evidence can invent a false "no attachment" or "no search"
+            # explanation. Keep the tool-loop answer intact; the user's own
+            # personality override is still applied at the presentation layer.
+            if request_force_reverse and any(
+                item.get("name") == "reverse_image_search" for item in tool_trace
+            ):
+                logger.info("Preserving reverse-image tool answer without post-draft rewrite")
+                return draft
+
             phase["detail"] = "Reviewing evidence, length, and voice…"
             verdict = await verify_chat_draft(
                 user_id=user_id,
