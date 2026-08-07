@@ -1,0 +1,17 @@
+[Unit]
+Description=Deploy approved Multivac code proposals
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=sardistic
+SupplementaryGroups=65532
+WorkingDirectory=/srv/multivac
+Environment=MULTIVAC_STATE_DIR=/srv/multivac/state
+Environment=MULTIVAC_TOOL_ARTIFACTS_DIR=/srv/multivac-tool-artifacts
+ExecStart=/usr/bin/python3 /srv/multivac/ops/proposal_supervisor.py reconcile
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

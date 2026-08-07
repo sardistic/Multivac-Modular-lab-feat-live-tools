@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for approved Multivac code proposals
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
