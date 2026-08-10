@@ -27,6 +27,89 @@ from services.behavior_registry import invoke_provider
 
 logger = logging.getLogger("discord_bot")
 
+_GENERATED_IMAGE_STATUS_RE = re.compile(r"^\s*✅\s+Image generated\b", flags=re.IGNORECASE)
+_IMAGE_RETRY_CONTEXT_MAX_CHARS = 1800
+_IMAGE_RETRY_CONTEXT_MAX_GENERATIONS = 4
+
+
+def _is_generated_image_status(message) -> bool:
+    return bool(_GENERATED_IMAGE_STATUS_RE.search((getattr(message, "content", "") or "").strip()))
+
+
+async def _resolve_referenced_message(message):
+    reference = getattr(message, "reference", None)
+    if reference is None:
+        return None
+
+    resolved = getattr(reference, "resolved", None)
+    if resolved is not None and hasattr(resolved, "content"):
+        return resolved
+
+    message_id = getattr(reference, "message_id", None)
+    channel = getattr(message, "channel", None)
+    if message_id is None or channel is None or not hasattr(channel, "fetch_message"):
+        return None
+    try:
+        return await channel.fetch_message(message_id)
+    except Exception:
+        logger.debug("Unable to resolve image-generation reply context", exc_info=True)
+        return None
+
+
+async def _build_image_retry_context(ref_msg) -> str:
+    """Recover the prompts behind a generated-image status reply.
+
+    Each completed image status replies to the user request that created it. A
+    retry request then replies to that status, so walking the alternating
+    status/request references reconstructs the original prompt even after a bot
+    restart. One non-status source message is included when the original request
+    itself was a reply (for example, "draw this" replying to a description).
+    """
+    if not _is_generated_image_status(ref_msg):
+        return ""
+
+    newest_first = []
+    status_msg = ref_msg
+    seen_ids = set()
+
+    for _ in range(_IMAGE_RETRY_CONTEXT_MAX_GENERATIONS):
+        status_id = getattr(status_msg, "id", None)
+        if status_id is not None:
+            if status_id in seen_ids:
+                break
+            seen_ids.add(status_id)
+
+        request_msg = await _resolve_referenced_message(status_msg)
+        if request_msg is None:
+            break
+
+        request_text = re.sub(r"\s+", " ", (getattr(request_msg, "content", "") or "").strip())
+        if request_text:
+            newest_first.append(request_text)
+
+        upstream = await _resolve_referenced_message(request_msg)
+        if upstream is None:
+            break
+        if _is_generated_image_status(upstream):
+            status_msg = upstream
+            continue
+
+        source_text = re.sub(r"\s+", " ", (getattr(upstream, "content", "") or "").strip())
+        if source_text:
+            newest_first.append(source_text)
+        break
+
+    chronological = list(reversed(newest_first))
+    deduplicated = []
+    for entry in chronological:
+        if not deduplicated or entry != deduplicated[-1]:
+            deduplicated.append(entry)
+
+    context = "\n".join(f"- {entry}" for entry in deduplicated)
+    if len(context) > _IMAGE_RETRY_CONTEXT_MAX_CHARS:
+        context = context[:_IMAGE_RETRY_CONTEXT_MAX_CHARS].rstrip() + "..."
+    return context
+
 
 async def _generate_gemini_image_threaded(*args, **kwargs):
     return await asyncio.to_thread(generate_gemini_image, *args, **kwargs)
@@ -434,6 +517,8 @@ async def handle_generate_image_intent(
             await status_msg.edit(content="❌ Failed to generate weather widget.")
         return
 
+    retry_context = await _build_image_retry_context(ref_msg)
+
     # Mutable so a mid-flight provider fallback (moderation block) updates
     # the live status label. "model" is the specific model name once a
     # generation branch is entered; it starts at the best guess from routing.
@@ -451,6 +536,7 @@ async def handle_generate_image_intent(
             message,
             prompt,
             reply_msg=ref_msg,
+            retry_context=retry_context,
             use_gemini=use_gemini,
             provider_state=provider_state,
         ),
@@ -458,8 +544,11 @@ async def handle_generate_image_intent(
         summarizer=(lambda: "Rendering image… adding details…") if stream_ok else None,
     )
     if image_data:
-        await status_msg.edit(content=f"✅ Image generated ({provider_state['model']})")
-        await message.channel.send(file=discord.File(image_data, "generated_image.png"))
+        image_data.seek(0)
+        await status_msg.edit(
+            content=f"✅ Image generated ({provider_state['model']})",
+            attachments=[discord.File(image_data, "generated_image.png")],
+        )
     else:
         logger.warning("Image generation returned None (prompt=%.100r)", prompt)
         await status_msg.edit(content="❌ Image generation failed.")

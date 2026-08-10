@@ -1,9 +1,10 @@
 import base64
+import io
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from bot import intent_dispatcher
+from bot import image_handler, intent_dispatcher
 from providers import stability_generation
 
 
@@ -50,6 +51,90 @@ class ImageGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("imagine a portrait based on these details", composed_prompt)
         self.assertIn("Replied message context from Ry7", composed_prompt)
         self.assertIn("A calm scholar with round glasses", composed_prompt)
+
+    @patch("providers.stability_generation.generate_gpt_image", new_callable=AsyncMock)
+    async def test_retry_context_replaces_generic_generated_status_text(self, mock_generate_gpt):
+        mock_generate_gpt.return_value = "image-bytes"
+        reply_msg = SimpleNamespace(
+            content="✅ Image generated (GPT Image 1.5)",
+            author=SimpleNamespace(display_name="Multivac"),
+        )
+
+        result = await stability_generation.handle_image_generation(
+            message=None,
+            prompt="not good, try again",
+            reply_msg=reply_msg,
+            retry_context="- draw a complex flow chart of your inner working logic",
+        )
+
+        self.assertEqual(result, "image-bytes")
+        composed_prompt = mock_generate_gpt.await_args.args[0]
+        self.assertIn("not good, try again", composed_prompt)
+        self.assertIn("draw a complex flow chart of your inner working logic", composed_prompt)
+        self.assertNotIn("✅ Image generated", composed_prompt)
+
+    async def test_retry_context_walks_prior_generation_replies(self):
+        original = SimpleNamespace(
+            id=1,
+            content="@Multivac draw a complex flow chart of your inner working logic",
+            reference=None,
+        )
+        first_status = SimpleNamespace(
+            id=2,
+            content="✅ Image generated (GPT Image 1.5)",
+            reference=SimpleNamespace(resolved=original),
+        )
+        first_retry = SimpleNamespace(
+            id=3,
+            content="not good, try again",
+            reference=SimpleNamespace(resolved=first_status),
+        )
+        second_status = SimpleNamespace(
+            id=4,
+            content="✅ Image generated (GPT Image 1.5)",
+            reference=SimpleNamespace(resolved=first_retry),
+        )
+
+        context = await image_handler._build_image_retry_context(second_status)
+
+        self.assertLess(context.index("draw a complex flow chart"), context.index("not good, try again"))
+
+    @patch("bot.image_handler.handle_image_generation", new_callable=AsyncMock)
+    async def test_generated_image_is_attached_to_status_and_retry_context_is_forwarded(self, mock_generate):
+        mock_generate.return_value = io.BytesIO(b"generated-image")
+        original = SimpleNamespace(
+            id=10,
+            content="draw a complex flow chart of your inner working logic",
+            reference=None,
+        )
+        replied_status = SimpleNamespace(
+            id=11,
+            content="✅ Image generated (GPT Image 1.5)",
+            reference=SimpleNamespace(resolved=original),
+        )
+        output_status = SimpleNamespace(edit=AsyncMock())
+        channel = SimpleNamespace(send=AsyncMock())
+        message = SimpleNamespace(channel=channel)
+
+        async def live_status(_message, **kwargs):
+            return output_status, await kwargs["coro"]
+
+        await image_handler.handle_generate_image_intent(
+            message=message,
+            prompt="not good, try again",
+            ref_msg=replied_status,
+            duration_estimate=10,
+            stream_ok=False,
+            live_status_with_progress=live_status,
+        )
+
+        forwarded = mock_generate.await_args.kwargs["retry_context"]
+        self.assertIn("draw a complex flow chart", forwarded)
+        edit_kwargs = output_status.edit.await_args.kwargs
+        self.assertEqual(edit_kwargs["content"], "✅ Image generated (GPT Image 1.5)")
+        self.assertEqual(len(edit_kwargs["attachments"]), 1)
+        self.assertEqual(edit_kwargs["attachments"][0].filename, "generated_image.png")
+        channel.send.assert_not_awaited()
 
     @patch("providers.stability_generation.generate_gemini_image")
     @patch("providers.stability_generation.generate_gpt_image", new_callable=AsyncMock)
