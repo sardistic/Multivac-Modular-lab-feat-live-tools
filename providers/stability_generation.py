@@ -30,8 +30,23 @@ IMG_MODEL_GEMINI = "Gemini 3 Pro Image"
 IMG_MODEL_STABILITY = "Stable Diffusion 1.5"
 
 
-def _compose_reply_aware_image_prompt(prompt: str, reply_msg=None) -> str:
+def _compose_reply_aware_image_prompt(prompt: str, reply_msg=None, retry_context: str = "") -> str:
     base_prompt = (prompt or "").strip()
+    retry_text = re.sub(r"\s+", " ", (retry_context or "").strip())
+    if retry_text:
+        if len(retry_text) > _REPLY_PROMPT_MAX_CHARS:
+            retry_text = retry_text[:_REPLY_PROMPT_MAX_CHARS].rstrip() + "..."
+        if base_prompt:
+            return (
+                "Create a new image that follows the current revision while preserving the "
+                "subject and requirements from the prior image context. Do not substitute an "
+                "unrelated subject.\n\n"
+                f"Current revision request:\n{base_prompt}\n\n"
+                "Previous image request/revision context (oldest to newest):\n"
+                f"{retry_text}"
+            )
+        return f"Previous image request/revision context (oldest to newest):\n{retry_text}"
+
     reply_text = (getattr(reply_msg, "content", "") or "").strip()
     if not reply_text:
         return base_prompt
@@ -157,7 +172,12 @@ _GEMINI_IMAGE_PREFIX_RE = re.compile(
 
 
 async def handle_image_generation(
-    message, prompt: str, reply_msg=None, use_gemini: bool | None = None, provider_state: dict | None = None
+    message,
+    prompt: str,
+    reply_msg=None,
+    retry_context: str = "",
+    use_gemini: bool | None = None,
+    provider_state: dict | None = None,
 ) -> Optional[BytesIO]:
     def _set_provider(name: str, model: str) -> None:
         if provider_state is not None:
@@ -185,10 +205,10 @@ async def handle_image_generation(
         return None
 
     try:
-        prompt_with_reply_context = _compose_reply_aware_image_prompt(prompt, reply_msg)
-        width, height = extract_width_height_from_prompt(prompt)
+        prompt_with_reply_context = _compose_reply_aware_image_prompt(prompt, reply_msg, retry_context)
+        width, height = extract_width_height_from_prompt(prompt_with_reply_context)
         if prompt.lower().startswith("stable imagine"):
-            image_prompt = _compose_reply_aware_image_prompt(prompt[15:].strip(), reply_msg)
+            image_prompt = _compose_reply_aware_image_prompt(prompt[15:].strip(), reply_msg, retry_context)
             if STABILITY_AVAILABLE:
                 _set_provider("Stability", IMG_MODEL_STABILITY)
                 img = await generate_stability_image(image_prompt, width, height)
@@ -207,7 +227,7 @@ async def handle_image_generation(
                 core_prompt = prompt[gemini_prefix.end():].strip()
             else:
                 core_prompt = re.sub(r"^gemini[\s,:]*", "", prompt, flags=re.IGNORECASE).strip() or prompt
-            image_prompt = _compose_reply_aware_image_prompt(core_prompt, reply_msg)
+            image_prompt = _compose_reply_aware_image_prompt(core_prompt, reply_msg, retry_context)
             _set_provider("Gemini", IMG_MODEL_GEMINI)
             ref_images = []
             headers = {"User-Agent": "Mozilla/5.0"}
