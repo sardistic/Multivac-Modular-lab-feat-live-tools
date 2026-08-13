@@ -5,7 +5,8 @@
 Multivac publishes a small atomic JSON snapshot beside its usage ledger for the
 host status collector. The snapshot contains only aggregate call and token
 counts for today, the current local Monday-to-Sunday week, month-to-date, and
-all time. It excludes user identifiers,
+all time, plus fourteen completed local days of total-token counts for a trend
+graph. It excludes user identifiers,
 prompts, model and operation names, metadata, and cost. Publication is
 best-effort after accounting writes and every five minutes so metrics remain
 correct across calendar boundaries without making a provider response depend
