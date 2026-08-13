@@ -9,6 +9,7 @@ services:
       - MULTIVAC_TOOL_HOTLOAD_DIR=/tool-artifacts
       - MULTIVAC_TOOL_CONTROL_DIR=/state/tool-control
       - USAGE_DB_PATH=/state/usage_costs.db
+      - USAGE_METRICS_PATH=/state/usage_metrics.json
       - REFLECTION_ENABLED=${REFLECTION_ENABLED:-true}
       - REFLECTION_DAILY_BUDGET_USD=${REFLECTION_DAILY_BUDGET_USD:-1.50}
       - GIT_CONFIG_COUNT=1

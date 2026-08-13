@@ -9,6 +9,7 @@
 #
 # Env:
 #   USAGE_DB_PATH=/absolute/path/usage_costs.db   (default: ./usage_costs.db)
+#   USAGE_METRICS_PATH=/absolute/path/usage_metrics.json (optional public aggregates)
 #   USAGE_LOG_LEVEL=INFO|DEBUG|WARNING|ERROR       (optional)
 #   USAGE_TZ=America/New_York                       (report day/month boundary tz)
 
@@ -19,6 +20,7 @@ import json
 import os
 import sqlite3
 import logging
+import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -32,6 +34,7 @@ except ImportError:  # pragma: no cover - stdlib since 3.9
 # Config & Logging
 # ----------------------------
 DB_PATH = os.getenv("USAGE_DB_PATH", "./usage_costs.db")
+METRICS_PATH = os.getenv("USAGE_METRICS_PATH", "").strip()
 
 _log_level = os.getenv("USAGE_LOG_LEVEL", "WARNING").upper()
 logging.basicConfig(level=getattr(logging, _log_level, logging.WARNING))
@@ -335,6 +338,7 @@ def record(
                 meta_json,
             ),
         )
+    publish_metrics_snapshot()
 
 
 def record_response(model: str, response: Any, *, label: Optional[str] = None) -> None:
@@ -453,6 +457,94 @@ def year_to_date() -> Dict[str, Any]:
 def all_time() -> Dict[str, Any]:
     """All usage ever recorded in this database."""
     return _aggregate_where("1=1", ())
+
+
+def _public_metrics_snapshot(now_utc: datetime | None = None) -> Dict[str, Any]:
+    """Build a public aggregate without identity, prompts, labels, or models."""
+    now = now_utc or datetime.now(timezone.utc)
+    boundaries = (
+        _day_start_utc(now, REPORT_TZ).isoformat(),
+        _month_start_utc(now, REPORT_TZ).isoformat(),
+    )
+    with _conn_rw() as c:
+        rows = c.execute(
+            """
+            SELECT
+              MAX(ts_utc),
+              COUNT(*),
+              COALESCE(SUM(prompt_tokens), 0),
+              COALESCE(SUM(cached_prompt_tokens), 0),
+              COALESCE(SUM(cache_write_tokens), 0),
+              COALESCE(SUM(completion_tokens), 0),
+              COALESCE(SUM(total_tokens), 0),
+              COUNT(CASE WHEN ts_utc >= ? THEN 1 END),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN prompt_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN cached_prompt_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN cache_write_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN completion_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN total_tokens ELSE 0 END), 0),
+              COUNT(CASE WHEN ts_utc >= ? THEN 1 END),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN prompt_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN cached_prompt_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN cache_write_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN completion_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN total_tokens ELSE 0 END), 0)
+            FROM usage_logs
+            """,
+            (boundaries[0],) * 6 + (boundaries[1],) * 6,
+        ).fetchone()
+
+    def window(offset: int) -> Dict[str, int]:
+        return {
+            "calls": int(rows[offset] or 0),
+            "promptTokens": int(rows[offset + 1] or 0),
+            "cachedPromptTokens": int(rows[offset + 2] or 0),
+            "cacheWriteTokens": int(rows[offset + 3] or 0),
+            "completionTokens": int(rows[offset + 4] or 0),
+            "totalTokens": int(rows[offset + 5] or 0),
+        }
+
+    return {
+        "schema": 1,
+        "generatedAt": now.replace(microsecond=0).isoformat(),
+        "timezone": _REPORT_TZ_NAME,
+        "lastActivityAt": rows[0],
+        "windows": {
+            "today": window(7),
+            "monthToDate": window(13),
+            "allTime": window(1),
+        },
+    }
+
+
+def publish_metrics_snapshot() -> bool:
+    """Atomically publish privacy-safe usage aggregates when configured."""
+    if not METRICS_PATH:
+        return False
+    temporary = None
+    try:
+        destination = os.path.abspath(METRICS_PATH)
+        directory = os.path.dirname(destination)
+        os.makedirs(directory, exist_ok=True)
+        payload = _public_metrics_snapshot()
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=directory, prefix=".usage-metrics-", delete=False
+        ) as handle:
+            temporary = handle.name
+            json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, destination)
+        return True
+    except Exception:
+        logger.warning("usage metrics snapshot publish failed", exc_info=True)
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+        return False
 
 def today_breakdown(user_id: Optional[str] = None, limit: int = 12) -> list:
     """Per model+label rollup for today, most expensive first.
