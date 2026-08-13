@@ -86,14 +86,15 @@ def _build_scope_filters(
     channel_id: str | int,
     user_id: str | int,
     target_user_id: str | int | None = None,
+    strict_scope: bool = False,
 ) -> List[Dict[str, Any]]:
     active_user_id = str(target_user_id) if target_user_id is not None else str(user_id)
     filters: List[Dict[str, Any]] = [{"term": {"user_id": active_user_id}}]
 
-    if not ALLOW_CROSS_GUILD_USER_CONTEXT:
+    if strict_scope or not ALLOW_CROSS_GUILD_USER_CONTEXT:
         filters.append({"term": {"guild_id": str(guild_id)}})
 
-    if not ALLOW_CROSS_CHANNEL_USER_CONTEXT:
+    if strict_scope or not ALLOW_CROSS_CHANNEL_USER_CONTEXT:
         filters.append({"term": {"channel_id": str(channel_id)}})
 
     return filters
@@ -432,12 +433,14 @@ def search_history_for_context(
     target_role: str | None = None,
     limit: int = 5,
     oldest_first: bool = False,
+    strict_scope: bool = False,
 ) -> str:
     scope_filters = _build_scope_filters(
         guild_id=guild_id,
         channel_id=channel_id,
         user_id=user_id,
         target_user_id=target_user_id,
+        strict_scope=strict_scope,
     )
     effective_role = target_role or _infer_role_filter(query_text)
     if effective_role in {_ROLE_USER, _ROLE_ASSISTANT}:
@@ -491,12 +494,14 @@ def fetch_matches_recent(
     query: str,
     size: int = 16,
     source: List[str] | None = None,
+    strict_scope: bool = False,
 ) -> List[Dict[str, Any]]:
     scope_filters = _build_scope_filters(
         guild_id=guild_id,
         channel_id=channel_id,
         user_id=user_id,
         target_user_id=target_user_id,
+        strict_scope=strict_scope,
     )
     effective_role = target_role or _infer_role_filter(query)
     if effective_role in {_ROLE_USER, _ROLE_ASSISTANT}:

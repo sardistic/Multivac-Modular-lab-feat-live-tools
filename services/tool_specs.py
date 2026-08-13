@@ -303,11 +303,11 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "read_own_logs",
-            "description": "Read my own recent runtime logs (journalctl). Use this to self-reflect when asked about my errors, crashes, weird behavior, restarts, or health — e.g. 'why did you hang earlier?', 'check your logs'. Mind the timestamps: an error from hours ago may already be fixed — report old entries as past events, not current problems.",
+            "description": "Read recent runtime diagnostics. Non-owners receive only a small, recent, redacted error-category summary; the owner may retrieve broader sanitized diagnostics. Use this when asked about errors, crashes, restarts, or health.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "lines": {"type": "integer", "description": "How many recent log lines to return (max 120)", "default": 40},
+                    "lines": {"type": "integer", "description": "Requested diagnostic entries. Public requests are capped at 20; owner requests at 120.", "default": 20},
                     "level": {
                         "type": "string",
                         "enum": ["all", "warning", "error"],
@@ -315,7 +315,7 @@ TOOL_SPECS = [
                         "default": "all",
                     },
                     "grep": {"type": "string", "description": "Optional case-insensitive substring filter."},
-                    "since_minutes": {"type": "integer", "description": "Only logs from the last N minutes (default 180, max 2880).", "default": 180},
+                    "since_minutes": {"type": "integer", "description": "Lookback window. Public requests are capped at 60 minutes; owner requests at 2880.", "default": 60},
                 },
                 "required": [],
             },
@@ -366,7 +366,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "generate_sora_video",
-            "description": "Generate a video using OpenAI Sora. If the current message includes images, the first image is used as a reference automatically. STRICT LIMIT: 2 videos per user per hour.",
+            "description": "Generate a video using OpenAI Sora only after the application's normal confirmation flow records user approval. If the current message includes images, the first image is used as a reference automatically. STRICT LIMIT: 2 videos per user per hour.",
             "parameters": {
                 "type": "object",
                 "properties": {

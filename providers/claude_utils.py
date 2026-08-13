@@ -4,6 +4,8 @@ import re
 import time
 
 import anthropic
+
+from services.security_utils import public_error_detail
 from typing import List, Dict, Any, Optional
 
 from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
@@ -357,9 +359,9 @@ async def generate_claude_response(
         if recorder:
             recorder.finish("failed")
         logger.error(f"Claude API Error: {e}")
-        return f"❌ Claude API Error: {e.message}"
+        return f"❌ Claude API error: {public_error_detail(e)}"
     except Exception as e:
         if recorder:
             recorder.finish("failed")
         logger.exception("Unexpected error calling Claude")
-        return f"❌ internal Error: {e}"
+        return f"❌ Claude internal error: {public_error_detail(e)}"

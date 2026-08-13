@@ -6,9 +6,10 @@ import mimetypes
 import re
 from typing import List, Optional, Tuple
 
-import aiohttp
+from services.url_utils import DEFAULT_MEDIA_BYTES, fetch_url_bytes_async
 
 DEFAULT_VISION_DETAIL = "high"
+MAX_IMAGE_INPUT_BYTES = DEFAULT_MEDIA_BYTES
 
 
 def _guess_mime_from_bytes(first_bytes: bytes) -> str:
@@ -41,15 +42,22 @@ async def image_url_to_base64(url: str, timeout: int = 15) -> Optional[str]:
     if not url:
         return None
     if url.startswith("data:image/"):
+        encoded = url.split(",", 1)[1] if "," in url else ""
+        if len(encoded) * 3 // 4 > MAX_IMAGE_INPUT_BYTES:
+            return None
         return url
-    if re.fullmatch(r"[A-Za-z0-9+/=\s]+", url) and len(url) > 200:
+    if re.fullmatch(r"[A-Za-z0-9+/=\s]+", url) and 200 < len(url) <= (MAX_IMAGE_INPUT_BYTES * 4 // 3 + 8):
         return _ensure_data_url(url)
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-            async with session.get(url, headers={"User-Agent": "DiscordBot/1.0"}) as r:
-                r.raise_for_status()
-                ctype = r.headers.get("Content-Type")
-                raw = await r.read()
+        fetched = await fetch_url_bytes_async(
+            url,
+            timeout=timeout,
+            max_bytes=MAX_IMAGE_INPUT_BYTES,
+            allowed_content_types=("image/",),
+            headers={"User-Agent": "DiscordBot/1.0"},
+        )
+        ctype = fetched.content_type
+        raw = fetched.body
         mime = ctype if ctype and ctype.startswith("image/") else _guess_mime_from_bytes(raw[:16])
         b64 = base64.b64encode(raw).decode("ascii")
         return f"data:{mime};base64,{b64}"
@@ -76,23 +84,33 @@ async def image_input_to_upload(
 
         if src.startswith("data:image/"):
             header, encoded = src.split(",", 1)
+            if len(encoded) * 3 // 4 > MAX_IMAGE_INPUT_BYTES:
+                return None
             mime = header.split(":", 1)[1].split(";", 1)[0]
             raw = base64.b64decode(encoded)
         elif re.fullmatch(r"[A-Za-z0-9+/=\s]+", src) and len(src) > 200:
+            if len(src) * 3 // 4 > MAX_IMAGE_INPUT_BYTES:
+                return None
             raw = base64.b64decode(src)
             mime = _guess_mime_from_bytes(raw[:16])
         elif src.startswith("http://") or src.startswith("https://"):
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-                async with session.get(src, headers={"User-Agent": "DiscordBot/1.0"}) as r:
-                    r.raise_for_status()
-                    ctype = r.headers.get("Content-Type")
-                    raw = await r.read()
+            fetched = await fetch_url_bytes_async(
+                src,
+                timeout=timeout,
+                max_bytes=MAX_IMAGE_INPUT_BYTES,
+                allowed_content_types=("image/",),
+                headers={"User-Agent": "DiscordBot/1.0"},
+            )
+            ctype = fetched.content_type
+            raw = fetched.body
             mime = ctype if ctype and ctype.startswith("image/") else _guess_mime_from_bytes(raw[:16])
         else:
             raw = base64.b64decode(src)
             mime = _guess_mime_from_bytes(raw[:16])
 
         if not raw:
+            return None
+        if len(raw) > MAX_IMAGE_INPUT_BYTES:
             return None
 
         if not mime.startswith("image/"):

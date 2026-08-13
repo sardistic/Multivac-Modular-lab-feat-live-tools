@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import mimetypes
 import re
@@ -13,6 +14,9 @@ logger = logging.getLogger("discord_bot")
 
 URL_RE = re.compile(r"https?://[^\s<>]+", flags=re.IGNORECASE)
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif", ".avif", ".heic", ".heif")
+MAX_VISUAL_INPUTS = 4
+MAX_ATTACHMENT_BYTES = 10_000_000
+MAX_ATTACHMENT_TOTAL_BYTES = 20_000_000
 
 
 def strip_mention_and_trigger(raw: str, bot_user_id: int | None) -> str:
@@ -109,43 +113,64 @@ async def collect_image_inputs(
 ) -> List[str]:
     image_urls: List[str] = []
     source_urls: List[str] = []
+    visual_bytes = 0
 
-    async def append_downloaded(url: str) -> None:
+    async def _append_remote(url: str) -> None:
+        nonlocal visual_bytes
+        if len(image_urls) >= MAX_VISUAL_INPUTS:
+            return
         b64 = await image_url_to_base64(url)
         if b64:
+            encoded = b64.split(",", 1)[1] if b64.startswith("data:") and "," in b64 else b64
+            estimated_bytes = len(encoded) * 3 // 4
+            if estimated_bytes > MAX_ATTACHMENT_BYTES or visual_bytes + estimated_bytes > MAX_ATTACHMENT_TOTAL_BYTES:
+                logger.warning("Skipped image input because the request byte budget is exhausted")
+                return
             image_urls.append(b64)
             source_urls.append(url)
+            visual_bytes += estimated_bytes
 
-    def append_public(url: str) -> None:
-        image_urls.append(url)
-        source_urls.append(url)
+    def _append_public(url: str) -> None:
+        if len(image_urls) < MAX_VISUAL_INPUTS:
+            image_urls.append(url)
+            source_urls.append(url)
+
+    def _allowed_attachment(attachment) -> bool:
+        size = int(getattr(attachment, "size", 0) or 0)
+        return size <= MAX_ATTACHMENT_BYTES
 
     if ref_msg and ref_msg.attachments:
         for attachment in ref_msg.attachments:
-            if attachment.content_type and attachment.content_type.startswith("image/"):
-                await append_downloaded(attachment.url)
+            if len(image_urls) >= MAX_VISUAL_INPUTS:
+                break
+            if _allowed_attachment(attachment) and attachment.content_type and attachment.content_type.startswith("image/"):
+                await _append_remote(attachment.url)
 
     if ref_msg and ref_msg.embeds:
         for url in _embed_image_candidates(ref_msg.embeds):
-            await append_downloaded(url)
+            await _append_remote(url)
 
     if message.attachments:
         for attachment in message.attachments:
-            if attachment.content_type and attachment.content_type.startswith("image/"):
-                await append_downloaded(attachment.url)
+            if len(image_urls) >= MAX_VISUAL_INPUTS:
+                break
+            if _allowed_attachment(attachment) and attachment.content_type and attachment.content_type.startswith("image/"):
+                await _append_remote(attachment.url)
 
     if message.embeds:
         for url in _embed_image_candidates(message.embeds):
-            await append_downloaded(url)
+            await _append_remote(url)
 
     # Forwarded posts: images live in message snapshots.
     for snap in _forward_snapshots(message) + _forward_snapshots(ref_msg):
         for attachment in getattr(snap, "attachments", None) or []:
+            if len(image_urls) >= MAX_VISUAL_INPUTS:
+                break
             ctype = getattr(attachment, "content_type", None)
-            if ctype and ctype.startswith("image/"):
-                await append_downloaded(attachment.url)
+            if _allowed_attachment(attachment) and ctype and ctype.startswith("image/"):
+                await _append_remote(attachment.url)
         for url in _embed_image_candidates(getattr(snap, "embeds", None)):
-            await append_downloaded(url)
+            await _append_remote(url)
 
     text_candidates: List[str] = []
     if ref_msg:
@@ -153,13 +178,15 @@ async def collect_image_inputs(
     text_candidates.extend(_extract_urls_from_text(message.content))
 
     for raw_url in text_candidates:
+        if len(image_urls) >= MAX_VISUAL_INPUTS:
+            break
         if not _looks_like_image_url(raw_url):
             continue
         lowered = raw_url.lower()
         if "cdn.discordapp.com" in lowered or "media.discordapp.net" in lowered:
-            await append_downloaded(raw_url)
+            await _append_remote(raw_url)
             continue
-        append_public(raw_url)
+        _append_public(raw_url)
 
     seen = set()
     unique_urls = []
@@ -171,11 +198,14 @@ async def collect_image_inputs(
             seen.add(url)
     if source_image_urls is not None:
         source_image_urls.extend(unique_sources)
-    return unique_urls
+    return unique_urls[:MAX_VISUAL_INPUTS]
 
 
 async def collect_gemini_parts(message, ref_msg, image_urls) -> List[Any]:
     gemini_parts = []
+    attachment_count = 0
+    total_attachment_bytes = 0
+    image_hashes: set[str] = set()
     text_exts = (
         ".txt",
         ".md",
@@ -198,11 +228,27 @@ async def collect_gemini_parts(message, ref_msg, image_urls) -> List[Any]:
     )
 
     async def _append_attachment_parts(attachment, label: str, prefix: str) -> None:
+        nonlocal attachment_count, total_attachment_bytes
+        if attachment_count >= MAX_VISUAL_INPUTS:
+            return
+        declared_size = int(getattr(attachment, "size", 0) or 0)
+        if declared_size > MAX_ATTACHMENT_BYTES:
+            logger.warning("Skipped oversized %s attachment: %s", label, getattr(attachment, "filename", "unknown"))
+            return
+        if declared_size and total_attachment_bytes + declared_size > MAX_ATTACHMENT_TOTAL_BYTES:
+            logger.warning("Skipped %s attachment because the request byte budget is exhausted", label)
+            return
         try:
             data = await attachment.read()
+            if len(data) > MAX_ATTACHMENT_BYTES or total_attachment_bytes + len(data) > MAX_ATTACHMENT_TOTAL_BYTES:
+                logger.warning("Skipped oversized %s attachment after download", label)
+                return
+            attachment_count += 1
+            total_attachment_bytes += len(data)
             mime = attachment.content_type or mimetypes.guess_type(attachment.filename)[0] or "application/octet-stream"
             if mime.startswith("image/"):
                 gemini_parts.append(types.Part.from_bytes(data=data, mime_type=mime))
+                image_hashes.add(hashlib.sha256(data).hexdigest())
                 logger.info("Added %s image part: %s", label, attachment.filename)
                 return
             if mime.startswith("text/") or "/json" in mime or attachment.filename.lower().endswith(text_exts):
@@ -225,13 +271,26 @@ async def collect_gemini_parts(message, ref_msg, image_urls) -> List[Any]:
         for attachment in message.attachments:
             await _append_attachment_parts(attachment, "current", "FILE")
 
-    for url in image_urls:
+    for url in image_urls[:MAX_VISUAL_INPUTS]:
         if not url.startswith("data:image/"):
             continue
         try:
             header, encoded = url.split(",", 1)
+            if len(encoded) * 3 // 4 > MAX_ATTACHMENT_BYTES:
+                continue
+            data = base64.b64decode(encoded, validate=True)
+            digest = hashlib.sha256(data).hexdigest()
+            if digest in image_hashes:
+                continue
+            if attachment_count >= MAX_VISUAL_INPUTS:
+                break
+            if total_attachment_bytes + len(data) > MAX_ATTACHMENT_TOTAL_BYTES:
+                continue
             mime = header.split(":", 1)[1].split(";", 1)[0]
-            gemini_parts.append(types.Part.from_bytes(data=base64.b64decode(encoded), mime_type=mime))
+            gemini_parts.append(types.Part.from_bytes(data=data, mime_type=mime))
+            attachment_count += 1
+            total_attachment_bytes += len(data)
+            image_hashes.add(digest)
         except Exception as e:
             logger.error("Failed to decode data URI: %s", e)
 

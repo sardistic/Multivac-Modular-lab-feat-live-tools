@@ -4,8 +4,36 @@ import re
 from typing import Any, Dict
 
 from config import ALLOW_CONTEXT_SEARCH_OTHERS
+from services.security_limits import check_rate_limit
+from services.security_utils import public_error_detail, sanitize_diagnostic_text
 from services.tool_specs import TOOL_SPECS
 from services.url_utils import extract_main_text, fetch_url_content, reduce_text_length
+
+
+def _tool_context(args: Dict[str, Any] | None) -> Dict[str, Any]:
+    return dict((args or {}).get("_context") or {})
+
+
+def _owner_required(args: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not _tool_context(args).get("is_owner"):
+        return {"ok": False, "error": "owner_required"}
+    return None
+
+
+def _tool_rate_limit(args: Dict[str, Any] | None, action: str) -> Dict[str, Any] | None:
+    ctx = _tool_context(args)
+    user_id = ctx.get("user_id")
+    guild_id = ctx.get("guild_id")
+    if user_id in (None, "") or guild_id in (None, ""):
+        return None
+    decision = check_rate_limit(action, user_id=user_id, guild_id=guild_id)
+    if decision.allowed:
+        return None
+    return {
+        "ok": False,
+        "error": "rate_limit_exceeded",
+        "retry_after_seconds": decision.retry_after,
+    }
 
 
 def _safe_get_quote(ticker: str) -> Dict[str, Any]:
@@ -14,7 +42,7 @@ def _safe_get_quote(ticker: str) -> Dict[str, Any]:
 
         return get_realtime_quote(ticker)
     except Exception as e:
-        return {"ok": False, "error": f"quote_lookup_failed: {e}"}
+        return {"ok": False, "error": f"quote_lookup_failed: {public_error_detail(e)}"}
 
 
 def list_tool_summaries(tool_specs=None) -> Dict[str, Any]:
@@ -44,7 +72,7 @@ async def handle_web_search(args: Dict[str, Any]) -> Dict[str, Any] | list:
     try:
         from services.search_utils import web_search
     except Exception as e:
-        return {"ok": False, "error": f"search_unavailable: {e}"}
+        return {"ok": False, "error": f"search_unavailable: {public_error_detail(e)}"}
 
     q = (args or {}).get("q", "")
     if not q:
@@ -203,6 +231,9 @@ async def handle_get_youtube_transcript(args: Dict[str, Any]) -> Dict[str, Any]:
     vid = _extract_youtube_id(url)
     if not vid:
         return {"ok": False, "error": "bad_youtube_url"}
+    limited = _tool_rate_limit(args, "url")
+    if limited:
+        return limited
     text = await asyncio.to_thread(fetch_youtube_transcript, vid)
     if not text:
         return {"ok": False, "error": "transcript_unavailable"}
@@ -216,6 +247,9 @@ async def handle_summarize_url(args: Dict[str, Any]) -> Dict[str, Any]:
     max_len = max(1000, min(int((args or {}).get("max_len", 6000)), 12000))
     if not url or not url.startswith("http"):
         return {"ok": False, "error": "bad_url"}
+    limited = _tool_rate_limit(args, "url")
+    if limited:
+        return limited
     try:
         html = await asyncio.to_thread(fetch_url_content, url)
         title, text = await asyncio.to_thread(extract_main_text, html)
@@ -229,10 +263,13 @@ async def handle_summarize_url(args: Dict[str, Any]) -> Dict[str, Any]:
             }
         return {"ok": True, "title": title, "condensed": condensed, "url": url}
     except Exception as e:
-        return {"ok": False, "error": f"fetch_or_extract_failed: {e}"}
+        return {"ok": False, "error": f"fetch_or_extract_failed: {public_error_detail(e)}"}
 
 
 async def handle_git_recent_commits(args: Dict[str, Any]) -> Dict[str, Any]:
+    denied = _owner_required(args)
+    if denied:
+        return denied
     from services.git_utils import get_recent_commits
 
     count = int((args or {}).get("count", 10))
@@ -241,6 +278,9 @@ async def handle_git_recent_commits(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def handle_git_commit_diff(args: Dict[str, Any]) -> Dict[str, Any]:
+    denied = _owner_required(args)
+    if denied:
+        return denied
     from services.git_utils import get_commit_diff
 
     sha = (args or {}).get("sha", "")
@@ -251,6 +291,9 @@ async def handle_git_commit_diff(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def handle_git_read_file(args: Dict[str, Any]) -> Dict[str, Any]:
+    denied = _owner_required(args)
+    if denied:
+        return denied
     from services.git_utils import get_file_content
 
     path = (args or {}).get("path", "")
@@ -261,6 +304,9 @@ async def handle_git_read_file(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def handle_git_search_code(args: Dict[str, Any]) -> Dict[str, Any]:
+    denied = _owner_required(args)
+    if denied:
+        return denied
     from services.git_utils import search_code
 
     query = (args or {}).get("query", "")
@@ -271,6 +317,9 @@ async def handle_git_search_code(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def handle_git_search_history(args: Dict[str, Any]) -> Dict[str, Any]:
+    denied = _owner_required(args)
+    if denied:
+        return denied
     from services.git_utils import search_history
 
     query = (args or {}).get("query", "")
@@ -282,18 +331,27 @@ async def handle_git_search_history(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def handle_git_file_list(args: Dict[str, Any]) -> Dict[str, Any]:
+    denied = _owner_required(args)
+    if denied:
+        return denied
     from services.git_utils import get_file_list
 
     return {"ok": True, "files": get_file_list()}
 
 
 async def handle_git_repo_info(args: Dict[str, Any]) -> Dict[str, Any]:
+    denied = _owner_required(args)
+    if denied:
+        return denied
     from services.git_utils import get_repo_info
 
     return {"ok": True, "info": get_repo_info()}
 
 
 async def handle_git_find_api_calls(args: Dict[str, Any]) -> Dict[str, Any]:
+    denied = _owner_required(args)
+    if denied:
+        return denied
     from services.git_utils import find_api_calls
 
     provider = (args or {}).get("provider")
@@ -312,11 +370,11 @@ async def handle_search_memory(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": "missing_context_for_memory"}
 
     query = args.get("query", "")
-    limit = int(args.get("limit", 5))
+    limit = max(1, min(int(args.get("limit", 5)), 12))
     requested_target_user = args.get("target_user_id")
     target_user_id = None
     if requested_target_user not in (None, "", user_id, str(user_id)):
-        if not ALLOW_CONTEXT_SEARCH_OTHERS:
+        if not (ALLOW_CONTEXT_SEARCH_OTHERS and ctx.get("is_owner")):
             return {"ok": False, "error": "cross_user_memory_search_disabled"}
         target_user_id = str(requested_target_user)
 
@@ -340,6 +398,7 @@ async def handle_search_memory(args: Dict[str, Any]) -> Dict[str, Any]:
             query_text=query,
             limit=limit,
             oldest_first=any(k in lowered for k in ["first", "earliest", "start", "beginning"]),
+            strict_scope=True,
         )
         if recalled:
             recalled_rows = []
@@ -362,6 +421,7 @@ async def handle_search_memory(args: Dict[str, Any]) -> Dict[str, Any]:
         target_user_id=target_user_id,
         query=query,
         size=limit,
+        strict_scope=True,
     )
     if not results and query:
         if is_temporal_query:
@@ -373,6 +433,7 @@ async def handle_search_memory(args: Dict[str, Any]) -> Dict[str, Any]:
                 query_text=query,
                 limit=limit,
                 oldest_first=any(k in lowered for k in ["first", "earliest", "start", "beginning"]),
+                strict_scope=True,
             )
             if recalled:
                 recalled_rows = []
@@ -397,6 +458,7 @@ async def handle_search_memory(args: Dict[str, Any]) -> Dict[str, Any]:
                 target_user_id=target_user_id,
                 query="",
                 size=limit,
+                strict_scope=True,
             )
     return {
         "ok": True,
@@ -420,11 +482,31 @@ async def handle_update_behavioral_instruction(args: Dict[str, Any]) -> Dict[str
         return {"ok": False, "error": "missing_user_context"}
 
     instruction = args.get("instruction", "")
+    latest = (ctx.get("latest_user_text") or "").lower()
+    explicit_change = bool(
+        re.search(
+            r"\b(?:from now on|always|permanently|remember to|call me|refer to me|"
+            r"change how you|change your (?:tone|style|personality)|reset (?:your )?"
+            r"personality)\b",
+            latest,
+        )
+        or re.search(
+            r"(?:^|\bplease\s+|\b(?:can|could|would|will) you\s+|\b(?:don't|do not|stop)\s+)"
+            r"(?:speak|talk|respond|reply|answer|write|act|be)\b",
+            latest,
+        )
+    )
+    clear_request = not (instruction or "").strip() and bool(
+        re.search(r"\b(?:reset|clear|remove|forget|stop)\b", latest)
+    )
+    if not explicit_change and not clear_request:
+        return {"ok": False, "error": "latest_message_did_not_authorize_behavior_change"}
+    instruction = (instruction or "").strip()[:1000]
     try:
         set_user_instruction(user_id, instruction)
         return {"ok": True, "status": "updated", "instruction": instruction}
     except Exception as e:
-        return {"ok": False, "error": f"db_error: {e}"}
+        return {"ok": False, "error": f"db_error: {public_error_detail(e)}"}
 
 
 # Redact anything that looks like a credential before logs reach the model.
@@ -437,10 +519,13 @@ _SECRET_RE = re.compile(
 async def handle_read_own_logs(args: Dict[str, Any]) -> Dict[str, Any]:
     import asyncio
 
-    lines = max(1, min(int(args.get("lines", 40) or 40), 120))
-    level = (args.get("level") or "all").lower()
-    grep = (args.get("grep") or "").lower()
-    since_minutes = max(1, min(int(args.get("since_minutes", 180) or 180), 2880))
+    is_owner = bool(_tool_context(args).get("is_owner"))
+    lines_cap = 120 if is_owner else 20
+    since_cap = 2880 if is_owner else 60
+    lines = max(1, min(int(args.get("lines", 40) or 40), lines_cap))
+    level = (args.get("level") or "all").lower() if is_owner else "error"
+    grep = (args.get("grep") or "").lower()[:100] if is_owner else ""
+    since_minutes = max(1, min(int(args.get("since_minutes", 180) or 180), since_cap))
 
     cmd = [
         "journalctl", "-u", "discordbot", "-n", "600",
@@ -457,10 +542,10 @@ async def handle_read_own_logs(args: Dict[str, Any]) -> Dict[str, Any]:
     except FileNotFoundError:
         return {"ok": False, "error": "journalctl_not_available"}
     except Exception as e:
-        return {"ok": False, "error": f"log_read_failed: {e}"}
+        return {"ok": False, "error": f"log_read_failed: {public_error_detail(e)}"}
 
     if proc.returncode != 0:
-        return {"ok": False, "error": f"journalctl_failed: {err.decode(errors='replace')[:200]}"}
+        return {"ok": False, "error": "journalctl_failed"}
 
     rows = out.decode(errors="replace").splitlines()
     if level == "error":
@@ -470,9 +555,22 @@ async def handle_read_own_logs(args: Dict[str, Any]) -> Dict[str, Any]:
     if grep:
         rows = [r for r in rows if grep in r.lower()]
 
-    rows = [_SECRET_RE.sub("[REDACTED]", r) for r in rows[-lines:]]
+    if is_owner:
+        rows = [
+            sanitize_diagnostic_text(_SECRET_RE.sub("[REDACTED]", r), max_chars=500)
+            for r in rows[-lines:]
+        ]
+    else:
+        # Public callers get useful failure categories, never raw lines that
+        # may contain another user's prompt, identifiers, or provider payload.
+        rows = [public_error_detail(r) for r in rows[-lines:]]
     text = "\n".join(rows)
-    return {"ok": True, "lines_returned": len(rows), "logs": text[-6000:]}
+    return {
+        "ok": True,
+        "scope": "owner_diagnostics" if is_owner else "public_error_summary",
+        "lines_returned": len(rows),
+        "logs": text[-6000:],
+    }
 
 
 async def handle_remember_fact(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -524,6 +622,12 @@ async def handle_generate_sora_video(args: Dict[str, Any]) -> Dict[str, Any]:
     user_id = ctx.get("user_id")
     if not user_id:
         return {"ok": False, "error": "missing_user_context_for_rate_limit"}
+    if not (ctx.get("is_owner") or ctx.get("media_confirmed")):
+        return {
+            "ok": False,
+            "error": "confirmation_required",
+            "message": "Use the normal video-generation flow and confirm the displayed cost first.",
+        }
 
     status = sora_limit_status(user_id, limit=2, window_seconds=3600)
     if not status["allowed"]:
@@ -544,7 +648,7 @@ async def handle_generate_sora_video(args: Dict[str, Any]) -> Dict[str, Any]:
     image_data = None
     image_filename = None
     image_content_type = None
-    for idx, image_input in enumerate((ctx.get("image_urls") or args.get("image_urls") or []), start=1):
+    for idx, image_input in enumerate((ctx.get("image_urls") or []), start=1):
         upload = await image_input_to_upload(image_input, fallback_name=f"tool_input_{idx}")
         if upload:
             image_data, image_filename, image_content_type = upload
@@ -570,7 +674,11 @@ async def handle_generate_sora_video(args: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
         return {"ok": True, "status": "queued", "video_id": video_id, "data": result.get("data")}
-    return result
+    return {
+        "ok": False,
+        "error": "video_generation_failed",
+        "detail": public_error_detail((result or {}).get("error") or "video generation failed"),
+    }
 
 
 async def handle_list_available_tools(args: Dict[str, Any]) -> Dict[str, Any]:

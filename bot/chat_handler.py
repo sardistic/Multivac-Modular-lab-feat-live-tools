@@ -85,6 +85,7 @@ async def handle_chat_intent(
     clarify_hint: bool = False,
     force_web_search: bool = False,
     force_reverse_image_search: bool = False,
+    is_owner: bool = False,
 ):
     async def _do_chat_generation(
         model_name=None,
@@ -145,6 +146,8 @@ async def handle_chat_intent(
                 "source_image_urls": source_image_urls or [],
                 "intent": agent_intent,
                 "request_text": raw_prompt,
+                "is_owner": bool(is_owner),
+                "latest_user_text": raw_prompt,
             }
             tool_trace = []
 

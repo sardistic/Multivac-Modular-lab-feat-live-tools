@@ -101,6 +101,6 @@ OPENSEARCH_PASS         = get_metadata("OPENSEARCH_PASS")  # set via env/metadat
 OPENSEARCH_VERIFY_CERTS = _truthy(get_metadata("OPENSEARCH_VERIFY_CERTS", "false"), default=False)
 
 # --- Context scope flags (recommended defaults) ---
-ALLOW_CROSS_CHANNEL_USER_CONTEXT = _truthy(os.environ.get("ALLOW_CROSS_CHANNEL_USER_CONTEXT", "true"), True)
+ALLOW_CROSS_CHANNEL_USER_CONTEXT = _truthy(os.environ.get("ALLOW_CROSS_CHANNEL_USER_CONTEXT", "false"), False)
 ALLOW_CROSS_GUILD_USER_CONTEXT   = _truthy(os.environ.get("ALLOW_CROSS_GUILD_USER_CONTEXT", "false"), False)
 ALLOW_CONTEXT_SEARCH_OTHERS      = _truthy(os.environ.get("ALLOW_CONTEXT_SEARCH_OTHERS", "false"), False)

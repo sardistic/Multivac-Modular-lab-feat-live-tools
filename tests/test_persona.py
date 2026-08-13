@@ -129,8 +129,13 @@ class PersonaPromptAssemblyTests(unittest.TestCase):
 
         self.assertEqual(joined.count(MISTAKE_NOT_PERSONA_PROMPT), 1)
         self.assertEqual(joined.count(PERSONALIZATION_PRIORITY_SYSTEM_MESSAGE), 1)
-        self.assertLess(contents.index("Return a concrete preferred plan."), contents.index("stored awareness"))
-        self.assertLess(contents.index("stored awareness"), contents.index(MISTAKE_NOT_PERSONA_PROMPT))
+        awareness_index = next(
+            i for i, content in enumerate(contents) if "stored awareness" in str(content)
+        )
+        self.assertEqual(messages[awareness_index]["role"], "user")
+        self.assertIn("UNTRUSTED SAVED PROFILE DATA", messages[awareness_index]["content"])
+        self.assertLess(contents.index("Return a concrete preferred plan."), awareness_index)
+        self.assertLess(awareness_index, contents.index(MISTAKE_NOT_PERSONA_PROMPT))
         preference_index = next(
             i for i, content in enumerate(contents) if "Prefer terse technical prose" in str(content)
         )
