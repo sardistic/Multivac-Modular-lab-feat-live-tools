@@ -67,6 +67,15 @@ def _month_start_utc(now_utc: datetime, tz) -> datetime:
     return local_first.astimezone(timezone.utc)
 
 
+def _week_start_utc(now_utc: datetime, tz) -> datetime:
+    """Monday start of the current local week, expressed in UTC."""
+    local_now = now_utc.astimezone(tz)
+    local_monday = (local_now - timedelta(days=local_now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return local_monday.astimezone(timezone.utc)
+
+
 def _year_start_utc(now_utc: datetime, tz) -> datetime:
     """Start of the current local (tz) year, expressed in UTC."""
     local_first = now_utc.astimezone(tz).replace(
@@ -464,6 +473,7 @@ def _public_metrics_snapshot(now_utc: datetime | None = None) -> Dict[str, Any]:
     now = now_utc or datetime.now(timezone.utc)
     boundaries = (
         _day_start_utc(now, REPORT_TZ).isoformat(),
+        _week_start_utc(now, REPORT_TZ).isoformat(),
         _month_start_utc(now, REPORT_TZ).isoformat(),
     )
     with _conn_rw() as c:
@@ -488,10 +498,16 @@ def _public_metrics_snapshot(now_utc: datetime | None = None) -> Dict[str, Any]:
               COALESCE(SUM(CASE WHEN ts_utc >= ? THEN cached_prompt_tokens ELSE 0 END), 0),
               COALESCE(SUM(CASE WHEN ts_utc >= ? THEN cache_write_tokens ELSE 0 END), 0),
               COALESCE(SUM(CASE WHEN ts_utc >= ? THEN completion_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN total_tokens ELSE 0 END), 0),
+              COUNT(CASE WHEN ts_utc >= ? THEN 1 END),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN prompt_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN cached_prompt_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN cache_write_tokens ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN ts_utc >= ? THEN completion_tokens ELSE 0 END), 0),
               COALESCE(SUM(CASE WHEN ts_utc >= ? THEN total_tokens ELSE 0 END), 0)
             FROM usage_logs
             """,
-            (boundaries[0],) * 6 + (boundaries[1],) * 6,
+            (boundaries[0],) * 6 + (boundaries[1],) * 6 + (boundaries[2],) * 6,
         ).fetchone()
 
     def window(offset: int) -> Dict[str, int]:
@@ -511,7 +527,8 @@ def _public_metrics_snapshot(now_utc: datetime | None = None) -> Dict[str, Any]:
         "lastActivityAt": rows[0],
         "windows": {
             "today": window(7),
-            "monthToDate": window(13),
+            "thisWeek": window(13),
+            "monthToDate": window(19),
             "allTime": window(1),
         },
     }
