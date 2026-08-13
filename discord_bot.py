@@ -87,6 +87,8 @@ from services.tools_registry import TOOL_REGISTRY, ToolModuleLoader
 from services import usage_costs
 from services.reflection_worker import ReflectionErrorHandler, ReflectionWorker
 from services.progress import render_progress_status, start_progress_bar
+from services.security_limits import check_rate_limit
+from services.security_utils import public_error_detail, sanitize_diagnostic_text
 from services.user_profile import maybe_refresh_profile
 from providers.claude_utils import ANTHROPIC_API_KEY
 from bot.intent_dispatcher import (
@@ -742,7 +744,10 @@ async def _builtin_on_command_error(ctx, error):
         exc_info=root,
     )
     with contextlib.suppress(Exception):
-        await ctx.reply(f"❌ `{getattr(ctx.command, 'name', '?')}` failed: {type(root).__name__}: {str(root)[:150]}")
+        await ctx.reply(
+            f"❌ `{getattr(ctx.command, 'name', '?')}` failed because "
+            f"{public_error_detail(root)}. The detailed error was recorded privately."
+        )
 
 
 @bot.event
@@ -1215,6 +1220,21 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
             existing_status=status_msg,
         ):
             return
+        quota = check_rate_limit(
+            "code",
+            user_id=requester_id,
+            guild_id=(
+                str(message.guild.id)
+                if getattr(message, "guild", None) is not None
+                else "DM"
+            ),
+        )
+        if not quota.allowed:
+            await message.reply(
+                "⏳ Code-generation quota reached for now. "
+                f"Try again in about {quota.retry_after} seconds."
+            )
+            return
         status_msg = None
         baseline = await asyncio.to_thread(get_baseline_sha)
         proposal_id = await asyncio.to_thread(
@@ -1262,7 +1282,8 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
                 with contextlib.suppress(Exception):
                     await status_msg.delete()
             await message.reply(
-                f"I recorded proposal `{proposal_name}`, but patch generation failed: {str(exc)[:1200]}"
+                f"I recorded proposal `{proposal_name}`, but patch generation failed because "
+                f"{public_error_detail(exc)}. Detailed diagnostics were recorded privately."
             )
             return
         if status_msg is not None:
@@ -1314,7 +1335,7 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
                 reviewer_id=requester_id,
             )
         except ValueError as exc:
-            await message.reply(f"I couldn't approve that proposal: {exc}")
+            await message.reply(f"I couldn't approve that proposal because {public_error_detail(exc)}.")
             return
         proposal_name = proposal.get("public_id") or str(proposal_id)
         approval_message = await message.reply(
@@ -1341,7 +1362,7 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
                 reviewer_id=requester_id,
             )
         except ValueError as exc:
-            await message.reply(f"I couldn't reject that proposal: {exc}")
+            await message.reply(f"I couldn't reject that proposal because {public_error_detail(exc)}.")
             return
         await message.reply(f"🛑 Rejected proposal `{proposal.get('public_id') or proposal_id}`. No code was deployed.")
         return
@@ -1365,7 +1386,7 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
                 request_any_code_rollback, requester_id, proposal_id
             )
         except ValueError as exc:
-            await message.reply(f"I couldn't queue that rollback: {exc}")
+            await message.reply(f"I couldn't queue that rollback because {public_error_detail(exc)}.")
             return
         rollback_proposal = next((p for p in review_pool if p["id"] == proposal_id), None)
         rollback_name = rollback_proposal.get("public_id") if rollback_proposal else str(proposal_id)
@@ -1392,7 +1413,8 @@ async def _natural_code_proposal(message, intent: str, prompt: str, status_msg=N
         return
     await message.reply(
         f"{_code_proposal_summary(proposal)}\n"
-        f"Deployment: **{deployment['status']}** — {(deployment.get('detail') or 'in progress')[:900]}\n"
+        f"Deployment: **{deployment['status']}** — "
+        f"{sanitize_diagnostic_text(deployment.get('detail') or 'in progress', max_chars=900)}\n"
         f"Track public status: {CHANGE_DASHBOARD_URL}"
     )
 
@@ -1668,7 +1690,8 @@ async def memory_fetch_more(ctx, chunk: int = 200):
         )
         await ctx.reply(f"Indexed ~{count} recent message(s) for this channel.")
     except Exception as e:
-        await ctx.reply(f"❌ {e}")
+        logger.exception("Recent memory indexing failed")
+        await ctx.reply(f"❌ Memory indexing failed because {public_error_detail(e)}.")
 
 @bot.hybrid_command(name="memories", description="See what the bot remembers about you.")
 async def memories(ctx):
@@ -2061,6 +2084,24 @@ async def _builtin_on_message(message: discord.Message):
         return
 
     try:
+        is_app_owner = await bot.is_owner(message.author)
+    except Exception:
+        logger.warning("Unable to resolve application owner status", exc_info=True)
+        is_app_owner = False
+
+    request_quota = check_rate_limit(
+        "request",
+        user_id=str(user_id),
+        guild_id=str(message.guild.id) if message.guild else "DM",
+    )
+    if not request_quota.allowed:
+        await message.reply(
+            "⏳ I'm receiving too many requests right now. "
+            f"Try again in about {request_quota.retry_after} seconds."
+        )
+        return
+
+    try:
         reflection = _get_reflection_worker()
         await reflection.observe_invocation(
             guild_id=str(message.guild.id) if message.guild else "DM",
@@ -2236,6 +2277,25 @@ async def _builtin_on_message(message: discord.Message):
         intent=intent,
     )
 
+    if intent in {"generate_image", "edit_image", "generate_video"}:
+        media_quota = check_rate_limit(
+            "image",
+            user_id=str(user_id),
+            guild_id=str(message.guild.id) if message.guild else "DM",
+        )
+        if not media_quota.allowed:
+            notice = (
+                "⏳ Media-generation quota reached for now. "
+                f"Try again in about {media_quota.retry_after} seconds."
+            )
+            _preflight_status_by_message_id.pop(message.id, None)
+            if preflight_status is not None:
+                with contextlib.suppress(Exception):
+                    await preflight_status.edit(content=notice)
+            else:
+                await message.reply(notice)
+            return
+
     logger.info(f"Intent identified as: {intent} (has_attachments={has_attachments}, image_inputs={len(image_urls)})")
     if preflight_status is not None:
         with contextlib.suppress(Exception):
@@ -2264,6 +2324,7 @@ async def _builtin_on_message(message: discord.Message):
                 bot_user=bot.user,
                 ref_msg=ref_msg,
                 is_reply_to_bot=is_reply_to_bot,
+                is_owner=is_app_owner,
                 image_urls=image_urls,
                 source_image_urls=source_image_urls,
                 gemini_parts=gemini_parts,
@@ -2282,7 +2343,10 @@ async def _builtin_on_message(message: discord.Message):
     except Exception as e:
         logger.exception("Critical error in on_message dispatch")
         with contextlib.suppress(Exception):
-            await message.reply(f"❌ Critical failure: {str(e)[:150]}...")
+            await message.reply(
+                "❌ I couldn't complete that request because "
+                f"{public_error_detail(e)}. The detailed error was recorded privately."
+            )
         _preflight_status_by_message_id.pop(message.id, None)
 
     leftover_status = _preflight_status_by_message_id.pop(message.id, None)

@@ -92,6 +92,43 @@ independently. Default GPT-5.6 Sol/Terra/Luna and Claude Fable rates reflect the
 current public price schedules; two-value operator overrides remain compatible.
 Non-token reverse-image provider calls use explicit metered records with a
 documented list-price/free-tier caveat.
+## 2026-08-12: Preserve one tool catalog and enforce security at execution boundaries
+
+Every chat request continues to receive the same model-visible tool catalog; the
+runtime does not maintain a per-user tool allowlist. Authorization is enforced
+inside checked-in handlers using application-derived request context that model
+arguments cannot override. Repository and Git diagnostics require the Discord
+application owner, and video generation requires either owner context or the
+normal recorded cost-confirmation flow. Non-owners may still request runtime
+health information, but receive only a small recent set of generic error
+categories. Owner diagnostics remain broader but are bounded and redacted.
+
+Conversation-memory tools require a request user, guild, and channel, query only
+the configured memory index through structured filters, cap returned fields and
+result counts, and use strict guild/channel scope even when more permissive
+ambient context flags exist. Cross-user memory search additionally requires the
+existing explicit deployment flag and owner authority. Recalled messages,
+timeline entries, replied-to human messages, saved profile data, fetched pages,
+attachments, and tool results are represented as untrusted data rather than
+application instructions. Persistent behavior changes require an explicit cue
+in the latest user message as well as the current user's scoped handler context.
+
+All user-controlled page and media retrieval uses one bounded HTTP(S) fetcher.
+It rejects credentials, nonstandard ports, and every non-global DNS answer;
+pins the validated address for the connection; preserves TLS hostname
+verification; revalidates every redirect; rejects compressed or unexpected
+content; and streams into configurable byte ceilings. This prevents proxy
+inheritance, DNS-rebinding, redirect-to-private-network, and unbounded-body
+paths without weakening fixed-provider API calls.
+
+In-process sliding-window limits cover total requests, URL fetches, media
+generation, Gemini code execution, and code-proposal generation at user,
+guild, and global scopes. Provider calls also share configurable global and
+per-user concurrency gates. Attachment count, individual size, aggregate size,
+and remote media size are bounded before provider submission. Public provider
+and command failures retain useful categories such as quota, timeout,
+authorization, safety, connection, and capacity failures while raw exception
+payloads stay in private logs.
 
 ## 2026-08-01: Apply one durable, conversation-scoped Mistake Not… identity
 

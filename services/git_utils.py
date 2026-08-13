@@ -11,6 +11,7 @@ Security features:
 import subprocess
 import re
 import os
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fnmatch import fnmatch
 
@@ -128,30 +129,58 @@ def get_commit_diff(sha: str) -> str:
     if not re.match(r"^[a-f0-9]{4,40}$", sha, re.IGNORECASE):
         return "[error: invalid SHA format]"
     
-    output = _run_git("show", "--stat", sha, max_output=6000)
-    # Get the actual patch using a command that works across older Git builds.
-    diff = _run_git("diff", f"{sha}^!", "--", max_output=4000)
+    changed = _run_git(
+        "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", sha,
+        max_output=20_000,
+    )
+    if changed.startswith("[error:"):
+        return changed
+    paths = [line.strip() for line in changed.splitlines() if line.strip()]
+    safe_paths = [
+        path for path in paths
+        if not _is_blocked_file(path) and not _is_internal_tool_file(path)
+    ]
+    blocked_count = len(paths) - len(safe_paths)
+    if not safe_paths:
+        return f"[no readable files in commit; {blocked_count} protected file(s) omitted]"
+
+    output = _run_git("show", "--stat", "--format=%h %s", sha, "--", *safe_paths, max_output=6000)
+    diff = _run_git("show", "--format=", "--patch", sha, "--", *safe_paths, max_output=4000)
+    if blocked_count:
+        output += f"\n[omitted {blocked_count} protected file(s)]"
     
     return f"{output}\n\n--- Diff ---\n{diff}"
 
 
 def get_file_content(path: str, max_lines: int = 200) -> str:
     """Read a file from the repo. Blocked files return error."""
-    # Security check
-    if _is_blocked_file(path):
-        return f"[error: access to '{path}' is blocked for security]"
-    
-    # Normalize path (prevent directory traversal)
-    path = path.lstrip("/").lstrip("\\")
-    if ".." in path:
+    raw_path = (path or "").strip()
+    candidate = Path(raw_path)
+    if candidate.is_absolute() or ".." in candidate.parts:
         return "[error: invalid path]"
-    
-    full_path = os.path.join(REPO_PATH, path)
-    if not os.path.isfile(full_path):
-        return f"[error: file '{path}' not found]"
+    repo_root = Path(REPO_PATH).resolve()
+    full_path = (repo_root / candidate).resolve()
+    try:
+        relative = full_path.relative_to(repo_root).as_posix()
+    except ValueError:
+        return "[error: invalid path]"
+    if _is_blocked_file(relative) or _is_internal_tool_file(relative):
+        return f"[error: access to '{relative}' is blocked for security]"
+    if not full_path.is_file():
+        return f"[error: file '{relative}' not found]"
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", relative],
+        cwd=REPO_PATH,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if tracked.returncode != 0:
+        return "[error: only tracked repository files may be read]"
     
     try:
-        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+        with full_path.open("r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
         
         if len(lines) > max_lines:

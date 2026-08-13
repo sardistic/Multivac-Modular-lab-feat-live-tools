@@ -9,7 +9,6 @@ import re
 from io import BytesIO
 from typing import Optional
 
-import requests
 from PIL import Image
 
 from providers.gemini_utils import edit_gemini_image, generate_gemini_image, generate_gemini_with_references
@@ -20,6 +19,7 @@ from providers.stability_client import (
     get_openai_image_client,
     stability_client,
 )
+from services.url_utils import DEFAULT_MEDIA_BYTES, fetch_url_bytes_async
 
 logger = logging.getLogger("stability_utils")
 _REPLY_PROMPT_MAX_CHARS = 1800
@@ -231,41 +231,35 @@ async def handle_image_generation(
             _set_provider("Gemini", IMG_MODEL_GEMINI)
             ref_images = []
             headers = {"User-Agent": "Mozilla/5.0"}
+
+            async def _safe_reference(url: str) -> None:
+                try:
+                    fetched = await fetch_url_bytes_async(
+                        url,
+                        timeout=20,
+                        max_bytes=DEFAULT_MEDIA_BYTES,
+                        allowed_content_types=("image/",),
+                        headers=headers,
+                    )
+                    ref_images.append(BytesIO(fetched.body))
+                except Exception as e:
+                    logger.error("Failed to download image reference: %s", type(e).__name__)
+
             if reply_msg:
                 if reply_msg.attachments:
                     for att in reply_msg.attachments:
                         if att.content_type and att.content_type.startswith("image/"):
-                            try:
-                                r = requests.get(att.url, headers=headers, timeout=20)
-                                if r.status_code == 200:
-                                    ref_images.append(BytesIO(r.content))
-                            except Exception as e:
-                                logger.error("Failed to download reply attachment %s: %s", att.url, e)
+                            await _safe_reference(att.url)
                 if reply_msg.embeds:
                     for embed in reply_msg.embeds:
                         if embed.image and embed.image.url:
-                            try:
-                                r = requests.get(embed.image.url, headers=headers, timeout=20)
-                                if r.status_code == 200:
-                                    ref_images.append(BytesIO(r.content))
-                            except Exception as e:
-                                logger.error("Failed to download reply embed %s: %s", embed.image.url, e)
+                            await _safe_reference(embed.image.url)
             if message and message.attachments:
                 for att in message.attachments:
                     if att.content_type and att.content_type.startswith("image/"):
-                        try:
-                            r = requests.get(att.url, headers=headers, timeout=20)
-                            if r.status_code == 200:
-                                ref_images.append(BytesIO(r.content))
-                        except Exception as e:
-                            logger.error("Failed to download attachment %s: %s", att.url, e)
+                        await _safe_reference(att.url)
             for url in re.findall(r"(https?://\S+\.(?:png|jpg|jpeg|webp|gif))", prompt, re.IGNORECASE):
-                try:
-                    r = requests.get(url, headers=headers, timeout=20)
-                    if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
-                        ref_images.append(BytesIO(r.content))
-                except Exception as e:
-                    logger.error("Failed to download URL %s: %s", url, e)
+                await _safe_reference(url)
             if ref_images:
                 img = await asyncio.to_thread(generate_gemini_with_references, image_prompt, ref_images)
                 if img:
@@ -295,21 +289,35 @@ async def edit_image_with_prompt(image_input: str | list[str], prompt: str) -> O
         if not urls:
             return None
 
-        def decode_img(u):
+        async def decode_img(u):
             if u.startswith("data:image/"):
                 _, b64 = u.split(",", 1)
-                return BytesIO(base64.b64decode(b64))
+                if len(b64) > (DEFAULT_MEDIA_BYTES * 4 // 3) + 16:
+                    raise ValueError("image input exceeds the allowed size")
+                decoded = base64.b64decode(b64, validate=True)
+                if len(decoded) > DEFAULT_MEDIA_BYTES:
+                    raise ValueError("image input exceeds the allowed size")
+                return BytesIO(decoded)
             if u.startswith("http"):
-                r = requests.get(u, timeout=30)
-                r.raise_for_status()
-                return BytesIO(r.content)
-            return BytesIO(base64.b64decode(u))
+                fetched = await fetch_url_bytes_async(
+                    u,
+                    timeout=30,
+                    max_bytes=DEFAULT_MEDIA_BYTES,
+                    allowed_content_types=("image/",),
+                )
+                return BytesIO(fetched.body)
+            if len(u) > (DEFAULT_MEDIA_BYTES * 4 // 3) + 16:
+                raise ValueError("image input exceeds the allowed size")
+            decoded = base64.b64decode(u, validate=True)
+            if len(decoded) > DEFAULT_MEDIA_BYTES:
+                raise ValueError("image input exceeds the allowed size")
+            return BytesIO(decoded)
 
         if prompt.lower().startswith("gemini edit"):
-            base_img = decode_img(urls[0])
+            base_img = await decode_img(urls[0])
             return edit_gemini_image(base_img, prompt[11:].strip())
 
-        base_img = decode_img(urls[0])
+        base_img = await decode_img(urls[0])
         result = await get_openai_image_client().images.edits(
             model="gpt-image-1.5",
             image=base_img,

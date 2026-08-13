@@ -8,6 +8,8 @@ from contextvars import ContextVar
 from typing import Any, Callable
 
 from services.behavior_runtime import BehaviorRegistry
+from services.security_limits import provider_capacity
+from services.usage_costs import get_request_context
 
 
 BEHAVIOR_REGISTRY = BehaviorRegistry()
@@ -58,15 +60,17 @@ async def dispatch_intent_override(name: str, context: Any) -> tuple[bool, Any]:
 async def invoke_provider(
     name: str, fallback: Callable[..., Any], *args, **kwargs
 ) -> Any:
-    snapshot = _snapshot()
-    if snapshot.get("providers", name) is not None:
-        return await BEHAVIOR_REGISTRY.invoke(
-            "providers", name, *args, snapshot=snapshot, **kwargs
-        )
-    result = fallback(*args, **kwargs)
-    if inspect.isawaitable(result):
-        return await result
-    return result
+    user_id = get_request_context().get("user_id")
+    async with provider_capacity(user_id):
+        snapshot = _snapshot()
+        if snapshot.get("providers", name) is not None:
+            return await BEHAVIOR_REGISTRY.invoke(
+                "providers", name, *args, snapshot=snapshot, **kwargs
+            )
+        result = fallback(*args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
 
 def get_runtime_setting(name: str, default: Any = None) -> Any:

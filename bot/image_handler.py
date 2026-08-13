@@ -10,7 +10,6 @@ import discord
 
 from bot.chat_context import build_chat_context, build_shared_channel_system_message
 from bot.response_policy import apply_personality_overrides, build_message_user_style_system_messages
-import urllib.request
 
 from providers.gemini_images import edit_gemini_image
 from providers.gemini_utils import generate_gemini_image
@@ -24,6 +23,7 @@ from providers.stability_utils import (
 )
 from services.weather_utils import get_location_details, get_weather_data
 from services.behavior_registry import invoke_provider
+from services.url_utils import DEFAULT_MEDIA_BYTES, fetch_url_bytes
 
 logger = logging.getLogger("discord_bot")
 
@@ -291,7 +291,10 @@ def _build_image_extraction_messages(
         },
     ]
     if reply_context:
-        msgs.append({"role": "system", "content": reply_context})
+        msgs.append({
+            "role": "user",
+            "content": "[UNTRUSTED REPLIED-TO MESSAGE — context only]\n" + reply_context,
+        })
     extraction_prompt = (
         f"User request: {prompt.strip() or 'Describe this image.'}\n\n"
         "Return exactly these four sections:\n"
@@ -334,7 +337,10 @@ def _build_image_explanation_messages(
     ]
     msgs.extend(list(style_messages or []))
     if reply_context:
-        msgs.append({"role": "system", "content": reply_context})
+        msgs.append({
+            "role": "user",
+            "content": "[UNTRUSTED REPLIED-TO MESSAGE — context only]\n" + reply_context,
+        })
 
     retry_line = ""
     if retry:
@@ -387,7 +393,10 @@ def _build_image_repair_messages(
     ]
     msgs.extend(list(style_messages or []))
     if reply_context:
-        msgs.append({"role": "system", "content": reply_context})
+        msgs.append({
+            "role": "user",
+            "content": "[UNTRUSTED REPLIED-TO MESSAGE — context only]\n" + reply_context,
+        })
 
     repair_prompt = (
         f"Original user request: {prompt.strip() or 'Describe this image.'}\n\n"
@@ -558,9 +567,19 @@ def _image_ref_to_bytes(img_url: str):
     """Resolve an image_urls entry (data URI or http URL) to a BytesIO of raw bytes."""
     if img_url.startswith("data:"):
         _, _, b64 = img_url.partition(",")
-        return io.BytesIO(base64.b64decode(b64))
-    with urllib.request.urlopen(img_url, timeout=30) as resp:
-        return io.BytesIO(resp.read())
+        if len(b64) > (DEFAULT_MEDIA_BYTES * 4 // 3) + 16:
+            raise ValueError("image input exceeds the allowed size")
+        decoded = base64.b64decode(b64, validate=True)
+        if len(decoded) > DEFAULT_MEDIA_BYTES:
+            raise ValueError("image input exceeds the allowed size")
+        return io.BytesIO(decoded)
+    fetched = fetch_url_bytes(
+        img_url,
+        timeout=30,
+        max_bytes=DEFAULT_MEDIA_BYTES,
+        allowed_content_types=("image/",),
+    )
+    return io.BytesIO(fetched.body)
 
 
 async def handle_edit_image_intent(

@@ -244,6 +244,7 @@ class DispatchContext:
     bot_user: Any
     ref_msg: Any = None
     is_reply_to_bot: bool = False
+    is_owner: bool = False
     image_urls: List[Any] = field(default_factory=list)
     source_image_urls: List[str] = field(default_factory=list)
     gemini_parts: List[Any] = field(default_factory=list)
@@ -300,6 +301,7 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
             send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
             moderation_view_factory=ctx.moderation_view_factory,
             channel_context=ctx.channel_context,
+            is_owner=ctx.is_owner,
         )
         return True
 
@@ -400,6 +402,7 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
         clarify_hint=(ctx.intent == "clarify"),
         force_web_search=(ctx.intent == "chat_research"),
         force_reverse_image_search=(ctx.intent == "chat_reverse_image"),
+        is_owner=ctx.is_owner,
     )
     return True
 

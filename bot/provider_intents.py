@@ -22,6 +22,8 @@ from bot.chat_context import build_shared_channel_system_message
 from bot.research_policy import build_fresh_search_query, is_reverse_image_request, requires_fresh_web
 from bot.response_policy import apply_personality_overrides, build_message_user_style_system_messages
 from services.memory_utils import build_channel_message_window
+from services.security_limits import check_rate_limit
+from services.security_utils import public_error_detail
 from services.url_utils import extract_main_text, fetch_url_content, reduce_text_length
 from services.youtube_utils import extract_youtube_id, fetch_youtube_transcript
 
@@ -286,6 +288,7 @@ async def handle_gemini_chat_intent(
     send_or_edit_with_truncation,
     moderation_view_factory,
     channel_context=None,
+    is_owner: bool = False,
 ):
     clean_prompt = re.sub(r"^gemini\s*", "", prompt, flags=re.IGNORECASE).strip()
     is_test_mode = False
@@ -300,6 +303,32 @@ async def handle_gemini_chat_intent(
     elif is_test_mode:
         enable_code_execution = True
     user_request_for_review = clean_prompt
+
+    if enable_code_execution:
+        compute_quota = check_rate_limit(
+            "compute",
+            user_id=str(message.author.id),
+            guild_id=str(message.guild.id) if message.guild else "DM",
+        )
+        if not compute_quota.allowed:
+            await message.reply(
+                "⏳ Code-execution quota reached for now. "
+                f"Try again in about {compute_quota.retry_after} seconds."
+            )
+            return
+
+    if extract_youtube_id(clean_prompt):
+        url_quota = check_rate_limit(
+            "url",
+            user_id=str(message.author.id),
+            guild_id=str(message.guild.id) if message.guild else "DM",
+        )
+        if not url_quota.allowed:
+            await message.reply(
+                "⏳ URL-fetch quota reached for now. "
+                f"Try again in about {url_quota.retry_after} seconds."
+            )
+            return
 
     context_msgs = []
     if not enable_code_execution:
@@ -371,6 +400,8 @@ async def handle_gemini_chat_intent(
                     "guild_id": message.guild.id if message.guild else "DM",
                     "channel_id": message.channel.id,
                     "user_id": str(message.author.id),
+                    "is_owner": bool(is_owner),
+                    "latest_user_text": prompt,
                 }
                 msgs = list(generation_context)
                 msgs.append({"role": "user", "content": request_text})
@@ -503,14 +534,20 @@ async def handle_gemini_chat_intent(
                             all_files = [text_file, *files_to_send]
                             await status_msg.reply(files=all_files)
                         except Exception as e:
-                            await status_msg.edit(content=f"❌ Test mode file send failed: {e}")
+                            logger.exception("Gemini test-mode file delivery failed")
+                            await status_msg.edit(
+                                content=f"❌ Test-mode delivery failed because {public_error_detail(e)}."
+                            )
                     else:
                         try:
                             await status_msg.edit(content=f"```\n{text_resp[:1990]}\n```")
                             if files_to_send:
                                 await status_msg.reply(files=files_to_send)
                         except Exception as e:
-                            await status_msg.edit(content=f"❌ Test mode failed: {e}")
+                            logger.exception("Gemini test-mode delivery failed")
+                            await status_msg.edit(
+                                content=f"❌ Test-mode delivery failed because {public_error_detail(e)}."
+                            )
                 else:
                     await send_or_edit_with_truncation(text_resp, target_msg=status_msg, extra_files=files_to_send)
             elif files_to_send:
@@ -529,7 +566,9 @@ async def handle_gemini_chat_intent(
             await message.reply(user_msg, view=view)
         except Exception as e:
             logger.exception("Gemini generation error")
-            await message.reply(f"❌ Gemini Error: {e}")
+            await message.reply(
+                f"❌ Gemini couldn't complete the request because {public_error_detail(e)}."
+            )
 
     await _do_gemini_generation()
 
@@ -543,6 +582,18 @@ async def handle_summarize_url_intent(
     live_status_with_progress,
     send_or_edit_with_truncation,
 ):
+    quota = check_rate_limit(
+        "url",
+        user_id=str(message.author.id),
+        guild_id=str(message.guild.id) if message.guild else "DM",
+    )
+    if not quota.allowed:
+        await message.reply(
+            "⏳ URL-fetch quota reached for now. "
+            f"Try again in about {quota.retry_after} seconds."
+        )
+        return
+
     async def _do_summarize():
         # YouTube: summarize the actual transcript, not the page metadata.
         transcript = await _youtube_transcript_for(url)

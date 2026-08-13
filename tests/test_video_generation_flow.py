@@ -93,6 +93,7 @@ class VideoGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
                 "prompt": "animate this image with a slow camera move",
                 "_context": {
                     "user_id": "123",
+                    "media_confirmed": True,
                     "image_urls": ["data:image/png;base64,Zm9v"],
                 },
             }
