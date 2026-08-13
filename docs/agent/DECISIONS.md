@@ -1,5 +1,16 @@
 # Architectural Decisions
 
+## 2026-08-12: Export public AI usage as a privacy-safe state snapshot
+
+Multivac publishes a small atomic JSON snapshot beside its usage ledger for the
+host status collector. The snapshot contains only aggregate call and token
+counts for today, month-to-date, and all time. It excludes user identifiers,
+prompts, model and operation names, metadata, and cost. Publication is
+best-effort after accounting writes and every five minutes so metrics remain
+correct across calendar boundaries without making a provider response depend
+on observability. The SQLite ledger remains private and no network endpoint or
+new bearer credential is introduced.
+
 ## 2026-08-04: Extend the existing registry into a bounded, provider-shared agent harness
 
 Multivac keeps its current intent router, immutable tool-registry snapshots,

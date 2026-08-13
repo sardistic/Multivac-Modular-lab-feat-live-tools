@@ -177,6 +177,7 @@ _behavior_control_worker = (
 _behavior_control_task: asyncio.Task | None = None
 _reflection_worker: ReflectionWorker | None = None
 _reflection_task: asyncio.Task | None = None
+_usage_metrics_task: asyncio.Task | None = None
 _reflection_error_handler: ReflectionErrorHandler | None = None
 
 # ---- Backfill high-water marks (per guild:channel), stored in SQLite ----
@@ -625,6 +626,12 @@ def _get_reflection_worker() -> ReflectionWorker:
     return _reflection_worker
 
 
+async def _run_usage_metrics_publisher() -> None:
+    while True:
+        await asyncio.to_thread(usage_costs.publish_metrics_snapshot)
+        await asyncio.sleep(300)
+
+
 @bot.event
 async def on_ready():
     await bot.change_presence(
@@ -635,7 +642,13 @@ async def on_ready():
     # Register slash (application) commands with Discord. Global sync; if the
     # commands don't appear, the bot needs re-inviting with the
     # 'applications.commands' OAuth scope.
-    global _app_commands_synced, _tool_control_task, _command_control_task, _behavior_control_task, _reflection_task
+    global _app_commands_synced, _tool_control_task, _command_control_task, _behavior_control_task, _reflection_task, _usage_metrics_task
+    if usage_costs.METRICS_PATH and (
+        _usage_metrics_task is None or _usage_metrics_task.done()
+    ):
+        _usage_metrics_task = asyncio.create_task(
+            _run_usage_metrics_publisher(), name="multivac-usage-metrics"
+        )
     if _tool_control_worker is not None and (
         _tool_control_task is None or _tool_control_task.done()
     ):

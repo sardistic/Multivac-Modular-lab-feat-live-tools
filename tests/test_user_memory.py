@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -206,11 +207,40 @@ class UsageCostsTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self._old_db = usage_costs.DB_PATH
+        self._old_metrics = usage_costs.METRICS_PATH
         usage_costs.DB_PATH = str(Path(self._tmp.name) / "usage.db")
+        usage_costs.METRICS_PATH = ""
 
     def tearDown(self):
         usage_costs.DB_PATH = self._old_db
+        usage_costs.METRICS_PATH = self._old_metrics
         self._tmp.cleanup()
+
+    def test_public_metrics_snapshot_contains_only_aggregates(self):
+        usage_costs.METRICS_PATH = str(Path(self._tmp.name) / "usage_metrics.json")
+        usage_costs.set_request_context(user_id="private-user", intent="private-label")
+        usage_costs.record(
+            "private-model",
+            {
+                "prompt_tokens": 120,
+                "cached_prompt_tokens": 40,
+                "cache_write_tokens": 10,
+                "completion_tokens": 30,
+                "total_tokens": 150,
+            },
+            99.0,
+            meta={"prompt": "must not leak"},
+        )
+
+        snapshot = json.loads(Path(usage_costs.METRICS_PATH).read_text(encoding="utf-8"))
+        self.assertEqual(snapshot["schema"], 1)
+        self.assertEqual(snapshot["windows"]["today"]["calls"], 1)
+        self.assertEqual(snapshot["windows"]["today"]["promptTokens"], 120)
+        self.assertEqual(snapshot["windows"]["today"]["cachedPromptTokens"], 40)
+        self.assertEqual(snapshot["windows"]["today"]["completionTokens"], 30)
+        serialized = json.dumps(snapshot)
+        for private_value in ("private-user", "private-label", "private-model", "must not leak", "99.0"):
+            self.assertNotIn(private_value, serialized)
 
     def test_record_with_request_context_attributes_user(self):
         usage_costs.set_request_context(user_id="42", intent="chat")
