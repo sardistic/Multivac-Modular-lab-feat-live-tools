@@ -113,7 +113,12 @@ class AuthorizationBoundaryTests(unittest.IsolatedAsyncioTestCase):
 class RepositoryBoundaryTests(unittest.TestCase):
     def test_repo_reader_rejects_absolute_and_parent_paths(self):
         self.assertEqual(git_utils.get_file_content("../config.py"), "[error: invalid path]")
+        self.assertEqual(git_utils.get_file_content("..\\config.py"), "[error: invalid path]")
         self.assertEqual(git_utils.get_file_content("C:\\Windows\\win.ini"), "[error: invalid path]")
+        self.assertEqual(
+            git_utils.get_file_content("\\\\server\\share\\secret.txt"),
+            "[error: invalid path]",
+        )
 
 
 class MemoryBoundaryTests(unittest.TestCase):

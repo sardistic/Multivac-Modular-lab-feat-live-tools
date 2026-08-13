@@ -11,7 +11,7 @@ Security features:
 import subprocess
 import re
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import List, Dict, Any, Optional
 from fnmatch import fnmatch
 
@@ -155,9 +155,19 @@ def get_commit_diff(sha: str) -> str:
 def get_file_content(path: str, max_lines: int = 200) -> str:
     """Read a file from the repo. Blocked files return error."""
     raw_path = (path or "").strip()
+    windows_candidate = PureWindowsPath(raw_path)
     candidate = Path(raw_path)
-    if candidate.is_absolute() or ".." in candidate.parts:
+    if (
+        candidate.is_absolute()
+        or windows_candidate.is_absolute()
+        or bool(windows_candidate.drive)
+        or ".." in candidate.parts
+        or ".." in windows_candidate.parts
+    ):
         return "[error: invalid path]"
+    # Treat either slash style as a repository separator after rejecting
+    # platform-specific absolute paths and traversal components above.
+    candidate = Path(raw_path.replace("\\", "/"))
     repo_root = Path(REPO_PATH).resolve()
     full_path = (repo_root / candidate).resolve()
     try:
