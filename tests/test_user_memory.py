@@ -238,6 +238,7 @@ class UsageCostsTests(unittest.TestCase):
         self.assertEqual(snapshot["windows"]["today"]["promptTokens"], 120)
         self.assertEqual(snapshot["windows"]["today"]["cachedPromptTokens"], 40)
         self.assertEqual(snapshot["windows"]["today"]["completionTokens"], 30)
+        self.assertEqual(snapshot["windows"]["thisWeek"]["totalTokens"], 150)
         serialized = json.dumps(snapshot)
         for private_value in ("private-user", "private-label", "private-model", "must not leak", "99.0"):
             self.assertNotIn(private_value, serialized)

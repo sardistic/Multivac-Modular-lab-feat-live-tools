@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from services.usage_costs import _day_start_utc, _month_start_utc, _year_start_utc
+from services.usage_costs import _day_start_utc, _month_start_utc, _week_start_utc, _year_start_utc
 
 EDT = timezone(timedelta(hours=-4))  # US Eastern in July, without needing tzdata
 
@@ -29,6 +29,13 @@ class ReportBoundaryTests(unittest.TestCase):
         now_utc = datetime(2026, 7, 1, 2, 0, tzinfo=timezone.utc)
         start = _month_start_utc(now_utc, EDT)
         self.assertEqual(start, datetime(2026, 6, 1, 4, 0, tzinfo=timezone.utc))
+
+    def test_week_boundary_is_local_monday(self):
+        # 02:00 UTC Monday is still Sunday evening in EDT, so the current local
+        # week began on the prior Monday rather than at UTC midnight.
+        now_utc = datetime(2026, 7, 6, 2, 0, tzinfo=timezone.utc)
+        start = _week_start_utc(now_utc, EDT)
+        self.assertEqual(start, datetime(2026, 6, 29, 4, 0, tzinfo=timezone.utc))
 
     def test_year_boundary_uses_local_year(self):
         # 02:00 UTC Jan 1 2027 == 9:00pm EST Dec 31 2026, still the 2026 year.
