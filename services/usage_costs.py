@@ -476,6 +476,8 @@ def _public_metrics_snapshot(now_utc: datetime | None = None) -> Dict[str, Any]:
         _week_start_utc(now, REPORT_TZ).isoformat(),
         _month_start_utc(now, REPORT_TZ).isoformat(),
     )
+    local_today = now.astimezone(REPORT_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    series_start_local = local_today - timedelta(days=14)
     with _conn_rw() as c:
         rows = c.execute(
             """
@@ -509,6 +511,22 @@ def _public_metrics_snapshot(now_utc: datetime | None = None) -> Dict[str, Any]:
             """,
             (boundaries[0],) * 6 + (boundaries[1],) * 6 + (boundaries[2],) * 6,
         ).fetchone()
+        daily_rows = c.execute(
+            "SELECT ts_utc, total_tokens FROM usage_logs WHERE ts_utc >= ? ORDER BY ts_utc",
+            (series_start_local.astimezone(timezone.utc).isoformat(),),
+        ).fetchall()
+
+    daily_totals = {
+        (series_start_local + timedelta(days=offset)).date().isoformat(): 0
+        for offset in range(14)
+    }
+    for ts_utc, total_tokens in daily_rows:
+        try:
+            day = datetime.fromisoformat(ts_utc).astimezone(REPORT_TZ).date().isoformat()
+        except (TypeError, ValueError):
+            continue
+        if day in daily_totals:
+            daily_totals[day] += int(total_tokens or 0)
 
     def window(offset: int) -> Dict[str, int]:
         return {
@@ -525,6 +543,11 @@ def _public_metrics_snapshot(now_utc: datetime | None = None) -> Dict[str, Any]:
         "generatedAt": now.replace(microsecond=0).isoformat(),
         "timezone": _REPORT_TZ_NAME,
         "lastActivityAt": rows[0],
+        "daily": {
+            "from": next(iter(daily_totals)),
+            "to": next(reversed(daily_totals)),
+            "days": list(daily_totals.values()),
+        },
         "windows": {
             "today": window(7),
             "thisWeek": window(13),

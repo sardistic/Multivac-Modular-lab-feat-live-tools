@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from services.sqlite_store import SQLiteStore
@@ -231,14 +231,23 @@ class UsageCostsTests(unittest.TestCase):
             99.0,
             meta={"prompt": "must not leak"},
         )
+        prior_local = (datetime.now(timezone.utc).astimezone(usage_costs.REPORT_TZ) - timedelta(days=1)).replace(
+            hour=12, minute=0, second=0, microsecond=0
+        )
+        with usage_costs._conn_rw() as conn:
+            conn.execute(
+                "UPDATE usage_logs SET ts_utc = ?",
+                (prior_local.astimezone(timezone.utc).isoformat(),),
+            )
+        self.assertTrue(usage_costs.publish_metrics_snapshot())
 
         snapshot = json.loads(Path(usage_costs.METRICS_PATH).read_text(encoding="utf-8"))
         self.assertEqual(snapshot["schema"], 1)
-        self.assertEqual(snapshot["windows"]["today"]["calls"], 1)
-        self.assertEqual(snapshot["windows"]["today"]["promptTokens"], 120)
-        self.assertEqual(snapshot["windows"]["today"]["cachedPromptTokens"], 40)
-        self.assertEqual(snapshot["windows"]["today"]["completionTokens"], 30)
-        self.assertEqual(snapshot["windows"]["thisWeek"]["totalTokens"], 150)
+        self.assertEqual(snapshot["windows"]["today"]["calls"], 0)
+        self.assertEqual(snapshot["windows"]["allTime"]["totalTokens"], 150)
+        self.assertEqual(len(snapshot["daily"]["days"]), 14)
+        self.assertEqual(snapshot["daily"]["days"][-1], 150)
+        self.assertNotEqual(snapshot["daily"]["to"], datetime.now(usage_costs.REPORT_TZ).date().isoformat())
         serialized = json.dumps(snapshot)
         for private_value in ("private-user", "private-label", "private-model", "must not leak", "99.0"):
             self.assertNotIn(private_value, serialized)
