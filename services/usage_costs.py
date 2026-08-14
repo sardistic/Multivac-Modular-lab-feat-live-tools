@@ -155,6 +155,11 @@ _DEFAULT_PRICING: Dict[str, tuple] = {
     "claude-sonnet-5": (2.00, 10.00),
     "claude-sonnet-4": (3.00, 15.00),
     "claude": (3.00, 15.00),
+    # gemini-3.7-flash promo rates run through 2026-12-31; they double to
+    # (1.50, 7.50) on 2027-01-01. Needs its own row because estimate_cost
+    # matches by longest startswith prefix and "gemini-3.7-flash" does not
+    # start with "gemini-3-flash".
+    "gemini-3.7-flash": (0.75, 3.75),
     "gemini-3-flash": (0.30, 2.50),
     "gemini": (0.30, 2.50),
 }

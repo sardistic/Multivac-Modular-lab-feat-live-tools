@@ -376,7 +376,7 @@ async def handle_gemini_chat_intent(
     def _live_code_summarizer():
         if force_web_search:
             return status_tracker["text"] or "Checking current sources…"
-        return status_tracker["text"] or "Using Gemini 1.5 Flash..."
+        return status_tracker["text"] or "Using Gemini 3.7 Flash..."
 
     search_ids = {
         "guild_id": str(message.guild.id) if message.guild else "DM",
@@ -385,7 +385,7 @@ async def handle_gemini_chat_intent(
     }
 
     async def _do_gemini_generation(model_name=None):
-        selected_model = model_name or "gemini-3-flash-preview"
+        selected_model = model_name or "gemini-3.7-flash"
 
         async def _generate_once(
             *,
