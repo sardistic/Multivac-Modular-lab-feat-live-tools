@@ -18,8 +18,8 @@ class ModerationFallbackView(discord.ui.View):
                 emoji="🧠",
             ),
             discord.SelectOption(
-                label="Gemini 3 Flash (Fast)",
-                value="gemini-3-flash-preview",
+                label="Gemini 3.7 Flash (Fast)",
+                value="gemini-3.7-flash",
                 description="Fast and efficient.",
                 emoji="⚡",
             ),
