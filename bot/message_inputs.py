@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import logging
 import mimetypes
 import re
-from typing import Any, List
+from io import BytesIO
+from typing import Any, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from google.genai import types
+from PIL import Image, ImageOps
 
 logger = logging.getLogger("discord_bot")
 
@@ -17,6 +20,12 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif",
 MAX_VISUAL_INPUTS = 4
 MAX_ATTACHMENT_BYTES = 10_000_000
 MAX_ATTACHMENT_TOTAL_BYTES = 20_000_000
+# Discord accepts uploads larger than the per-request budget above (10 MiB on
+# the free tier, far more with Nitro), so an oversized image is downscaled
+# rather than dropped. Dropping it silently made the bot ask for a picture the
+# user had plainly attached.
+DOWNSCALE_MAX_DIM = 2048
+DOWNSCALE_SOURCE_BYTES = 50_000_000
 
 
 def strip_mention_and_trigger(raw: str, bot_user_id: int | None) -> str:
@@ -83,6 +92,45 @@ def _looks_like_image_url(url: str) -> bool:
     return False
 
 
+def _downscale_image_bytes(data: bytes) -> Optional[Tuple[bytes, str]]:
+    """Re-encode an oversized image so it fits the per-request byte budget.
+
+    A phone photo is far larger than any vision model reads; 2048px of JPEG
+    keeps every detail these models act on. Runs off the event loop.
+    """
+    try:
+        with Image.open(BytesIO(data)) as image:
+            src = ImageOps.exif_transpose(image).convert("RGB")
+            src.thumbnail((DOWNSCALE_MAX_DIM, DOWNSCALE_MAX_DIM), Image.Resampling.LANCZOS)
+            for quality in (85, 70, 55):
+                buf = BytesIO()
+                src.save(buf, format="JPEG", quality=quality, optimize=True)
+                if buf.tell() <= MAX_ATTACHMENT_BYTES:
+                    return buf.getvalue(), "image/jpeg"
+    except Exception as e:
+        logger.warning("Failed to downscale oversized image: %s", e)
+        return None
+    logger.warning("Image still over the byte budget after downscaling")
+    return None
+
+
+async def _downscaled_attachment(attachment) -> Optional[Tuple[bytes, str]]:
+    filename = getattr(attachment, "filename", "unknown")
+    size = int(getattr(attachment, "size", 0) or 0)
+    if size > DOWNSCALE_SOURCE_BYTES:
+        logger.warning("Attachment too large to downscale: %s (%d bytes)", filename, size)
+        return None
+    try:
+        data = await attachment.read()
+    except Exception as e:
+        logger.error("Failed to read oversized attachment %s: %s", filename, e)
+        return None
+    reduced = await asyncio.to_thread(_downscale_image_bytes, data)
+    if reduced:
+        logger.info("Downscaled oversized image %s: %d -> %d bytes", filename, len(data), len(reduced[0]))
+    return reduced
+
+
 def has_visual_inputs(message, ref_msg=None) -> bool:
     if message.attachments or (ref_msg and ref_msg.attachments):
         return True
@@ -110,6 +158,7 @@ async def collect_image_inputs(
     ref_msg,
     image_url_to_base64,
     source_image_urls: List[str] | None = None,
+    unusable_images: List[str] | None = None,
 ) -> List[str]:
     image_urls: List[str] = []
     source_urls: List[str] = []
@@ -135,16 +184,33 @@ async def collect_image_inputs(
             image_urls.append(url)
             source_urls.append(url)
 
-    def _allowed_attachment(attachment) -> bool:
-        size = int(getattr(attachment, "size", 0) or 0)
-        return size <= MAX_ATTACHMENT_BYTES
+    async def _append_attachment(attachment) -> None:
+        """Forward an image attachment, downscaling it first if it is too big."""
+        nonlocal visual_bytes
+        ctype = getattr(attachment, "content_type", None)
+        if not (ctype and ctype.startswith("image/")):
+            return
+        if int(getattr(attachment, "size", 0) or 0) <= MAX_ATTACHMENT_BYTES:
+            await _append_remote(attachment.url)
+            return
+        reduced = await _downscaled_attachment(attachment)
+        if reduced is None:
+            if unusable_images is not None:
+                unusable_images.append(getattr(attachment, "filename", "image"))
+            return
+        data, mime = reduced
+        if visual_bytes + len(data) > MAX_ATTACHMENT_TOTAL_BYTES:
+            logger.warning("Skipped downscaled image because the request byte budget is exhausted")
+            return
+        image_urls.append(f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}")
+        source_urls.append(attachment.url)
+        visual_bytes += len(data)
 
     if ref_msg and ref_msg.attachments:
         for attachment in ref_msg.attachments:
             if len(image_urls) >= MAX_VISUAL_INPUTS:
                 break
-            if _allowed_attachment(attachment) and attachment.content_type and attachment.content_type.startswith("image/"):
-                await _append_remote(attachment.url)
+            await _append_attachment(attachment)
 
     if ref_msg and ref_msg.embeds:
         for url in _embed_image_candidates(ref_msg.embeds):
@@ -154,8 +220,7 @@ async def collect_image_inputs(
         for attachment in message.attachments:
             if len(image_urls) >= MAX_VISUAL_INPUTS:
                 break
-            if _allowed_attachment(attachment) and attachment.content_type and attachment.content_type.startswith("image/"):
-                await _append_remote(attachment.url)
+            await _append_attachment(attachment)
 
     if message.embeds:
         for url in _embed_image_candidates(message.embeds):
@@ -166,9 +231,7 @@ async def collect_image_inputs(
         for attachment in getattr(snap, "attachments", None) or []:
             if len(image_urls) >= MAX_VISUAL_INPUTS:
                 break
-            ctype = getattr(attachment, "content_type", None)
-            if _allowed_attachment(attachment) and ctype and ctype.startswith("image/"):
-                await _append_remote(attachment.url)
+            await _append_attachment(attachment)
         for url in _embed_image_candidates(getattr(snap, "embeds", None)):
             await _append_remote(url)
 
@@ -233,7 +296,12 @@ async def collect_gemini_parts(message, ref_msg, image_urls) -> List[Any]:
             return
         declared_size = int(getattr(attachment, "size", 0) or 0)
         if declared_size > MAX_ATTACHMENT_BYTES:
-            logger.warning("Skipped oversized %s attachment: %s", label, getattr(attachment, "filename", "unknown"))
+            ctype = getattr(attachment, "content_type", None) or ""
+            # Oversized images are already downscaled by collect_image_inputs
+            # and reach us through the image_urls data-URIs below; anything
+            # else is genuinely too big to include.
+            if not ctype.startswith("image/"):
+                logger.warning("Skipped oversized %s attachment: %s", label, getattr(attachment, "filename", "unknown"))
             return
         if declared_size and total_attachment_bytes + declared_size > MAX_ATTACHMENT_TOTAL_BYTES:
             logger.warning("Skipped %s attachment because the request byte budget is exhausted", label)
