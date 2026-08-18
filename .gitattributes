@@ -1,0 +1,9 @@
+# This repo is deployed into Linux containers. Anything the image builds from
+# or executes must stay LF regardless of the checkout platform's autocrlf.
+Dockerfile              text eol=lf
+docker-compose.yml      text eol=lf
+requirements-freeze.txt text eol=lf
+journalctl              text eol=lf
+*.py                    text eol=lf
+*.sh                    text eol=lf
+*.yml                   text eol=lf

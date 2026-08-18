@@ -1,0 +1,11 @@
+#!/bin/sh
+# journalctl shim for the containerized bot: the real journal doesn't exist here,
+# so serve the bot's own stdout log (written by the container entrypoint).
+N=600
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n) N="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+tail -n "$N" /app/bot.log 2>/dev/null || echo "-- no log entries yet --"
