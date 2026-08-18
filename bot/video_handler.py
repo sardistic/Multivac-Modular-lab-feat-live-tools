@@ -1,5 +1,6 @@
 import asyncio
 import io
+import time
 import logging
 import re
 
@@ -16,6 +17,7 @@ from providers.veo_utils import (
 )
 from services import usage_costs
 from services.behavior_registry import invoke_provider
+from services.progress_cards import build_run_receipt, receipts_enabled, requester_label
 from services.database_utils import (
     check_sora_limit,
     check_veo_limit,
@@ -450,6 +452,7 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
         return io.BytesIO(content), None
 
     duration_estimate = selected_seconds * 10 if provider == "sora" else estimate_veo_runtime(selected_model, selected_seconds)
+    started_at = time.monotonic()
     status_msg, result = await live_status_with_progress(
         message,
         action_label=f"Generating ({provider_label}, {selected_seconds}s)",
@@ -471,7 +474,25 @@ async def handle_generate_video_intent(message, prompt: str, user_id, live_statu
             )
             filename = "sora_video.mp4" if provider == "sora" else "veo_video.mp4"
             await status_msg.reply(file=discord.File(file_obj, filename=filename))
-            await status_msg.edit(content=final_msg)
+            receipt = None
+            try:
+                if receipts_enabled("video"):
+                    receipt = build_run_receipt(
+                        "Video generated",
+                        elapsed=time.monotonic() - started_at,
+                        model=f"{provider_label} · {selected_seconds}s",
+                        requested_by=requester_label(message),
+                        extra_rows=[("est. cost", f"${estimated_cost:.2f}")],
+                    )
+            except Exception:
+                logger.debug("receipt card skipped", exc_info=True)
+            if receipt:
+                await status_msg.edit(
+                    content=final_msg,
+                    attachments=[discord.File(receipt, "receipt.png")],
+                )
+            else:
+                await status_msg.edit(content=final_msg)
             return
 
         await status_msg.edit(content=f"❌ {err or base_fail_msg}")

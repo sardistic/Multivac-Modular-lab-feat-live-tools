@@ -5,6 +5,7 @@ import json
 import logging
 import mimetypes
 import re
+import time
 
 import discord
 
@@ -23,6 +24,7 @@ from providers.stability_utils import (
 )
 from services.weather_utils import get_location_details, get_weather_data
 from services.behavior_registry import invoke_provider
+from services.progress_cards import build_run_receipt, receipts_enabled, requester_label
 from services.url_utils import DEFAULT_MEDIA_BYTES, fetch_url_bytes
 
 logger = logging.getLogger("discord_bot")
@@ -535,6 +537,25 @@ async def handle_generate_image_intent(
         "provider": "Gemini" if use_gemini else "OpenAI",
         "model": IMG_MODEL_GEMINI if use_gemini else IMG_MODEL_OPENAI,
     }
+    # Progressive preview: the provider streams partial renders, and the
+    # progress loop attaches each one as it arrives. The indicator becomes the
+    # picture resolving, so a bad composition can be abandoned early instead of
+    # waited out. Bounded by GPT_IMAGE_PARTIALS, so it stays a few uploads.
+    preview_sink: dict = {"seq": 0, "frame": None}
+
+    def _stash_partial(raw: bytes, index: int) -> None:
+        preview_sink["frame"] = raw
+        preview_sink["seq"] = int(index) + 1
+
+    def _build_preview():
+        raw = preview_sink.get("frame")
+        if not raw:
+            return None
+        return [discord.File(io.BytesIO(raw), "preview.png")]
+
+    preview_sink["build"] = _build_preview
+
+    started_at = time.monotonic()
     status_msg, image_data = await live_status_with_progress(
         message,
         action_label=lambda: f"Generating ({provider_state['model']})",
@@ -548,15 +569,32 @@ async def handle_generate_image_intent(
             retry_context=retry_context,
             use_gemini=use_gemini,
             provider_state=provider_state,
+            partial_callback=_stash_partial,
         ),
         duration_estimate=duration_estimate,
         summarizer=(lambda: "Rendering image… adding details…") if stream_ok else None,
+        preview_sink=preview_sink,
     )
     if image_data:
         image_data.seek(0)
+        files = [discord.File(image_data, "generated_image.png")]
+        receipt = None
+        try:
+            if receipts_enabled("image"):
+                receipt = build_run_receipt(
+                    "Image generated",
+                    elapsed=time.monotonic() - started_at,
+                    model=provider_state["model"],
+                    requested_by=requester_label(message),
+                )
+        except Exception:
+            logger.debug("receipt card skipped", exc_info=True)
+            receipt = None
+        if receipt:
+            files.append(discord.File(receipt, "receipt.png"))
         await status_msg.edit(
             content=f"✅ Image generated ({provider_state['model']})",
-            attachments=[discord.File(image_data, "generated_image.png")],
+            attachments=files,
         )
     else:
         logger.warning("Image generation returned None (prompt=%.100r)", prompt)
