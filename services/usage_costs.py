@@ -133,6 +133,26 @@ def set_request_context(**fields: Any) -> None:
 def get_request_context() -> Dict[str, Any]:
     return dict(_request_ctx.get() or {})
 
+# Running totals for the request currently in flight, so a completion card can
+# report what the run actually cost without re-querying the ledger.
+_request_totals: contextvars.ContextVar[Dict[str, float] | None] = contextvars.ContextVar(
+    "usage_request_totals", default=None
+)
+
+def reset_request_totals() -> None:
+    _request_totals.set({"calls": 0.0, "tokens": 0.0, "cost_usd": 0.0})
+
+def get_request_totals() -> Dict[str, float]:
+    return dict(_request_totals.get() or {"calls": 0.0, "tokens": 0.0, "cost_usd": 0.0})
+
+def _accumulate_request_totals(tokens: Any, cost: Any) -> None:
+    running = _request_totals.get()
+    if running is None:
+        return
+    running["calls"] += 1
+    running["tokens"] += _coerce_float(tokens)
+    running["cost_usd"] += _coerce_float(cost)
+
 # ----------------------------
 # Pricing (USD per 1M tokens). Tuples are input, output, cached input,
 # cache-write. Two-value operator overrides remain supported.
@@ -322,6 +342,7 @@ def record(
         **(meta or {})
     }
     meta_json = json.dumps(payload, ensure_ascii=False)
+    _accumulate_request_totals(fields["total_tokens"], cost)
 
     logger.debug(
         "record(): model=%s label=%s user=%s prompt=%s cached=%s cache_write=%s completion=%s total=%s cost=%s",

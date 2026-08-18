@@ -114,9 +114,69 @@ class ImageModerationError(Exception):
     """The provider's safety system refused the image prompt."""
 
 
-async def generate_gpt_image(prompt: str) -> Optional[BytesIO]:
+# Partial frames per render when a caller wants a progressive preview. Each
+# one costs an attachment re-upload on the status message, so keep it low --
+# this is a handful of edits across a ~40s render, not a per-frame animation.
+GPT_IMAGE_PARTIALS = 2
+
+
+async def _generate_gpt_image_streaming(prompt: str, background_type: str, partial_callback):
+    """Stream the render so the caller can show the image resolving.
+
+    Returns (result, b64_image). Raises on any streaming failure so the caller
+    can fall back to a single-shot request.
+    """
+    stream = await get_openai_image_client().images.generate(
+        model="gpt-image-1.5",
+        prompt=prompt,
+        size="auto",
+        background=background_type,
+        quality="high",
+        moderation="low",
+        n=1,
+        stream=True,
+        partial_images=GPT_IMAGE_PARTIALS,
+    )
+    final = None
+    b64_image = None
+    async for event in stream:
+        kind = getattr(event, "type", "")
+        payload = getattr(event, "b64_json", None)
+        if kind == "image_generation.partial_image" and payload:
+            try:
+                partial_callback(base64.b64decode(payload), getattr(event, "partial_image_index", 0))
+            except Exception:
+                logger.debug("partial image callback failed", exc_info=True)
+        elif kind == "image_generation.completed":
+            final = event
+            b64_image = payload
+    return final, b64_image
+
+
+async def generate_gpt_image(prompt: str, partial_callback=None) -> Optional[BytesIO]:
     try:
         background_type = "transparent" if "transparent background" in prompt.lower() else "auto"
+        result = None
+        b64_image = None
+        if partial_callback is not None:
+            try:
+                result, b64_image = await _generate_gpt_image_streaming(
+                    prompt, background_type, partial_callback
+                )
+            except ImageModerationError:
+                raise
+            except Exception as stream_error:
+                if "moderation_blocked" in str(stream_error):
+                    raise
+                logger.info("gpt-image streaming unavailable, falling back: %s", stream_error)
+                result = None
+                b64_image = None
+        if b64_image:
+            _record_image_usage(result, label="image_generation")
+            logger.info(
+                "gpt-image streamed %d bytes (prompt=%.80r)", len(b64_image) * 3 // 4, prompt
+            )
+            return BytesIO(base64.b64decode(b64_image))
         result = await get_openai_image_client().images.generate(
             model="gpt-image-1.5",
             prompt=prompt,
@@ -178,6 +238,7 @@ async def handle_image_generation(
     retry_context: str = "",
     use_gemini: bool | None = None,
     provider_state: dict | None = None,
+    partial_callback=None,
 ) -> Optional[BytesIO]:
     def _set_provider(name: str, model: str) -> None:
         if provider_state is not None:
@@ -188,7 +249,7 @@ async def handle_image_generation(
         """Try OpenAI once, then always try Gemini for any OpenAI failure."""
         _set_provider("OpenAI", IMG_MODEL_OPENAI)
         try:
-            img = await generate_gpt_image(image_prompt)
+            img = await generate_gpt_image(image_prompt, partial_callback=partial_callback)
         except ImageModerationError:
             img = None
         if img:
@@ -271,7 +332,7 @@ async def handle_image_generation(
                 await message.channel.send("⚠️ **Gemini generation failed** (likely rate limit or error). Falling back to OpenAI... 🧠")
             _set_provider("OpenAI", IMG_MODEL_OPENAI)
             try:
-                return await generate_gpt_image(image_prompt)
+                return await generate_gpt_image(image_prompt, partial_callback=partial_callback)
             except ImageModerationError:
                 if message:
                     await message.channel.send("🚫 OpenAI's safety system also rejected this prompt. Try rephrasing.")

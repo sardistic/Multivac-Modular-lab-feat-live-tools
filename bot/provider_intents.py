@@ -629,6 +629,9 @@ async def handle_summarize_url_intent(
         coro=_do_summarize(),
         duration_estimate=duration_estimate,
         summarizer=(lambda: f"Fetching page…\nURL: {url}\nExtracting main content…") if stream_ok else None,
+        # An arbitrary page has no honest ETA until it responds, so a
+        # percentage here would be invented. Use the reserved indeterminate style.
+        indeterminate=True,
     )
     if summary:
         await send_or_edit_with_truncation(summary, target_msg=status_msg)

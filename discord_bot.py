@@ -86,7 +86,12 @@ from services.tool_control import ToolControlWorker
 from services.tools_registry import TOOL_REGISTRY, ToolModuleLoader
 from services import usage_costs
 from services.reflection_worker import ReflectionErrorHandler, ReflectionWorker
-from services.progress import render_progress_status, start_progress_bar
+from services.progress import (
+    pick_style,
+    render_progress_status,
+    render_stage_checklist,
+    start_progress_bar,
+)
 from services.security_limits import check_rate_limit
 from services.security_utils import public_error_detail, sanitize_diagnostic_text
 from services.user_profile import maybe_refresh_profile
@@ -208,15 +213,23 @@ _expansion_locks: set[int] = set()
 _preflight_status_by_message_id: dict[int, discord.Message] = {}
 
 
+# The preflight path has genuinely discrete stages, so it renders them as a
+# checklist. A smooth bar across four steps invents continuity that is not
+# there and hides which stage a stall happened in.
+PREFLIGHT_STAGES = (
+    "Opening the response path",
+    "Indexing fresh context",
+    "Reading intent and available inputs",
+    "Routing to the right capability",
+)
+
+
 def _preflight_status(step: int, detail: str, total: int = 3) -> str:
-    return render_progress_status(
-        "Preparing",
-        emoji="🧠",
-        progress=max(0, min(step, total)) / max(1, total),
-        phase=step,
-        detail=detail,
-        done=step >= total,
-    )
+    current = max(0, min(int(step), len(PREFLIGHT_STAGES)))
+    body = render_stage_checklist(PREFLIGHT_STAGES, current, phase=current)
+    if detail and current < len(PREFLIGHT_STAGES):
+        return f"{body}\n↳ {str(detail).strip()[:900]}"
+    return body
 
 
 async def _run_context_progress(
@@ -226,16 +239,20 @@ async def _run_context_progress(
     emoji: str,
     coro,
     duration_estimate: int,
+    indeterminate: bool = False,
 ):
     """Animate an owner-triggered command, then let the caller replace it."""
     if ctx.interaction:
         await ctx.defer()
+    seed = getattr(getattr(ctx, "message", None), "id", None)
+    style = "barberpole" if indeterminate else pick_style(seed)
     try:
         status_msg = await ctx.reply(
             render_progress_status(
                 action_label,
                 emoji=emoji,
                 detail="Starting the reviewed operation…",
+                style=style,
             )
         )
     except Exception:
@@ -250,6 +267,7 @@ async def _run_context_progress(
             action_label=action_label,
             emoji=emoji,
             duration_estimate=duration_estimate,
+            style=style,
         )
     )
     try:
@@ -2242,6 +2260,7 @@ async def _builtin_on_message(message: discord.Message):
             )
     
     # Attribute all API spend during this message to the requesting user.
+    usage_costs.reset_request_totals()
     usage_costs.set_request_context(
         user_id=str(user_id),
         guild_id=str(message.guild.id) if message.guild else "DM",
