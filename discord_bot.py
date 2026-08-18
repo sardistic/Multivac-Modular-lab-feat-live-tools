@@ -2207,13 +2207,32 @@ async def _builtin_on_message(message: discord.Message):
         return
 
     source_image_urls = []
+    unusable_images = []
     image_urls = await collect_image_inputs(
         message,
         ref_msg,
         image_url_to_base64,
         source_image_urls,
+        unusable_images,
     )
     gemini_parts = await collect_gemini_parts(message, ref_msg, image_urls)
+
+    # Say so instead of routing an image request onward with no image — that
+    # fell through to plain chat and asked for a picture the user had attached.
+    if unusable_images and not (image_urls or gemini_parts):
+        subject = f"`{unusable_images[0]}`" if len(unusable_images) == 1 else f"{len(unusable_images)} attached images"
+        notice = (
+            f"🖼️ I couldn't read {subject} — too large for me to process even after resizing. "
+            "Try reposting it as a JPEG or a smaller screenshot."
+        )
+        _preflight_status_by_message_id.pop(message.id, None)
+        if preflight_status is not None:
+            with contextlib.suppress(Exception):
+                await preflight_status.edit(content=notice)
+        else:
+            await message.reply(notice)
+        return
+
     has_attachments = has_visual_inputs(message, ref_msg) or bool(image_urls or gemini_parts)
     channel_context = await fetch_recent_channel_context(message, bot.user)
     if preflight_status is not None:
