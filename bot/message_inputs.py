@@ -58,13 +58,37 @@ def _forward_snapshots(message) -> List[Any]:
 
 
 def _embed_image_candidates(embeds) -> List[str]:
+    """One candidate per embed.
+
+    Discord populates ``thumbnail`` as a smaller variant of the same picture on
+    a link embed, so taking both fields fed the model the image twice.
+    """
     candidates: List[str] = []
     for embed in embeds or []:
-        if getattr(embed, "image", None) and embed.image.url:
-            candidates.append(embed.image.url)
-        if getattr(embed, "thumbnail", None) and embed.thumbnail.url:
-            candidates.append(embed.thumbnail.url)
+        image = getattr(embed, "image", None)
+        thumb = getattr(embed, "thumbnail", None)
+        url = (getattr(image, "url", None) or getattr(thumb, "url", None))
+        if url:
+            candidates.append(url)
     return candidates
+
+
+def _image_identity(url: str) -> str:
+    """Identity for the picture behind a URL, ignoring how it was addressed.
+
+    The same upload arrives as a cdn.discordapp.com link in message text and as
+    a media.discordapp.net proxy in the auto-generated embed, with signing and
+    resize parameters attached. Those bytes differ after re-encoding, so a
+    content hash cannot catch the duplicate -- the path can.
+    """
+    try:
+        parsed = urlparse(url or "")
+        host = (parsed.netloc or "").lower()
+        if host in {"media.discordapp.net", "cdn.discordapp.com", "images-ext-1.discordapp.net"}:
+            host = "discord"
+        return f"{host}{(parsed.path or '').lower()}"
+    except Exception:
+        return (url or "").lower()
 
 
 def _clean_url_token(url: str) -> str:
@@ -162,11 +186,22 @@ async def collect_image_inputs(
 ) -> List[str]:
     image_urls: List[str] = []
     source_urls: List[str] = []
+    seen_sources: set[str] = set()
     visual_bytes = 0
+
+    def _claim(url: str) -> bool:
+        """False when this picture has already been taken from another path."""
+        identity = _image_identity(url)
+        if not identity or identity in seen_sources:
+            return False
+        seen_sources.add(identity)
+        return True
 
     async def _append_remote(url: str) -> None:
         nonlocal visual_bytes
         if len(image_urls) >= MAX_VISUAL_INPUTS:
+            return
+        if not _claim(url):
             return
         b64 = await image_url_to_base64(url)
         if b64:
@@ -180,7 +215,7 @@ async def collect_image_inputs(
             visual_bytes += estimated_bytes
 
     def _append_public(url: str) -> None:
-        if len(image_urls) < MAX_VISUAL_INPUTS:
+        if len(image_urls) < MAX_VISUAL_INPUTS and _claim(url):
             image_urls.append(url)
             source_urls.append(url)
 
@@ -192,6 +227,8 @@ async def collect_image_inputs(
             return
         if int(getattr(attachment, "size", 0) or 0) <= MAX_ATTACHMENT_BYTES:
             await _append_remote(attachment.url)
+            return
+        if not _claim(attachment.url):
             return
         reduced = await _downscaled_attachment(attachment)
         if reduced is None:
