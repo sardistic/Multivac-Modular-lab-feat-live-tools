@@ -121,3 +121,56 @@ class OversizedImageInputTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DuplicateSourceTests(unittest.IsolatedAsyncioTestCase):
+    """One picture must reach the model once, however many ways it arrives."""
+
+    CDN = "https://cdn.discordapp.com/attachments/1/2/cat.png?ex=abc&is=def&hm=99"
+    PROXY = "https://media.discordapp.net/attachments/1/2/cat.png?width=400&height=300"
+
+    def _msg(self, content="", embeds=(), attachments=()):
+        return SimpleNamespace(
+            attachments=list(attachments), embeds=list(embeds),
+            content=content, message_snapshots=[],
+        )
+
+    def _embed(self, image=None, thumbnail=None):
+        mk = lambda u: SimpleNamespace(url=u) if u else None
+        return SimpleNamespace(image=mk(image), thumbnail=mk(thumbnail))
+
+    async def test_url_in_text_plus_its_auto_embed_counts_once(self):
+        # Discord renders a posted image link as an embed; the raw URL is still
+        # in the text. Both paths used to ingest, and the proxy re-encodes so a
+        # content hash could not catch it.
+        convert = AsyncMock(side_effect=lambda u: f"data:image/png;base64,{'A' if 'cdn' in u else 'B'}=")
+        images = await collect_image_inputs(
+            self._msg(content=self.CDN, embeds=[self._embed(image=self.PROXY)]),
+            None, convert, [], [],
+        )
+        self.assertEqual(len(images), 1)
+
+    async def test_embed_image_and_thumbnail_count_once(self):
+        convert = AsyncMock(side_effect=lambda u: f"data:image/png;base64,{u[-6:]}=")
+        images = await collect_image_inputs(
+            self._msg(embeds=[self._embed(image=self.CDN, thumbnail=self.PROXY)]),
+            None, convert, [], [],
+        )
+        self.assertEqual(len(images), 1)
+
+    async def test_attachment_plus_its_url_in_text_counts_once(self):
+        att = _attachment(500_000, _png_bytes(32, 32), "cat.png")
+        att.url = self.CDN
+        convert = AsyncMock(return_value="data:image/png;base64,QQ==")
+        images = await collect_image_inputs(
+            self._msg(content=self.CDN, attachments=[att]), None, convert, [], [],
+        )
+        self.assertEqual(len(images), 1)
+
+    async def test_genuinely_different_images_are_both_kept(self):
+        other = "https://cdn.discordapp.com/attachments/9/9/dog.png"
+        convert = AsyncMock(side_effect=lambda u: f"data:image/png;base64,{'A' if 'cat' in u else 'B'}=")
+        images = await collect_image_inputs(
+            self._msg(content=f"{self.CDN} {other}"), None, convert, [], [],
+        )
+        self.assertEqual(len(images), 2)
