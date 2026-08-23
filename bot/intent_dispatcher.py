@@ -142,7 +142,10 @@ def resolve_keyword_intent(raw_prompt: str, prompt: str, has_attachments: bool) 
 
     # "imagine ..." is this bot's established image command word — always an
     # image request, with or without a leading provider name. (Provider is
-    # still chosen separately via wants_gemini.)
+    # still chosen separately via wants_gemini.) Attachments do not change the
+    # route: generate_image now carries them down as reference images, so
+    # "imagine this in an art museum" renders the attached picture rather than
+    # skipping the classifier and losing it.
     without_provider = re.sub(r"^gemini[\s,:]+", "", lowered_prompt)
     if without_provider.startswith(("imagine ", "imagine:")):
         # With an image present, "imagine a translation/description of this
@@ -317,6 +320,10 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
             stream_ok=ctx.stream_ok,
             live_status_with_progress=ctx.live_status_with_progress,
             use_gemini=wants_gemini(ctx.prompt) or wants_gemini(ctx.raw_prompt),
+            # A generation can have a subject the user attached ("imagine this
+            # in an art museum"). Only edit_image used to receive these, so
+            # that picture was dropped and the model invented a subject.
+            image_urls=ctx.image_urls,
         )
         return True
 

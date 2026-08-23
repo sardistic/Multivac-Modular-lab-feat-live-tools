@@ -2,10 +2,31 @@ import base64
 import io
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, create_autospec, patch
+
+from openai.resources.images import AsyncImages
 
 from bot import image_handler, intent_dispatcher
 from providers import stability_generation
+
+
+def image_client(**results):
+    """A stand-in for the OpenAI images resource, specced against the real SDK.
+
+    A hand-rolled namespace accepts any method name and any keyword, which is
+    how a call to the non-existent `images.edits` passed its test while failing
+    in production. Autospec makes the mock reject both.
+    """
+    images = create_autospec(AsyncImages, instance=True)
+    # The SDK wraps these in @required_args, so autospec builds plain mocks for
+    # them; the awaited call needs an AsyncMock, still specced by name.
+    for method in ("generate", "edit"):
+        setattr(images, method, AsyncMock(spec=getattr(AsyncImages, method)))
+    for method, raw in results.items():
+        getattr(images, method).return_value = SimpleNamespace(
+            data=[SimpleNamespace(b64_json=base64.b64encode(raw).decode("ascii"))]
+        )
+    return SimpleNamespace(images=images)
 
 
 class ImageGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
@@ -156,26 +177,18 @@ class ImageGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("providers.stability_generation.get_openai_image_client")
     async def test_generate_gpt_image_uses_auto_size(self, mock_get_client):
-        generate = AsyncMock(
-            return_value=SimpleNamespace(
-                data=[SimpleNamespace(b64_json=base64.b64encode(b"img").decode("ascii"))]
-            )
-        )
-        mock_get_client.return_value = SimpleNamespace(images=SimpleNamespace(generate=generate))
+        client = image_client(generate=b"img")
+        mock_get_client.return_value = client
 
         result = await stability_generation.generate_gpt_image("a neon city skyline")
 
         self.assertEqual(result.read(), b"img")
-        self.assertEqual(generate.await_args.kwargs["size"], "auto")
+        self.assertEqual(client.images.generate.await_args.kwargs["size"], "auto")
 
     @patch("providers.stability_generation.get_openai_image_client")
     async def test_edit_image_with_prompt_uses_auto_size(self, mock_get_client):
-        edits = AsyncMock(
-            return_value=SimpleNamespace(
-                data=[SimpleNamespace(b64_json=base64.b64encode(b"edited").decode("ascii"))]
-            )
-        )
-        mock_get_client.return_value = SimpleNamespace(images=SimpleNamespace(edits=edits))
+        client = image_client(edit=b"edited")
+        mock_get_client.return_value = client
 
         result = await stability_generation.edit_image_with_prompt(
             "data:image/png;base64,Zm9v",
@@ -183,7 +196,196 @@ class ImageGenerationFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result.read(), b"edited")
-        self.assertEqual(edits.await_args.kwargs["size"], "auto")
+        self.assertEqual(client.images.edit.await_args.kwargs["size"], "auto")
+
+
+class AttachedImageAsGenerationReferenceTests(unittest.IsolatedAsyncioTestCase):
+    """'imagine this in an art museum' with a picture attached.
+
+    The picture used to reach neither the router (the "imagine" fast path skips
+    the classifier) nor the renderer (only edit_image took image_urls, and only
+    the Gemini branch collected references), so the model was handed "this"
+    with nothing to resolve it against and invented a subject.
+    """
+
+    PNG_DATA_URI = "data:image/png;base64,Zm9v"  # b"foo"
+
+    async def test_imagine_with_an_attachment_still_routes_to_generation(self):
+        intent = intent_dispatcher.resolve_keyword_intent(
+            "imagine this in an art museum",
+            "imagine this in an art museum",
+            has_attachments=True,
+        )
+        self.assertEqual(intent, "generate_image")
+
+    @patch("bot.intent_dispatcher.handle_generate_image_intent", new_callable=AsyncMock)
+    async def test_dispatch_hands_attached_images_to_the_generate_handler(self, mock_handle_generate):
+        message = SimpleNamespace(content="@bot imagine this in an art museum")
+
+        await intent_dispatcher.dispatch_intent(
+            intent_dispatcher.DispatchContext(
+                intent="generate_image",
+                message=message,
+                prompt="imagine this in an art museum",
+                raw_prompt="imagine this in an art museum",
+                user_id=123,
+                bot_user=SimpleNamespace(id=999),
+                image_urls=[self.PNG_DATA_URI],
+                live_status_with_progress=AsyncMock(),
+                send_or_edit_with_truncation=AsyncMock(),
+                prompt_for_image_selection=AsyncMock(),
+                moderation_view_factory=lambda **kwargs: None,
+            )
+        )
+
+        self.assertEqual(
+            mock_handle_generate.await_args.kwargs["image_urls"], [self.PNG_DATA_URI]
+        )
+
+    @patch("bot.image_handler.handle_image_generation", new_callable=AsyncMock)
+    async def test_generate_handler_forwards_reference_urls_and_labels_the_status(self, mock_generate):
+        mock_generate.return_value = io.BytesIO(b"generated-image")
+        output_status = SimpleNamespace(edit=AsyncMock())
+        labels = []
+
+        async def live_status(_message, **kwargs):
+            labels.append(kwargs["action_label"]())
+            return output_status, await kwargs["coro"]
+
+        await image_handler.handle_generate_image_intent(
+            message=SimpleNamespace(channel=SimpleNamespace(send=AsyncMock())),
+            prompt="imagine this in an art museum",
+            ref_msg=None,
+            duration_estimate=10,
+            stream_ok=False,
+            live_status_with_progress=live_status,
+            image_urls=[self.PNG_DATA_URI],
+        )
+
+        self.assertEqual(
+            mock_generate.await_args.kwargs["reference_urls"], [self.PNG_DATA_URI]
+        )
+        self.assertIn("from reference", labels[0])
+
+    @patch("providers.stability_generation.generate_gpt_image", new_callable=AsyncMock)
+    async def test_attached_image_reaches_gpt_image_as_a_reference(self, mock_generate_gpt):
+        mock_generate_gpt.return_value = "image-bytes"
+
+        result = await stability_generation.handle_image_generation(
+            message=None,
+            prompt="imagine this in an art museum",
+            reference_urls=[self.PNG_DATA_URI],
+        )
+
+        self.assertEqual(result, "image-bytes")
+        self.assertEqual(mock_generate_gpt.await_args.kwargs["references"], [b"foo"])
+        composed_prompt = mock_generate_gpt.await_args.args[0]
+        self.assertIn("visual reference", composed_prompt)
+        self.assertIn("imagine this in an art museum", composed_prompt)
+
+    @patch("providers.stability_generation.generate_gpt_image", new_callable=AsyncMock)
+    async def test_generation_without_attachments_carries_no_reference_note(self, mock_generate_gpt):
+        mock_generate_gpt.return_value = "image-bytes"
+
+        await stability_generation.handle_image_generation(
+            message=None,
+            prompt="imagine a moonlit library",
+        )
+
+        self.assertEqual(mock_generate_gpt.await_args.kwargs["references"], [])
+        self.assertNotIn("visual reference", mock_generate_gpt.await_args.args[0])
+
+    @patch("providers.stability_generation.get_openai_image_client")
+    async def test_references_go_to_the_edit_endpoint_not_generate(self, mock_get_client):
+        client = image_client(edit=b"img")
+        mock_get_client.return_value = client
+
+        result = await stability_generation.generate_gpt_image(
+            "a frog in an art museum", references=[b"foo"]
+        )
+
+        self.assertEqual(result.read(), b"img")
+        client.images.generate.assert_not_awaited()
+        call = client.images.edit.await_args.kwargs
+        self.assertEqual(len(call["image"]), 1)
+        self.assertEqual(call["image"][0].read(), b"foo")
+        # Without high input fidelity the reference is only loose inspiration.
+        self.assertEqual(call["input_fidelity"], "high")
+
+    @patch("providers.stability_generation.generate_gemini_image")
+    @patch("providers.stability_generation.generate_gemini_with_references")
+    async def test_gemini_generation_uses_the_same_references(self, mock_with_refs, mock_plain):
+        mock_with_refs.return_value = "gemini-image"
+
+        result = await stability_generation.handle_image_generation(
+            message=None,
+            prompt="gemini imagine this in an art museum",
+            use_gemini=True,
+            reference_urls=[self.PNG_DATA_URI],
+        )
+
+        self.assertEqual(result, "gemini-image")
+        mock_plain.assert_not_called()
+        self.assertEqual(mock_with_refs.call_args.args[1][0].read(), b"foo")
+
+    @patch("providers.stability_generation.get_openai_image_client")
+    async def test_streaming_render_keeps_the_reference(self, mock_get_client):
+        """The Discord path always passes a partial_callback, so the streaming
+        branch is the one that actually runs in production."""
+
+        class _Stream:
+            def __init__(self, events):
+                self._events = events
+
+            def __aiter__(self):
+                async def _iter():
+                    for event in self._events:
+                        yield event
+
+                return _iter()
+
+        client = image_client()
+        client.images.edit.return_value = _Stream(
+            [
+                SimpleNamespace(
+                    type="image_generation.partial_image",
+                    b64_json=base64.b64encode(b"half").decode("ascii"),
+                    partial_image_index=0,
+                ),
+                SimpleNamespace(
+                    type="image_generation.completed",
+                    b64_json=base64.b64encode(b"done").decode("ascii"),
+                ),
+            ]
+        )
+        mock_get_client.return_value = client
+        partials = []
+
+        result = await stability_generation.generate_gpt_image(
+            "a frog in an art museum",
+            partial_callback=lambda raw, index: partials.append((raw, index)),
+            references=[b"foo"],
+        )
+
+        self.assertEqual(result.read(), b"done")
+        self.assertEqual(partials, [(b"half", 0)])
+        call = client.images.edit.await_args.kwargs
+        self.assertTrue(call["stream"])
+        self.assertEqual(call["image"][0].read(), b"foo")
+        client.images.generate.assert_not_awaited()
+
+    async def test_references_are_deduplicated_and_capped(self):
+        distinct = [
+            f"data:image/png;base64,{base64.b64encode(f'img{i}'.encode()).decode('ascii')}"
+            for i in range(6)
+        ]
+
+        collected = await stability_generation.collect_reference_images(
+            reference_urls=[distinct[0], distinct[0], *distinct[1:]]
+        )
+
+        self.assertEqual(len(collected), stability_generation.MAX_REFERENCE_IMAGES)
+        self.assertEqual(len(set(collected)), len(collected))
 
 
 if __name__ == "__main__":

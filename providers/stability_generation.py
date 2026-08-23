@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import logging
 import random
@@ -28,6 +29,21 @@ _REPLY_PROMPT_MAX_CHARS = 1800
 IMG_MODEL_OPENAI = "GPT Image 1.5"
 IMG_MODEL_GEMINI = "Gemini 3 Pro Image"
 IMG_MODEL_STABILITY = "Stable Diffusion 1.5"
+
+
+# A render that has pictures to look at needs to be told they ARE the subject.
+# "imagine this in an art museum" carries no description of "this" -- without
+# this note the model is free to treat the reference as loose inspiration and
+# invent its own subject.
+_REFERENCE_PREAMBLE = (
+    "Use the attached image(s) as the visual reference for the subject. Words such as "
+    "'this', 'that', 'it', 'him', or 'her' in the request refer to what is shown there. "
+    "Keep that subject recognizable in the new image.\n\n"
+)
+
+
+def _with_reference_note(image_prompt: str) -> str:
+    return f"{_REFERENCE_PREAMBLE}{(image_prompt or '').strip()}"
 
 
 def _compose_reply_aware_image_prompt(prompt: str, reply_msg=None, retry_context: str = "") -> str:
@@ -114,29 +130,134 @@ class ImageModerationError(Exception):
     """The provider's safety system refused the image prompt."""
 
 
+# An album should not turn one render into a sixteen-image request. The Discord
+# layer already caps what it collects; this keeps a direct caller bounded too.
+MAX_REFERENCE_IMAGES = 4
+
+
+async def _reference_bytes(ref: str) -> bytes:
+    """Resolve one reference entry -- data: URI or http(s) URL -- to raw bytes."""
+    if ref.startswith("data:"):
+        _, _, b64 = ref.partition(",")
+        if len(b64) > (DEFAULT_MEDIA_BYTES * 4 // 3) + 16:
+            raise ValueError("image input exceeds the allowed size")
+        decoded = base64.b64decode(b64, validate=True)
+        if len(decoded) > DEFAULT_MEDIA_BYTES:
+            raise ValueError("image input exceeds the allowed size")
+        return decoded
+    fetched = await fetch_url_bytes_async(
+        ref,
+        timeout=20,
+        max_bytes=DEFAULT_MEDIA_BYTES,
+        allowed_content_types=("image/",),
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    return fetched.body
+
+
+async def collect_reference_images(
+    message=None,
+    reply_msg=None,
+    prompt: str = "",
+    reference_urls: list[str] | None = None,
+) -> list[bytes]:
+    """The pictures this render should look at.
+
+    `reference_urls` is the set the Discord layer already collected for this
+    message -- attachments, the replied message, embeds, forwarded posts and
+    linked images, deduplicated and size-checked. When a caller supplies it we
+    trust it and skip the scrape below, so one picture is not sent twice
+    because it arrived by two routes.
+    """
+    collected: list[bytes] = []
+    seen: set[str] = set()
+
+    async def _add(ref: str) -> None:
+        if not ref or len(collected) >= MAX_REFERENCE_IMAGES:
+            return
+        try:
+            raw = await _reference_bytes(ref)
+        except Exception as e:
+            logger.error("Failed to resolve image reference: %s", type(e).__name__)
+            return
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest in seen:
+            return
+        seen.add(digest)
+        collected.append(raw)
+
+    if reference_urls:
+        for ref in reference_urls:
+            await _add(ref)
+        return collected
+
+    for source in (reply_msg, message):
+        for att in getattr(source, "attachments", None) or []:
+            ctype = getattr(att, "content_type", None)
+            if ctype and ctype.startswith("image/"):
+                await _add(att.url)
+        for embed in getattr(source, "embeds", None) or []:
+            image = getattr(embed, "image", None)
+            if image and getattr(image, "url", None):
+                await _add(image.url)
+    for url in re.findall(
+        r"(https?://\S+\.(?:png|jpg|jpeg|webp|gif))", prompt or "", re.IGNORECASE
+    ):
+        await _add(url)
+    return collected
+
+
+def _reference_streams(raw_images: list[bytes]) -> list[BytesIO]:
+    """Fresh, named file objects per call: an upload consumes the stream, and a
+    fallback provider has to read the same pictures again."""
+    streams = []
+    for index, raw in enumerate(raw_images):
+        stream = BytesIO(raw)
+        stream.name = f"reference_{index + 1}.png"
+        streams.append(stream)
+    return streams
+
+
 # Partial frames per render when a caller wants a progressive preview. Each
 # one costs an attachment re-upload on the status message, so keep it low --
 # this is a handful of edits across a ~40s render, not a per-frame animation.
 GPT_IMAGE_PARTIALS = 2
 
 
-async def _generate_gpt_image_streaming(prompt: str, background_type: str, partial_callback):
+async def _generate_gpt_image_streaming(
+    prompt: str, background_type: str, partial_callback, references: list[bytes] | None = None
+):
     """Stream the render so the caller can show the image resolving.
 
     Returns (result, b64_image). Raises on any streaming failure so the caller
     can fall back to a single-shot request.
     """
-    stream = await get_openai_image_client().images.generate(
-        model="gpt-image-1.5",
-        prompt=prompt,
-        size="auto",
-        background=background_type,
-        quality="high",
-        moderation="low",
-        n=1,
-        stream=True,
-        partial_images=GPT_IMAGE_PARTIALS,
-    )
+    # input_fidelity="high" is what keeps the supplied subject recognizable;
+    # at the default the model treats the reference as loose inspiration and
+    # the picture the user pointed at stops being the picture they get back.
+    if references:
+        stream = await get_openai_image_client().images.edit(
+            model="gpt-image-1.5",
+            image=_reference_streams(references),
+            prompt=prompt,
+            size="auto",
+            quality="high",
+            input_fidelity="high",
+            stream=True,
+            partial_images=GPT_IMAGE_PARTIALS,
+        )
+    else:
+        stream = await get_openai_image_client().images.generate(
+            model="gpt-image-1.5",
+            prompt=prompt,
+            size="auto",
+            background=background_type,
+            quality="high",
+            moderation="low",
+            n=1,
+            stream=True,
+            partial_images=GPT_IMAGE_PARTIALS,
+        )
     final = None
     b64_image = None
     async for event in stream:
@@ -153,7 +274,17 @@ async def _generate_gpt_image_streaming(prompt: str, background_type: str, parti
     return final, b64_image
 
 
-async def generate_gpt_image(prompt: str, partial_callback=None) -> Optional[BytesIO]:
+async def generate_gpt_image(
+    prompt: str, partial_callback=None, references: list[bytes] | None = None
+) -> Optional[BytesIO]:
+    """Render `prompt` with gpt-image.
+
+    With `references`, the pictures the user supplied are the subject, so the
+    request goes to the edits endpoint where the model can see them. The
+    text-only generate endpoint has nowhere to put them, and a prompt like
+    "imagine this in an art museum" then reaches the model with nothing to
+    resolve "this" against.
+    """
     try:
         background_type = "transparent" if "transparent background" in prompt.lower() else "auto"
         result = None
@@ -161,7 +292,7 @@ async def generate_gpt_image(prompt: str, partial_callback=None) -> Optional[Byt
         if partial_callback is not None:
             try:
                 result, b64_image = await _generate_gpt_image_streaming(
-                    prompt, background_type, partial_callback
+                    prompt, background_type, partial_callback, references=references
                 )
             except ImageModerationError:
                 raise
@@ -177,15 +308,25 @@ async def generate_gpt_image(prompt: str, partial_callback=None) -> Optional[Byt
                 "gpt-image streamed %d bytes (prompt=%.80r)", len(b64_image) * 3 // 4, prompt
             )
             return BytesIO(base64.b64decode(b64_image))
-        result = await get_openai_image_client().images.generate(
-            model="gpt-image-1.5",
-            prompt=prompt,
-            size="auto",
-            background=background_type,
-            quality="high",
-            moderation="low",
-            n=1,
-        )
+        if references:
+            result = await get_openai_image_client().images.edit(
+                model="gpt-image-1.5",
+                image=_reference_streams(references),
+                prompt=prompt,
+                size="auto",
+                quality="high",
+                input_fidelity="high",
+            )
+        else:
+            result = await get_openai_image_client().images.generate(
+                model="gpt-image-1.5",
+                prompt=prompt,
+                size="auto",
+                background=background_type,
+                quality="high",
+                moderation="low",
+                n=1,
+            )
         _record_image_usage(result, label="image_generation")
         b64_image = result.data[0].b64_json if result and result.data else None
         if not b64_image:
@@ -239,17 +380,45 @@ async def handle_image_generation(
     use_gemini: bool | None = None,
     provider_state: dict | None = None,
     partial_callback=None,
+    reference_urls: list[str] | None = None,
 ) -> Optional[BytesIO]:
+    """Render an image request, using whatever pictures came with it.
+
+    `reference_urls` is what the Discord layer collected for this message. Both
+    providers read the same resolved set -- OpenAI through the edits endpoint,
+    Gemini through reference contents -- so an attached picture informs the
+    render on either backend instead of only on Gemini.
+    """
+
     def _set_provider(name: str, model: str) -> None:
         if provider_state is not None:
             provider_state["provider"] = name
             provider_state["model"] = model
 
+    # Resolved once. Both providers read this same set, and a mid-flight
+    # fallback must not download the pictures a second time.
+    references: list[bytes] = []
+
+    def _compose(text: str) -> str:
+        composed = _compose_reply_aware_image_prompt(text, reply_msg, retry_context)
+        return _with_reference_note(composed) if references else composed
+
+    async def _gemini_render(image_prompt: str, width: int, height: int) -> Optional[BytesIO]:
+        if references:
+            img = await asyncio.to_thread(
+                generate_gemini_with_references, image_prompt, _reference_streams(references)
+            )
+            if img:
+                return img
+        return await asyncio.to_thread(generate_gemini_image, image_prompt, width, height)
+
     async def _openai_then_gemini(image_prompt: str, width: int, height: int) -> Optional[BytesIO]:
         """Try OpenAI once, then always try Gemini for any OpenAI failure."""
         _set_provider("OpenAI", IMG_MODEL_OPENAI)
         try:
-            img = await generate_gpt_image(image_prompt, partial_callback=partial_callback)
+            img = await generate_gpt_image(
+                image_prompt, partial_callback=partial_callback, references=references
+            )
         except ImageModerationError:
             img = None
         if img:
@@ -258,7 +427,7 @@ async def handle_image_generation(
         if message:
             await message.channel.send("⚠️ OpenAI image generation failed — trying **Gemini** instead…")
         _set_provider("Gemini", IMG_MODEL_GEMINI)
-        img = await asyncio.to_thread(generate_gemini_image, image_prompt, width, height)
+        img = await _gemini_render(image_prompt, width, height)
         if img:
             return img
         if message:
@@ -266,11 +435,20 @@ async def handle_image_generation(
         return None
 
     try:
-        prompt_with_reply_context = _compose_reply_aware_image_prompt(prompt, reply_msg, retry_context)
+        references = await collect_reference_images(
+            message=message,
+            reply_msg=reply_msg,
+            prompt=prompt,
+            reference_urls=reference_urls,
+        )
+        prompt_with_reply_context = _compose(prompt)
         width, height = extract_width_height_from_prompt(prompt_with_reply_context)
         if prompt.lower().startswith("stable imagine"):
-            image_prompt = _compose_reply_aware_image_prompt(prompt[15:].strip(), reply_msg, retry_context)
-            if STABILITY_AVAILABLE:
+            image_prompt = _compose(prompt[15:].strip())
+            # Stability takes no reference image. When the user supplied one,
+            # only the OpenAI/Gemini path can honor it, so skip Stability
+            # rather than silently render without the picture.
+            if STABILITY_AVAILABLE and not references:
                 _set_provider("Stability", IMG_MODEL_STABILITY)
                 img = await generate_stability_image(image_prompt, width, height)
                 if img:
@@ -288,51 +466,18 @@ async def handle_image_generation(
                 core_prompt = prompt[gemini_prefix.end():].strip()
             else:
                 core_prompt = re.sub(r"^gemini[\s,:]*", "", prompt, flags=re.IGNORECASE).strip() or prompt
-            image_prompt = _compose_reply_aware_image_prompt(core_prompt, reply_msg, retry_context)
+            image_prompt = _compose(core_prompt)
             _set_provider("Gemini", IMG_MODEL_GEMINI)
-            ref_images = []
-            headers = {"User-Agent": "Mozilla/5.0"}
-
-            async def _safe_reference(url: str) -> None:
-                try:
-                    fetched = await fetch_url_bytes_async(
-                        url,
-                        timeout=20,
-                        max_bytes=DEFAULT_MEDIA_BYTES,
-                        allowed_content_types=("image/",),
-                        headers=headers,
-                    )
-                    ref_images.append(BytesIO(fetched.body))
-                except Exception as e:
-                    logger.error("Failed to download image reference: %s", type(e).__name__)
-
-            if reply_msg:
-                if reply_msg.attachments:
-                    for att in reply_msg.attachments:
-                        if att.content_type and att.content_type.startswith("image/"):
-                            await _safe_reference(att.url)
-                if reply_msg.embeds:
-                    for embed in reply_msg.embeds:
-                        if embed.image and embed.image.url:
-                            await _safe_reference(embed.image.url)
-            if message and message.attachments:
-                for att in message.attachments:
-                    if att.content_type and att.content_type.startswith("image/"):
-                        await _safe_reference(att.url)
-            for url in re.findall(r"(https?://\S+\.(?:png|jpg|jpeg|webp|gif))", prompt, re.IGNORECASE):
-                await _safe_reference(url)
-            if ref_images:
-                img = await asyncio.to_thread(generate_gemini_with_references, image_prompt, ref_images)
-                if img:
-                    return img
-            img = await asyncio.to_thread(generate_gemini_image, image_prompt, width, height)
+            img = await _gemini_render(image_prompt, width, height)
             if img:
                 return img
             if message:
                 await message.channel.send("⚠️ **Gemini generation failed** (likely rate limit or error). Falling back to OpenAI... 🧠")
             _set_provider("OpenAI", IMG_MODEL_OPENAI)
             try:
-                return await generate_gpt_image(image_prompt, partial_callback=partial_callback)
+                return await generate_gpt_image(
+                    image_prompt, partial_callback=partial_callback, references=references
+                )
             except ImageModerationError:
                 if message:
                     await message.channel.send("🚫 OpenAI's safety system also rejected this prompt. Try rephrasing.")
@@ -379,7 +524,7 @@ async def edit_image_with_prompt(image_input: str | list[str], prompt: str) -> O
             return edit_gemini_image(base_img, prompt[11:].strip())
 
         base_img = await decode_img(urls[0])
-        result = await get_openai_image_client().images.edits(
+        result = await get_openai_image_client().images.edit(
             model="gpt-image-1.5",
             image=base_img,
             prompt=prompt,
