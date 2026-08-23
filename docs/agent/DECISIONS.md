@@ -431,3 +431,23 @@ because it does not receive the raw tool evidence and therefore cannot safely re
 that answer. The active requester's existing personality/profile transformation still
 runs afterward, preserving individual user behavior without allowing it to alter the
 provider facts.
+
+## 2026-08-23: A picture sent with an image request is part of the request
+
+A message that arrives with an attachment and asks for an image gets that
+attachment rendered. Previously only `edit_image` received the collected
+images, so "imagine this in an art museum" reached the model as text with no
+referent for "this" and a subject was invented. Generation now carries the same
+images the rest of the pipeline already collected, deduplicated and size-checked
+by the Discord layer, and both backends read that one resolved set: OpenAI
+through the edits endpoint at high input fidelity, Gemini through reference
+contents. Which backend runs, and whether the router called it a generation or
+an edit, no longer decides whether the user's picture is looked at.
+
+Routing is unchanged: "imagine ..." remains a deterministic image request
+rather than something the classifier re-litigates per message. The attachment
+influences the render, not the route.
+
+Providers that cannot accept a reference are skipped rather than run without
+one, so a supplied picture is never silently dropped in favour of a render that
+ignores it.

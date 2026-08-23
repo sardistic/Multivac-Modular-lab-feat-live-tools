@@ -431,6 +431,7 @@ async def handle_generate_image_intent(
     stream_ok: bool,
     live_status_with_progress,
     use_gemini: bool = False,
+    image_urls=None,
 ):
     weather_match = re.search(r"imagine\s+weather\s+(.*)", prompt, flags=re.IGNORECASE)
     if weather_match:
@@ -530,6 +531,11 @@ async def handle_generate_image_intent(
 
     retry_context = await _build_image_retry_context(ref_msg)
 
+    # "imagine this in an art museum" is a generation whose subject is the
+    # attached picture. Hand those images down so the render can look at them
+    # instead of guessing what "this" was.
+    reference_urls = list(image_urls or [])
+
     # Mutable so a mid-flight provider fallback (moderation block) updates
     # the live status label. "model" is the specific model name once a
     # generation branch is entered; it starts at the best guess from routing.
@@ -558,7 +564,11 @@ async def handle_generate_image_intent(
     started_at = time.monotonic()
     status_msg, image_data = await live_status_with_progress(
         message,
-        action_label=lambda: f"Generating ({provider_state['model']})",
+        action_label=lambda: (
+            f"Generating from reference ({provider_state['model']})"
+            if reference_urls
+            else f"Generating ({provider_state['model']})"
+        ),
         emoji="🎨",
         coro=invoke_provider(
             "image.generate",
@@ -570,6 +580,7 @@ async def handle_generate_image_intent(
             use_gemini=use_gemini,
             provider_state=provider_state,
             partial_callback=_stash_partial,
+            reference_urls=reference_urls,
         ),
         duration_estimate=duration_estimate,
         summarizer=(lambda: "Rendering image… adding details…") if stream_ok else None,
