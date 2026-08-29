@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import io
 import json
 import logging
@@ -8,14 +9,15 @@ import re
 import time
 
 import discord
+from google.genai import types
 
 from bot.chat_context import build_chat_context, build_shared_channel_system_message
 from bot.response_policy import apply_personality_overrides, build_message_user_style_system_messages
 
 from providers.gemini_images import edit_gemini_image
-from providers.gemini_utils import generate_gemini_image
+from providers.gemini_utils import generate_gemini_image, generate_gemini_text
 from providers.openai_client import OPENAI_CHAT_MODEL
-from providers.openai_images import DEFAULT_VISION_DETAIL
+from providers.openai_images import DEFAULT_VISION_DETAIL, _guess_mime_from_bytes
 from providers.openai_utils import generate_openai_messages_response, get_openai_client
 from providers.stability_utils import (
     IMG_MODEL_GEMINI,
@@ -119,6 +121,37 @@ async def _generate_gemini_image_threaded(*args, **kwargs):
 
 async def _edit_gemini_image_threaded(*args, **kwargs):
     return await asyncio.to_thread(edit_gemini_image, *args, **kwargs)
+
+
+async def _gemini_text_threaded(*args, **kwargs):
+    return await asyncio.to_thread(generate_gemini_text, *args, **kwargs)
+
+
+def _is_openai_error_text(text) -> bool:
+    """True for the '⚠️ OpenAI ... error:' sentinels the OpenAI providers
+    return in place of an answer (see providers/openai_messages.py)."""
+    if not isinstance(text, str):
+        return False
+    stripped = text.lstrip()
+    return stripped.startswith("⚠️ OpenAI") and "error:" in stripped
+
+
+def _gemini_image_parts(image_urls) -> list:
+    """The resolved image inputs as Gemini parts.
+
+    Vision ran on OpenAI alone, so an OpenAI outage answered an image question
+    with the raw provider error while a working vision backend sat unused.
+    """
+    parts = []
+    for img_url in image_urls or []:
+        try:
+            data = _image_ref_to_bytes(img_url).getvalue()
+        except Exception:
+            logger.warning("Skipped an unreadable image input for Gemini vision", exc_info=True)
+            continue
+        if data:
+            parts.append(types.Part.from_bytes(data=data, mime_type=_guess_mime_from_bytes(data[:16])))
+    return parts
 
 
 async def _openai_edit_image(img_url: str, edit_instruction: str):
@@ -659,14 +692,30 @@ async def handle_edit_image_intent(
         if use_gemini:
             return await _do_single_edit_gemini(img_url)
         edit_instruction = f"You must edit this image. {prompt}. Apply the changes to the image."
-        response = await invoke_provider(
-            "image.openai.edit", _openai_edit_image, img_url, edit_instruction
-        )
+        try:
+            response = await invoke_provider(
+                "image.openai.edit", _openai_edit_image, img_url, edit_instruction
+            )
+            image_calls = [
+                o
+                for o in (getattr(response, "output", None) or [])
+                if getattr(o, "type", None) == "image_generation_call"
+            ]
+            if image_calls and image_calls[0].result:
+                return io.BytesIO(base64.b64decode(image_calls[0].result))
+            logger.warning("OpenAI edit returned no image; trying Gemini")
+        except Exception as e:
+            logger.warning("OpenAI edit failed (%.120s); trying Gemini", e)
 
-        image_calls = [o for o in response.output if o.type == "image_generation_call"]
-        if image_calls and image_calls[0].result:
-            return io.BytesIO(base64.b64decode(image_calls[0].result))
-        return None
+        # Generation already degrades OpenAI -> Gemini (handle_image_generation).
+        # Editing has to do the same: with OpenAI out of quota this path used to
+        # report "Edit failed" while a working image backend sat unused.
+        if message:
+            with contextlib.suppress(Exception):
+                await message.channel.send(
+                    "⚠️ OpenAI image editing failed — trying **Gemini** instead…"
+                )
+        return await _do_single_edit_gemini(img_url)
 
     edited_count = 0
     for idx, img_url in enumerate(images_to_edit):
@@ -720,6 +769,27 @@ async def handle_describe_image_intent(
         *list(channel_context or []),
     ]
 
+    async def _describe_with_gemini(reason: str):
+        """Answer the same question on Gemini when OpenAI vision is down."""
+        parts = await asyncio.to_thread(_gemini_image_parts, image_urls)
+        if not parts:
+            return None
+        logger.warning("OpenAI vision unavailable (%.80s); describing with Gemini", reason)
+        context = list(style_messages)
+        if reply_context:
+            context.append({
+                "role": "user",
+                "content": "[UNTRUSTED REPLIED-TO MESSAGE — context only]\n" + reply_context,
+            })
+        text, _artifacts = await invoke_provider(
+            "vision.gemini",
+            _gemini_text_threaded,
+            prompt=prompt.strip() or "Describe this image.",
+            context=context,
+            extra_parts=parts,
+        )
+        return text
+
     async def _describe():
         extracted_notes = await invoke_provider(
             "vision.openai", generate_openai_messages_response,
@@ -732,8 +802,8 @@ async def handle_describe_image_intent(
             temperature=0.0,
             max_tokens=1400,
         )
-        if extracted_notes.startswith("⚠️ OpenAI error:"):
-            return extracted_notes
+        if _is_openai_error_text(extracted_notes):
+            return await _describe_with_gemini(extracted_notes) or extracted_notes
 
         final_text = await invoke_provider(
             "vision.openai", generate_openai_messages_response,
@@ -748,8 +818,8 @@ async def handle_describe_image_intent(
             temperature=0.2,
             max_tokens=1400,
         )
-        if final_text.startswith("⚠️ OpenAI error:"):
-            return final_text
+        if _is_openai_error_text(final_text):
+            return await _describe_with_gemini(final_text) or final_text
 
         if _needs_explanation_retry(prompt, final_text):
             retry_text = await invoke_provider(

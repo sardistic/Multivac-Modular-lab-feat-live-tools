@@ -165,10 +165,13 @@ async def _classify_intent_with_sonnet(system_prompt: str, user_content: str) ->
         raise RuntimeError("ANTHROPIC_API_KEY is not configured")
 
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    # No `temperature`: Claude 5 rejects it outright ("`temperature` is
+    # deprecated for this model", HTTP 400), which failed every single call to
+    # this fallback -- so an OpenAI outage always landed on the keyword router.
+    # Nothing is lost: the model emits one label from a 32-token budget.
     response = await client.messages.create(
         model=ANTHROPIC_INTENT_MODEL,
         max_tokens=32,
-        temperature=0,
         system=system_prompt,
         messages=[{"role": "user", "content": user_content}],
     )
@@ -202,12 +205,35 @@ async def _classify_intent_with_sonnet(system_prompt: str, user_content: str) ->
     return label
 
 
-def _keyword_fallback_intent(text: str) -> str:
+# Image operations, for the classifier-less fallback below. Deliberately
+# coarse: these only get consulted when a picture is actually attached, and in
+# that state a wrong image intent still acts on the picture, while 'chat'
+# throws it away and answers with an apology.
+_FALLBACK_EDIT_RE = re.compile(
+    r"\b(?:edit|change|modify|alter|adjust|fix|remove|erase|delete|add|replace|swap|"
+    r"redraw|repaint|recolou?r|colou?rize|crop|rotate|resize|upscale|zoom|"
+    r"make|turn|convert|transform|put|give)\b",
+    re.I,
+)
+_FALLBACK_DESCRIBE_RE = re.compile(
+    r"\b(?:describe|description|caption|transcribe|translate|explain|identify|"
+    r"summari[sz]e|read)\b|\bwhat(?:'s|\s+is|\s+are|\s+does)\b|\bwho(?:'s|\s+is)\b",
+    re.I,
+)
+_FALLBACK_GENERATE_RE = re.compile(r"\b(?:imagine|draw|paint|render|generate|create)\b", re.I)
+
+
+def _keyword_fallback_intent(text: str, has_images: bool = False) -> str:
     """Deterministic route for when the classifier itself can't run (OpenAI
-    down / out of quota). The only provider signal we can honor without an LLM
-    is an explicit 'gemini ...' prefix — that request plainly wants Gemini, so
-    send it to gemini_chat rather than to 'chat', which would just hit the same
-    dead OpenAI backend. Everything else defaults to 'chat'."""
+    down / out of quota, and the Sonnet fallback unavailable too).
+
+    Two signals survive without an LLM. An explicit 'gemini ...' prefix plainly
+    wants Gemini, so it goes to gemini_chat rather than to 'chat', which would
+    just hit the same dead OpenAI backend. And an attached picture makes the
+    request about that picture: 'edit this' with an image must reach
+    edit_image, because routing it to chat drops the image work entirely and
+    answers with the model explaining it cannot edit images. Everything else
+    defaults to 'chat'."""
     lowered = (text or "").strip().lower()
     # Operation beats provider. This fallback is intentionally narrow: it
     # recognizes explicit creation language but does not mistake questions or
@@ -223,6 +249,15 @@ def _keyword_fallback_intent(text: str) -> str:
     )
     if video_request:
         return "generate_video"
+    if has_images and lowered:
+        # Asking what the picture says/shows is a read, not a repaint; the edit
+        # verbs win when both appear ("translate this and remove the border").
+        if _FALLBACK_EDIT_RE.search(lowered):
+            return "edit_image"
+        if _FALLBACK_DESCRIBE_RE.search(lowered):
+            return "describe_image"
+        if _FALLBACK_GENERATE_RE.search(lowered):
+            return "generate_image"
     if lowered.startswith("gemini"):
         return "gemini_chat"
     return "chat"
@@ -327,7 +362,7 @@ async def classify_intent(
             logging.info("[intent] Sonnet fallback -> %s", fallback)
             return fallback
         except Exception as sonnet_error:
-            fallback = _keyword_fallback_intent(text)
+            fallback = _keyword_fallback_intent(text, has_images=has_images)
             logging.warning(
                 "[intent] Sonnet classifier also failed (%s); keyword fallback -> %s",
                 sonnet_error,

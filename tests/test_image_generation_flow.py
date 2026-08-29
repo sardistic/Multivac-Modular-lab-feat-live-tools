@@ -388,5 +388,74 @@ class AttachedImageAsGenerationReferenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(set(collected)), len(collected))
 
 
+class ImageEditFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """Editing has to degrade to Gemini the way generation already does.
+    With OpenAI out of quota the edit path reported "Edit failed" while a
+    working image backend sat unused."""
+
+    @staticmethod
+    def _pixel_data_url() -> str:
+        return "data:image/png;base64," + base64.b64encode(b"pixel-bytes").decode("ascii")
+
+    @staticmethod
+    async def _status(message, *, coro, **kwargs):
+        return SimpleNamespace(edit=AsyncMock()), await coro
+
+    async def _run_edit(self, message):
+        await image_handler.handle_edit_image_intent(
+            message=message,
+            prompt="make them stand on him",
+            image_urls=[self._pixel_data_url()],
+            prompt_for_image_selection=AsyncMock(),
+            live_status_with_progress=self._status,
+        )
+
+    async def test_openai_edit_failure_falls_back_to_gemini(self):
+        message = SimpleNamespace(channel=SimpleNamespace(send=AsyncMock()))
+
+        with patch.object(
+            image_handler, "_openai_edit_image", new=AsyncMock(side_effect=RuntimeError("429 insufficient_quota"))
+        ), patch.object(
+            image_handler, "edit_gemini_image", return_value=io.BytesIO(b"gemini-edited")
+        ) as gemini_edit:
+            await self._run_edit(message)
+
+        gemini_edit.assert_called_once()
+        sent = [c.kwargs.get("file") for c in message.channel.send.await_args_list if c.kwargs.get("file")]
+        self.assertEqual(len(sent), 1)
+
+    async def test_openai_edit_without_an_image_falls_back_to_gemini(self):
+        """A 200 that carries no image is the same outcome as an exception."""
+        message = SimpleNamespace(channel=SimpleNamespace(send=AsyncMock()))
+
+        with patch.object(
+            image_handler,
+            "_openai_edit_image",
+            new=AsyncMock(return_value=SimpleNamespace(output=[])),
+        ), patch.object(
+            image_handler, "edit_gemini_image", return_value=io.BytesIO(b"gemini-edited")
+        ) as gemini_edit:
+            await self._run_edit(message)
+
+        gemini_edit.assert_called_once()
+
+    async def test_openai_edit_success_does_not_call_gemini(self):
+        message = SimpleNamespace(channel=SimpleNamespace(send=AsyncMock()))
+        result = base64.b64encode(b"openai-edited").decode("ascii")
+
+        with patch.object(
+            image_handler,
+            "_openai_edit_image",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    output=[SimpleNamespace(type="image_generation_call", result=result)]
+                )
+            ),
+        ), patch.object(image_handler, "edit_gemini_image") as gemini_edit:
+            await self._run_edit(message)
+
+        gemini_edit.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

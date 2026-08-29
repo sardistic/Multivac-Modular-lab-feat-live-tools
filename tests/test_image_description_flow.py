@@ -1,3 +1,4 @@
+import base64
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -147,6 +148,79 @@ class ImageDescriptionFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("3. What it means / what you should understand", sent_text)
         self.assertIn("warning about power and control", sent_text)
         self.assertNotEqual(sent_text.rstrip().splitlines()[-1].strip(), "The photographed Dune passage reads")
+
+
+    @patch("bot.image_handler.apply_personality_overrides", side_effect=lambda user_id, *, intent, text: text)
+    @patch("bot.image_handler.generate_gemini_text")
+    @patch("bot.image_handler.generate_openai_messages_response", new_callable=AsyncMock)
+    async def test_handle_describe_image_intent_falls_back_to_gemini(
+        self, mock_generate, mock_gemini, _mock_personality
+    ):
+        """OpenAI vision being down must not cost the user the answer: the
+        picture is already resolved, and Gemini can read it."""
+        mock_generate.return_value = (
+            "\u26a0\ufe0f OpenAI error: the provider is rate-limited or out of quota (HTTP 429)"
+        )
+        mock_gemini.return_value = ("A screenshot of a post quoting Dune.", [])
+
+        status_msg = SimpleNamespace()
+
+        async def fake_live_status_with_progress(message, action_label, emoji, coro, duration_estimate, summarizer=None):
+            return status_msg, await coro
+
+        send_mock = AsyncMock()
+        message = SimpleNamespace(author=SimpleNamespace(id=123))
+        data_url = "data:image/png;base64," + base64.b64encode(b"pixel-bytes").decode("ascii")
+
+        await image_handler.handle_describe_image_intent(
+            message=message,
+            prompt="what does this say",
+            image_urls=[data_url],
+            ref_msg=None,
+            is_reply_to_bot=False,
+            duration_estimate=8,
+            stream_ok=False,
+            live_status_with_progress=fake_live_status_with_progress,
+            send_or_edit_with_truncation=send_mock,
+        )
+
+        self.assertEqual(len(mock_gemini.call_args.kwargs["extra_parts"]), 1)
+        self.assertEqual(mock_gemini.call_args.kwargs["prompt"], "what does this say")
+        sent_text = send_mock.await_args.args[0]
+        self.assertIn("quoting Dune", sent_text)
+        self.assertNotIn("OpenAI error", sent_text)
+
+    @patch("bot.image_handler.apply_personality_overrides", side_effect=lambda user_id, *, intent, text: text)
+    @patch("bot.image_handler.generate_gemini_text")
+    @patch("bot.image_handler.generate_openai_messages_response", new_callable=AsyncMock)
+    async def test_handle_describe_image_intent_keeps_openai_error_when_gemini_has_nothing(
+        self, mock_generate, mock_gemini, _mock_personality
+    ):
+        mock_generate.return_value = "\u26a0\ufe0f OpenAI error: the provider is rate-limited or out of quota (HTTP 429)"
+        mock_gemini.return_value = (None, [])
+
+        status_msg = SimpleNamespace()
+
+        async def fake_live_status_with_progress(message, action_label, emoji, coro, duration_estimate, summarizer=None):
+            return status_msg, await coro
+
+        send_mock = AsyncMock()
+        message = SimpleNamespace(author=SimpleNamespace(id=123))
+        data_url = "data:image/png;base64," + base64.b64encode(b"pixel-bytes").decode("ascii")
+
+        await image_handler.handle_describe_image_intent(
+            message=message,
+            prompt="what does this say",
+            image_urls=[data_url],
+            ref_msg=None,
+            is_reply_to_bot=False,
+            duration_estimate=8,
+            stream_ok=False,
+            live_status_with_progress=fake_live_status_with_progress,
+            send_or_edit_with_truncation=send_mock,
+        )
+
+        self.assertIn("OpenAI error", send_mock.await_args.args[0])
 
 
 if __name__ == "__main__":
