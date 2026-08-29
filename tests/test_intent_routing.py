@@ -310,6 +310,71 @@ class ClassifierOutageFallbackTests(unittest.TestCase):
         self.assertEqual(_keyword_fallback_intent("animate this"), "generate_video")
         self.assertEqual(_keyword_fallback_intent("summarize this video"), "chat")
 
+    def test_keyword_fallback_acts_on_an_attached_image(self):
+        """An outage must not turn 'edit this' into an apology. With a picture
+        present the fallback routes to the image handlers, which have their own
+        Gemini path when OpenAI is the thing that is down."""
+        from providers.openai_intents import _keyword_fallback_intent
+
+        for text in (
+            "edit this image so they are standing on him",
+            "edit this so they are each standing on him with one foot",
+            "remove the text",
+            "make it darker",
+            "gemini add a cat to this",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_keyword_fallback_intent(text, has_images=True), "edit_image")
+
+        self.assertEqual(
+            _keyword_fallback_intent("what does this say", has_images=True), "describe_image"
+        )
+        self.assertEqual(
+            _keyword_fallback_intent("translate this", has_images=True), "describe_image"
+        )
+        self.assertEqual(
+            _keyword_fallback_intent("draw this as a woodcut", has_images=True), "generate_image"
+        )
+        # Commentary asks for nothing, and an operation word still beats the
+        # picture when it names a different medium.
+        self.assertEqual(_keyword_fallback_intent("kino", has_images=True), "chat")
+        self.assertEqual(
+            _keyword_fallback_intent("animate this", has_images=True), "generate_video"
+        )
+
+    def test_keyword_fallback_ignores_image_verbs_without_an_image(self):
+        from providers.openai_intents import _keyword_fallback_intent
+
+        self.assertEqual(_keyword_fallback_intent("make it darker"), "chat")
+        self.assertEqual(_keyword_fallback_intent("what does this say"), "chat")
+
+    def test_classify_intent_fallback_receives_the_image_flag(self):
+        """The flag has to reach the keyword router; classify_intent used to
+        drop it there, so every outage-time image request became 'chat'."""
+        import providers.openai_intents as oi
+
+        with patch.object(oi, "get_openai_client", side_effect=RuntimeError("insufficient_quota")), patch.object(
+            oi, "_classify_intent_with_sonnet", new=AsyncMock(side_effect=RuntimeError("400"))
+        ):
+            self.assertEqual(
+                asyncio.run(oi.classify_intent("edit this image", has_images=True)),
+                "edit_image",
+            )
+            self.assertEqual(
+                asyncio.run(oi.classify_intent("edit this image", has_images=False)),
+                "chat",
+            )
+
+    def test_sonnet_classifier_sends_no_temperature(self):
+        """Claude 5 rejects `temperature` outright (HTTP 400), which broke this
+        fallback on every call."""
+        import inspect
+
+        import providers.openai_intents as oi
+
+        source = inspect.getsource(oi._classify_intent_with_sonnet)
+        self.assertNotIn("temperature=", source)
+
     def test_keyword_fallback_defaults_to_chat(self):
         from providers.openai_intents import _keyword_fallback_intent
 
