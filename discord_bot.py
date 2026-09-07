@@ -2233,7 +2233,15 @@ async def _builtin_on_message(message: discord.Message):
         source_image_urls,
         unusable_images,
     )
-    gemini_parts = await collect_gemini_parts(message, ref_msg, image_urls)
+    video_inputs = []
+    unusable_videos = []
+    gemini_parts = await collect_gemini_parts(
+        message,
+        ref_msg,
+        image_urls,
+        video_inputs,
+        unusable_videos,
+    )
 
     # Say so instead of routing an image request onward with no image — that
     # fell through to plain chat and asked for a picture the user had attached.
@@ -2251,7 +2259,26 @@ async def _builtin_on_message(message: discord.Message):
             await message.reply(notice)
         return
 
-    has_attachments = has_visual_inputs(message, ref_msg) or bool(image_urls or gemini_parts)
+    # Say so when a clip arrived that nothing downstream can watch, instead of
+    # answering as if the message had come with no attachment at all.
+    if unusable_videos and not (image_urls or video_inputs):
+        subject = f"`{unusable_videos[0]}`" if len(unusable_videos) == 1 else f"{len(unusable_videos)} attached videos"
+        notice = (
+            f"🎞️ I couldn't watch {subject} — clips have to be under 10 MB and in a common "
+            "format (mp4, mov, webm) for me to see them. Try a shorter or smaller clip."
+        )
+        _preflight_status_by_message_id.pop(message.id, None)
+        if preflight_status is not None:
+            with contextlib.suppress(Exception):
+                await preflight_status.edit(content=notice)
+        else:
+            await message.reply(notice)
+        return
+
+    # Images only. Counting any attachment here told the classifier a picture
+    # was present when a video or text file was attached, and every image
+    # handler then received nothing.
+    has_attachments = bool(image_urls) or has_visual_inputs(message, ref_msg)
     channel_context = await fetch_recent_channel_context(message, bot.user)
     if preflight_status is not None:
         with contextlib.suppress(Exception):
@@ -2347,7 +2374,10 @@ async def _builtin_on_message(message: discord.Message):
                 await message.reply(notice)
             return
 
-    logger.info(f"Intent identified as: {intent} (has_attachments={has_attachments}, image_inputs={len(image_urls)})")
+    logger.info(
+        f"Intent identified as: {intent} (has_attachments={has_attachments}, "
+        f"image_inputs={len(image_urls)}, video_inputs={len(video_inputs)})"
+    )
     if preflight_status is not None:
         with contextlib.suppress(Exception):
             await preflight_status.edit(
@@ -2378,6 +2408,7 @@ async def _builtin_on_message(message: discord.Message):
                 is_owner=is_app_owner,
                 image_urls=image_urls,
                 source_image_urls=source_image_urls,
+                video_inputs=video_inputs,
                 gemini_parts=gemini_parts,
                 channel_context=channel_context,
                 general_url_match=general_url_match,

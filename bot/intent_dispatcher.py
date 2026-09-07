@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
-from bot.chat_handler import handle_chat_intent
+from bot.chat_handler import GEMINI_FALLBACK_CHAT_MODEL, handle_chat_intent
 from bot.research_policy import is_reverse_image_request, requires_fresh_web
 from bot.image_handler import (
     handle_describe_image_intent,
@@ -251,6 +251,7 @@ class DispatchContext:
     image_urls: List[Any] = field(default_factory=list)
     source_image_urls: List[str] = field(default_factory=list)
     gemini_parts: List[Any] = field(default_factory=list)
+    video_inputs: List[str] = field(default_factory=list)
     channel_context: List[dict[str, str]] = field(default_factory=list)
     general_url_match: Any = None
     stream_ok: bool = False
@@ -382,6 +383,13 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
             await handle_stock_command(message, ctx.prompt)
         return True
 
+    # A clip only gets watched by the backend that can watch it. OpenAI chat
+    # takes images alone, so an attached video routed there reaches the model
+    # as nothing at all; Gemini reads it inline from ctx.gemini_parts.
+    chat_model = chat_model_for_intent(ctx.intent)
+    if ctx.video_inputs and "gemini" not in chat_model.lower():
+        chat_model = GEMINI_FALLBACK_CHAT_MODEL
+
     # 'clarify' runs as normal chat WITH full conversation history plus a
     # nudge: resolve the ambiguity from context if possible ("do that" right
     # after the bot offered something), otherwise ask one short question.
@@ -403,7 +411,7 @@ async def _dispatch_builtin_intent(ctx: DispatchContext) -> bool:
         live_status_with_progress=ctx.live_status_with_progress,
         send_or_edit_with_truncation=ctx.send_or_edit_with_truncation,
         moderation_view_factory=ctx.moderation_view_factory,
-        default_model=chat_model_for_intent(ctx.intent),
+        default_model=chat_model,
         agent_intent=ctx.intent,
         reasoning_effort=chat_reasoning_for_intent(ctx.intent),
         clarify_hint=(ctx.intent == "clarify"),

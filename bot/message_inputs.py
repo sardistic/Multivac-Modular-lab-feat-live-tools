@@ -17,6 +17,24 @@ logger = logging.getLogger("discord_bot")
 
 URL_RE = re.compile(r"https?://[^\s<>]+", flags=re.IGNORECASE)
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif", ".avif", ".heic", ".heif")
+VIDEO_EXTS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mpeg", ".mpg", ".wmv", ".flv", ".3gp")
+# Gemini reads video inline; these are the container types it accepts.
+GEMINI_VIDEO_MIMES = {
+    "video/mp4",
+    "video/mpeg",
+    "video/mov",
+    "video/avi",
+    "video/x-flv",
+    "video/mpg",
+    "video/webm",
+    "video/wmv",
+    "video/3gpp",
+}
+_VIDEO_MIME_ALIASES = {
+    "video/quicktime": "video/mov",
+    "video/x-msvideo": "video/avi",
+    "video/x-m4v": "video/mp4",
+}
 MAX_VISUAL_INPUTS = 4
 MAX_ATTACHMENT_BYTES = 10_000_000
 MAX_ATTACHMENT_TOTAL_BYTES = 20_000_000
@@ -46,6 +64,38 @@ async def resolve_reference_message(message, bot_user):
         if ref_msg and bot_user and ref_msg.author.id == bot_user.id:
             is_reply_to_bot = True
     return ref_msg, is_reply_to_bot
+
+
+def _is_image_attachment(attachment) -> bool:
+    """One answer for "is this a picture", shared by detection and collection.
+
+    They used to disagree: any attachment counted as visual input while only
+    ``image/*`` was actually collected.
+    """
+    ctype = getattr(attachment, "content_type", None) or ""
+    if ctype:
+        return ctype.startswith("image/")
+    return (getattr(attachment, "filename", "") or "").lower().endswith(IMAGE_EXTS)
+
+
+def _is_video_attachment(attachment) -> bool:
+    ctype = getattr(attachment, "content_type", None) or ""
+    if ctype:
+        return ctype.startswith("video/")
+    return (getattr(attachment, "filename", "") or "").lower().endswith(VIDEO_EXTS)
+
+
+def _gemini_video_mime(mime: str) -> Optional[str]:
+    """The mime Gemini wants for this container, or None if it cannot read it."""
+    m = (mime or "").lower().split(";", 1)[0].strip()
+    m = _VIDEO_MIME_ALIASES.get(m, m)
+    return m if m in GEMINI_VIDEO_MIMES else None
+
+
+def _image_attachments(message) -> List[Any]:
+    if message is None:
+        return []
+    return [a for a in (getattr(message, "attachments", None) or []) if _is_image_attachment(a)]
 
 
 def _forward_snapshots(message) -> List[Any]:
@@ -156,14 +206,20 @@ async def _downscaled_attachment(attachment) -> Optional[Tuple[bytes, str]]:
 
 
 def has_visual_inputs(message, ref_msg=None) -> bool:
-    if message.attachments or (ref_msg and ref_msg.attachments):
+    """True only when an actual picture is attached, embedded or linked.
+
+    A video attachment used to answer this, which told the intent classifier an
+    image was present while every image handler received none. The request fell
+    through to plain chat and asked for a picture the user had plainly sent.
+    """
+    if _image_attachments(message) or _image_attachments(ref_msg):
         return True
     if _embed_image_candidates(getattr(message, "embeds", None)):
         return True
     if ref_msg and _embed_image_candidates(getattr(ref_msg, "embeds", None)):
         return True
     for snap in _forward_snapshots(message) + _forward_snapshots(ref_msg):
-        if getattr(snap, "attachments", None):
+        if _image_attachments(snap):
             return True
         if _embed_image_candidates(getattr(snap, "embeds", None)):
             return True
@@ -222,8 +278,7 @@ async def collect_image_inputs(
     async def _append_attachment(attachment) -> None:
         """Forward an image attachment, downscaling it first if it is too big."""
         nonlocal visual_bytes
-        ctype = getattr(attachment, "content_type", None)
-        if not (ctype and ctype.startswith("image/")):
+        if not _is_image_attachment(attachment):
             return
         if int(getattr(attachment, "size", 0) or 0) <= MAX_ATTACHMENT_BYTES:
             await _append_remote(attachment.url)
@@ -301,7 +356,20 @@ async def collect_image_inputs(
     return unique_urls[:MAX_VISUAL_INPUTS]
 
 
-async def collect_gemini_parts(message, ref_msg, image_urls) -> List[Any]:
+async def collect_gemini_parts(
+    message,
+    ref_msg,
+    image_urls,
+    video_inputs: List[str] | None = None,
+    unusable_videos: List[str] | None = None,
+) -> List[Any]:
+    """Build the Gemini parts for a message: images, readable text files, video.
+
+    Gemini watches video inline, so a clip is forwarded whole rather than
+    dropped. ``video_inputs`` collects the filenames that made it through and
+    ``unusable_videos`` those that could not, so the caller can route the
+    request to Gemini or say why it cannot watch the clip.
+    """
     gemini_parts = []
     attachment_count = 0
     total_attachment_bytes = 0
@@ -327,26 +395,42 @@ async def collect_gemini_parts(message, ref_msg, image_urls) -> List[Any]:
         ".css",
     )
 
+    def _report_unusable_video(filename: str) -> None:
+        if unusable_videos is not None and filename not in unusable_videos:
+            unusable_videos.append(filename)
+
     async def _append_attachment_parts(attachment, label: str, prefix: str) -> None:
         nonlocal attachment_count, total_attachment_bytes
         if attachment_count >= MAX_VISUAL_INPUTS:
             return
         declared_size = int(getattr(attachment, "size", 0) or 0)
+        filename = getattr(attachment, "filename", "unknown")
+        # A container Gemini cannot read is settled before the download.
+        if _is_video_attachment(attachment):
+            mime = attachment.content_type or mimetypes.guess_type(filename)[0] or ""
+            if not _gemini_video_mime(mime):
+                logger.warning("Skipped unreadable %s video attachment: %s (%s)", label, filename, mime)
+                _report_unusable_video(filename)
+                return
         if declared_size > MAX_ATTACHMENT_BYTES:
-            ctype = getattr(attachment, "content_type", None) or ""
             # Oversized images are already downscaled by collect_image_inputs
             # and reach us through the image_urls data-URIs below; anything
             # else is genuinely too big to include.
-            if not ctype.startswith("image/"):
-                logger.warning("Skipped oversized %s attachment: %s", label, getattr(attachment, "filename", "unknown"))
+            if _is_image_attachment(attachment):
+                return
+            logger.warning("Skipped oversized %s attachment: %s", label, filename)
+            _report_unusable_video(filename)
             return
         if declared_size and total_attachment_bytes + declared_size > MAX_ATTACHMENT_TOTAL_BYTES:
             logger.warning("Skipped %s attachment because the request byte budget is exhausted", label)
+            _report_unusable_video(filename)
             return
         try:
             data = await attachment.read()
             if len(data) > MAX_ATTACHMENT_BYTES or total_attachment_bytes + len(data) > MAX_ATTACHMENT_TOTAL_BYTES:
                 logger.warning("Skipped oversized %s attachment after download", label)
+                if _is_video_attachment(attachment):
+                    _report_unusable_video(filename)
                 return
             attachment_count += 1
             total_attachment_bytes += len(data)
@@ -355,6 +439,13 @@ async def collect_gemini_parts(message, ref_msg, image_urls) -> List[Any]:
                 gemini_parts.append(types.Part.from_bytes(data=data, mime_type=mime))
                 image_hashes.add(hashlib.sha256(data).hexdigest())
                 logger.info("Added %s image part: %s", label, attachment.filename)
+                return
+            video_mime = _gemini_video_mime(mime)
+            if video_mime:
+                gemini_parts.append(types.Part.from_bytes(data=data, mime_type=video_mime))
+                if video_inputs is not None:
+                    video_inputs.append(attachment.filename)
+                logger.info("Added %s video part: %s (%s)", label, attachment.filename, video_mime)
                 return
             if mime.startswith("text/") or "/json" in mime or attachment.filename.lower().endswith(text_exts):
                 try:
