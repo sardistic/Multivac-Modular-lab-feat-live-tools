@@ -30,6 +30,14 @@ def _record_gemini_usage(model: str, usage_metadata, label: str = "gemini_chat")
         logger.warning("gemini usage recording failed", exc_info=True)
 
 
+def _has_video_part(parts) -> bool:
+    for part in parts or []:
+        inline = getattr(part, "inline_data", None)
+        if inline is not None and (getattr(inline, "mime_type", "") or "").startswith("video/"):
+            return True
+    return False
+
+
 class GeminiModerationError(Exception):
     def __init__(self, message, safety_ratings=None):
         super().__init__(message)
@@ -416,8 +424,14 @@ def generate_gemini_text(
         # operational instructions and the persistent user-facing identity.
         sys_instructions.extend(context_system_instructions)
 
+        # Video is billed per second of frames, so a clip costs multiples of a
+        # still. Low media resolution is roughly a quarter of the tokens and
+        # still answers what happens in the clip; images keep full fidelity.
+        media_resolution = "MEDIA_RESOLUTION_LOW" if _has_video_part(extra_parts) else None
+
         config = types.GenerateContentConfig(
             system_instruction="\n\n".join(sys_instructions),
+            media_resolution=media_resolution,
             tools=tools_list,
             safety_settings=[
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},

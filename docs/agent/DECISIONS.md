@@ -451,3 +451,23 @@ influences the render, not the route.
 Providers that cannot accept a reference are skipped rather than run without
 one, so a supplied picture is never silently dropped in favour of a render that
 ignores it.
+
+## 2026-09-06: A video is not a picture, and a clip is watched by the backend that can watch it
+
+Attachment detection and attachment collection now answer "is this an image?"
+the same way. They used to differ: anything attached counted as a visual input
+for routing, while only `image/*` was ever collected. A video therefore told
+the intent classifier a picture was present, the request routed to an image
+intent, that handler received nothing, and the fall-through asked the user to
+send the image they had just sent.
+
+Video is carried rather than dropped. Gemini reads a clip inline, so a message
+carrying one is answered by Gemini even when the intent's configured model is
+OpenAI -- collecting a part and handing it to a backend that cannot see it
+would repeat the original failure one layer down. Clips run at low media
+resolution: video is billed per second of frames, and the fidelity beyond that
+does not change what the model can say about a clip.
+
+A clip that cannot be read -- an unsupported container, or past the request
+byte budget -- is refused out loud before it is downloaded, the way an
+unusable image already is. Silence is what produced the original report.
